@@ -36,7 +36,7 @@ export const api = {
   health: () => get<{ ok: boolean; rooms: number; players: number }>("/health"),
 };
 
-const KEY = "axiom_user";
+const KEY = "lastroom_user";
 export const auth = {
   current: (): string | null =>
     typeof window === "undefined" ? null : localStorage.getItem(KEY),

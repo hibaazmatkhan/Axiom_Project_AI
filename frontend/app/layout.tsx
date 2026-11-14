@@ -2,19 +2,19 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
-  title: "AXIOM — AI-Driven Multiplayer Dynamic Labyrinth",
+  title: "AXIOM · THE LAST ROOM — a game of possible futures",
   description:
-    "Four players, one labyrinth that rearranges itself by hidden rules. Observe, predict, adapt — while NEXUS learns your team.",
+    "A 5×5 matrix of moving white rooms. Four coloured doors, d10 pedestals and possible futures. Cross with your team, predict the shift, and unseal the final door at A5.",
 };
 
 export const viewport: Viewport = {
-  themeColor: "#05060f",
+  themeColor: "#f4f1ea",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="bg-paper text-ink">{children}</body>
     </html>
   );
 }

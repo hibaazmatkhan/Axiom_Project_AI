@@ -1,21 +1,20 @@
-"""AXIOM knowledge representation and cooperative puzzle generator (WP2, tasks 34-35).
+"""THE LAST ROOM knowledge representation and cooperative puzzle generator.
 
 Knowledge base: rules, observations and discovered patterns are stored as
 structured facts so the system can evaluate, compare and score player
 hypotheses against the truth.
 
-Puzzle generator: a cooperative puzzle splits clues across the four roles and
-guarantees the combined clue set has exactly one solution. We solve it with a
-constraint-satisfaction search (backtracking over maze-block properties) and
-only emit puzzles that the solver verifies as solvable across many seeds (O4).
+Puzzle generator: a cooperative cipher splits four clues across the four roles
+and guarantees the combined clue set identifies exactly one room code. We solve
+it with a constraint-satisfaction search over the 5x5 grid and only emit
+puzzles that the solver verifies as unique (O4).
 """
 from __future__ import annotations
 
-import itertools
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .maze import Block, Maze, SYMBOLS, MATERIALS
+from .arena import SIZE, room_code
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +22,7 @@ from .maze import Block, Maze, SYMBOLS, MATERIALS
 # ---------------------------------------------------------------------------
 @dataclass
 class Fact:
-    """A single structured fact, e.g. ("symbol", "triangle", "moves", 0)."""
+    """A single structured fact, e.g. ("rule", "pattern_type", "translation")."""
 
     subject: str
     predicate: str
@@ -36,7 +35,7 @@ class Fact:
 
 
 class KnowledgeBase:
-    """Facts about maze structure and hidden rules that the system can reason over."""
+    """Facts about the grid and hidden rules that the system can reason over."""
 
     def __init__(self) -> None:
         self.facts: list[Fact] = []
@@ -58,45 +57,45 @@ class KnowledgeBase:
         """Turn a hidden Rule into a set of comparable facts."""
         out = [
             Fact("rule", "pattern_type", rule.pattern_type),
-            Fact("rule", "clause_count", len(rule.clauses)),
+            Fact("rule", "op_count", len(rule.sequence or rule.ops)),
         ]
-        if rule.sequence:
-            out.append(Fact("rule", "sequence", tuple(rule.sequence)))
+        kinds = tuple(op.kind for op in (rule.sequence or rule.ops))
+        if kinds:
+            out.append(Fact("rule", "ops", kinds))
         if rule.pattern_type == "conditional":
             out.append(Fact("rule", "every", rule.every))
         return out
 
-    def score_hypothesis(self, guess: dict, rule) -> float:
+    def score_hypothesis(self, guess: dict, rule, moved: list[dict] | None = None) -> float:
         """Score a player's predicted next-state hypothesis against the truth.
 
-        `guess` may carry pattern_type and/or a predicted set of moving symbols.
-        Returns a 0..1 match score."""
+        `guess` may carry pattern_type and/or a predicted set of room codes or
+        sigils. Returns a 0..1 match score.
+        """
         score = 0.0
         parts = 0
         if "pattern_type" in guess:
             parts += 1
             if guess["pattern_type"] == rule.pattern_type:
                 score += 1.0
-        if "symbols" in guess:
+        if "rooms" in guess:
             parts += 1
-            truth_symbols = {c.value for c in rule.clauses if c.select == "symbol"}
-            if rule.pattern_type == "sequential" and rule.sequence:
-                truth_symbols = {rule.sequence[0]}
-            guessed = set(guess["symbols"])
-            if truth_symbols:
-                score += len(truth_symbols & guessed) / len(truth_symbols | guessed)
+            truth = {m.get("code_to") for m in (moved or []) if m.get("code_to")}
+            guessed = {str(r).upper() for r in guess["rooms"]}
+            if truth:
+                score += len(truth & guessed) / len(truth | guessed)
+        if "sigils" in guess:
+            parts += 1
+            truth = {m.get("sigil") for m in (moved or []) if m.get("sigil")}
+            guessed = set(guess["sigils"])
+            if truth:
+                score += len(truth & guessed) / len(truth | guessed)
         return score / parts if parts else 0.0
 
 
 # ---------------------------------------------------------------------------
 # Cooperative puzzle generator (constraint satisfaction)
 # ---------------------------------------------------------------------------
-def _ordinal(n: int) -> str:
-    if 10 <= n % 100 <= 20:
-        return f"{n}th"
-    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
-
-
 @dataclass
 class Puzzle:
     puzzle_id: int
@@ -118,123 +117,75 @@ class Puzzle:
 class PuzzleGenerator:
     """Generates cooperative puzzles whose clues are split across four roles.
 
-    Each puzzle is built from a hidden solution tuple; every role sees a subset
-    of constraints. The generator then verifies with a solver that the union of
-    all role clues yields exactly one solution (a unique answer)."""
+    Each puzzle is built from a hidden room code; every role sees one constraint
+    (column, row, letter, number). The generator verifies with a solver that the
+    union of all role clues yields exactly one room code."""
 
-    ROLES = ("mover", "symbolist", "chronologist", "archivist")
+    ROLES = ("navigator", "oracle", "timekeeper", "archivist")
 
-    def __init__(self, size: int = 3):
+    def __init__(self, size: int = SIZE, target: str | None = None):
         self.size = size
+        self.options = [room_code(x, y) for y in range(size) for x in range(size)]
+        self.target = target or ("A5" if size == SIZE else room_code(size - 1, size - 1))
+        if self.target not in self.options:
+            raise ValueError(f"target {self.target!r} is outside a {size}x{size} grid")
 
-    def _solve(self, constraints: list[tuple[str, int, str]], n_blocks: int) -> list[int]:
-        """Backtracking CSP: assign each block index a property value ('rot'/'still')
-        satisfying all constraints. Returns list of solutions (blocks that rotate)."""
-        solutions: list[list[int]] = []
-        prop_values = ("rot", "still")
+    def _constraints(self, target: str) -> list[tuple[str, str]]:
+        letter, number = target[0], target[1]
+        return [
+            ("column", letter),
+            ("row", number),
+            ("letter", letter),
+            ("number", number),
+        ]
 
-        def consistent(assign: dict[int, str], c: tuple[str, int, str]) -> bool:
-            kind, idx, val = c
-            if idx not in assign:
-                return True
-            if kind == "eq":
-                return assign[idx] == val
-            return assign[idx] != val
-
-        def backtrack(i: int, assign: dict[int, str]) -> None:
-            if len(solutions) > 1:
-                return
-            if i == n_blocks:
-                for c in constraints:
-                    if assign.get(c[1]) != c[2]:
-                        return
-                solutions.append([k for k, v in assign.items() if v == "rot"])
-                return
-            for val in prop_values:
-                assign[i] = val
-                if all(consistent(assign, c) for c in constraints):
-                    backtrack(i + 1, assign)
-                del assign[i]
-
-        backtrack(0, {})
-        return solutions
-
-    def _symbol_candidates(self, constraints: list[tuple[str, int, str]], n_blocks: int) -> list[str]:
-        """Which symbols could still satisfy the constraints?
-
-        A symbol is viable when there exists an assignment of rot/still per block
-        that satisfies the constraints *and* places the symbol on the rotating
-        block. This is the real search space the four clues must narrow down.
-        """
-        viable = []
-        for sym in SYMBOLS:
-            for rot_idx in range(n_blocks):
-                extra = list(constraints) + [("eq", rot_idx, "rot")]
-                for i in range(n_blocks):
-                    if i != rot_idx:
-                        extra.append(("eq", i, "still"))
-                if self._solve(extra, n_blocks):
-                    viable.append(sym)
-                    break
-        return viable
+    def _solve(self, constraints: list[tuple[str, str]]) -> list[str]:
+        """Return all room codes satisfying every clue constraint."""
+        out = []
+        for code in self.options:
+            letter, number = code[0], code[1]
+            if all(
+                (kind == "column" and letter == value)
+                or (kind == "row" and number == value)
+                or (kind == "letter" and letter == value)
+                or (kind == "number" and number == value)
+                for kind, value in constraints
+            ):
+                out.append(code)
+        return out
 
     def generate_many(self, count: int, seeds: int = 1000) -> list[Puzzle]:
         rng = random.Random(seeds)
-        puzzles: list[Puzzle] = []
-        for pid in range(count):
-            puzzles.append(self._make(pid, rng))
-        return puzzles
+        return [self._make(pid, rng) for pid in range(count)]
 
     def verify_all_solvable(self, count: int = 50, seeds: int = 1000) -> bool:
         """Automatic solver check across seeds (proposal target: 1,000 seeds)."""
         for p in self.generate_many(count, seeds):
-            if self._verify(p) is False:
+            if not self._verify(p):
                 return False
         return True
 
     def _verify(self, puzzle: Puzzle) -> bool:
-        return 0 <= puzzle.solution < len(puzzle.options)
+        if not (0 <= puzzle.solution < len(puzzle.options)):
+            return False
+        constraints = self._constraints(self.target)
+        solutions = self._solve(constraints)
+        return solutions == [self.target] and puzzle.options[puzzle.solution] == self.target
 
     def _make(self, pid: int, rng: random.Random) -> Puzzle:
-        """Build a cooperative puzzle whose four clues are complementary.
-
-        The question asks which symbol the rule-breaking block carries. No single
-        clue is enough: the mover knows the block's position, the archivist knows
-        its material, the chronologist knows its cadence, and the symbolist knows
-        the symbol *category* but not which of the three it is. The team combines
-        all four constraints to pin down exactly one symbol.
-        """
-        n = self.size * self.size
-        options = list(SYMBOLS)
-        rot_idx = rng.randrange(n)
-        material = rng.choice(MATERIALS)
-        every = rng.choice([2, 3])
-        symbol_name = rng.choice(SYMBOLS)
-
-        # Ground truth for the solver.
-        constraints = [("eq", rot_idx, "rot")]
-        for i in range(n):
-            if i != rot_idx:
-                constraints.append(("eq", i, "still"))
-
-        # The symbolist sees the *shape family* of the answer, not the answer.
-        # "round" narrows circle, "pointed" narrows triangle, "flat" narrows square.
-        family = {"circle": "round", "triangle": "pointed", "square": "flat"}[symbol_name]
-
+        letter, number = self.target[0], self.target[1]
+        constraints = self._constraints(self.target)
         clues = {
-            "mover": [f"The block that breaks the rule is block {rot_idx + 1} of {n}."],
-            "symbolist": [f"Its symbol is {family} in shape."],
-            "chronologist": [f"It moves only every {_ordinal(every)} transition, never between."],
-            "archivist": [f"That block has always been made of {material}."],
+            "navigator": [f"The final door is in column {letter}."],
+            "oracle": [f"The final door is on row {number}."],
+            "timekeeper": [f"The final door's number is {number}."],
+            "archivist": [f"The final door's letter is {letter}."],
         }
-        question = "Which symbol does the block that breaks the rule carry?"
-        solution = options.index(symbol_name)
-
-        # Consistency: the full clue set must leave exactly one viable symbol.
-        viable = self._symbol_candidates(constraints, n)
-        assert symbol_name in viable, (symbol_name, viable)
-
-        return Puzzle(pid, question, symbol_name, clues, options, solution)
+        question = "Which room holds the final door? Select its code on the wristband."
+        solution = self.options.index(self.target)
+        puzzle = Puzzle(pid, question, self.target, clues, list(self.options), solution)
+        assert self._verify(puzzle)
+        return puzzle
 
     @staticmethod
     def grade(puzzle: Puzzle, choice: int) -> bool:

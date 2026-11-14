@@ -101,7 +101,7 @@ def test_clustering_assigns_styles():
 
 def test_join_event_records_player_name():
     nx = Nexus(seed=4)
-    nx.ingest({"player": "p1", "kind": "join", "data": {"name": "Hiba", "role": "mover"}})
+    nx.ingest({"player": "p1", "kind": "join", "data": {"name": "Hiba", "role": "navigator"}})
     assert nx.models["p1"].name == "Hiba"
     assert nx.models["p1"].public()["name"] == "Hiba"
 

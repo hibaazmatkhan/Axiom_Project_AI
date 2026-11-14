@@ -5,7 +5,7 @@ services:
       - "8000:8000"
     environment:
       MIN_PLAYERS: "1"
-      TRANSITION_SECONDS: "12"
+      ROUND_SECONDS: "12"
       ALLOWED_ORIGINS: "http://localhost:3000"
     volumes:
       - axiom-data:/data

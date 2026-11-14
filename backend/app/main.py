@@ -1,4 +1,4 @@
-"""AXIOM web + WebSocket server (WP3/WP5/WP7).
+"""THE LAST ROOM web + WebSocket server (WP3/WP5/WP7).
 
 HTTP endpoints: accounts, profiles, match history, leaderboard, health.
 WebSocket: real-time authoritative game loop.
@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field
 from .game import Room
 from . import db
 
-TRANSITION_SECONDS = os.getenv("TRANSITION_SECONDS")
+ROUND_SECONDS = os.getenv("ROUND_SECONDS")
 MIN_PLAYERS = int(os.getenv("MIN_PLAYERS", "1"))
 ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
-app = FastAPI(title="AXIOM game server", version="0.2.0")
+app = FastAPI(title="THE LAST ROOM game server", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 rooms: dict[str, Room] = {}
@@ -86,8 +86,8 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
     room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:8] or "LOBBY"
     room = rooms.get(room_id)
     if room is None:
-        ts = float(TRANSITION_SECONDS) if TRANSITION_SECONDS else None
-        room = rooms[room_id] = Room(room_id, transition_seconds=ts, min_players=MIN_PLAYERS)
+        ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
+        room = rooms[room_id] = Room(room_id, round_seconds=ts, min_players=MIN_PLAYERS)
     player = await room.join(ws, name, pid or None)
     if player is None:
         await ws.send_json({"type": "error", "code": "room_full", "message": "Room is full (4 players max)."})

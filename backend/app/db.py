@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS match_players (
     username TEXT,
     slot INTEGER,
     escaped INTEGER DEFAULT 0,
+    eliminated INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0,
+    revives INTEGER DEFAULT 0,
     predictions INTEGER DEFAULT 0,
     correct INTEGER DEFAULT 0,
     attributes TEXT,
@@ -81,6 +84,13 @@ class Store:
     def _init(self) -> None:
         with self.conn() as c:
             c.executescript(SCHEMA)
+            # Forward-compatible migration for databases created before v2.
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(match_players)")}
+            for name, decl in (("eliminated", "INTEGER DEFAULT 0"),
+                               ("points", "INTEGER DEFAULT 0"),
+                               ("revives", "INTEGER DEFAULT 0")):
+                if name not in cols:
+                    c.execute(f"ALTER TABLE match_players ADD COLUMN {name} {decl}")
 
     # ---- accounts --------------------------------------------------------
     def create_user(self, username: str, password: str) -> bool:
@@ -116,10 +126,13 @@ class Store:
             match_id = cur.lastrowid
             for p in summary.get("players", []):
                 c.execute(
-                    "INSERT INTO match_players(match_id, username, slot, escaped, predictions, correct, attributes)"
-                    " VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO match_players(match_id, username, slot, escaped, eliminated,"
+                    " points, revives, predictions, correct, attributes)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (match_id, p.get("name"), p.get("slot"), int(p.get("escaped", 0)),
-                     p.get("predictions", 0), p.get("correct", 0), json.dumps(p.get("attrs", {}))))
+                     int(p.get("eliminated", 0)), int(p.get("points", 0)),
+                     int(p.get("revives", 0)), p.get("predictions", 0), p.get("correct", 0),
+                     json.dumps(p.get("attrs", {}))))
                 if p.get("name"):
                     self._upsert_model(c, p["name"], p.get("attrs", {}), p.get("style", ""))
             return match_id

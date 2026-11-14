@@ -2,31 +2,62 @@
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 
-function MiniMaze() {
+const DOOR_COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"];
+const SIGILS = ["\u2660", "\u2665", "\u2666", "\u2663"];
+
+function FutureBoard() {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const c = ref.current!;
     const ctx = c.getContext("2d")!;
-    const N = 9;
+    const N = 5;
     const cell = c.width / N;
-    let cells = Array.from({ length: N }, () => Array.from({ length: N }, () => Math.random() > 0.7));
+    const makeCell = () => ({
+      edges: DOOR_COLORS.slice().sort(() => Math.random() - 0.5),
+      sigil: SIGILS[Math.floor(Math.random() * SIGILS.length)],
+    });
+    let grid = Array.from({ length: N }, () => Array.from({ length: N }, makeCell));
     let t = 0;
     let raf = 0;
     const draw = () => {
       t++;
-      if (t % 70 === 0) {
-        const sym = Math.floor(Math.random() * 3);
-        cells = cells.map((row, y) =>
-          row.map((v, x) => (x % 3 === sym || (x + y) % 4 === sym ? Math.random() > 0.5 : v))
-        );
+      if (t % 80 === 0) {
+        const row = Math.floor(Math.random() * N);
+        const shift = Math.random() > 0.5 ? 1 : -1;
+        grid[row] = grid[row].slice().sort(() => shift * (Math.random() - 0.5));
       }
       ctx.clearRect(0, 0, c.width, c.height);
       for (let y = 0; y < N; y++) {
         for (let x = 0; x < N; x++) {
-          if (!cells[y][x]) continue;
-          const glow = (Math.sin((x + y + t / 20)) + 1) / 2;
-          ctx.fillStyle = `rgba(${40 + glow * 40}, ${110 + glow * 120}, ${200 + glow * 55}, ${0.35 + glow * 0.4})`;
-          ctx.fillRect(x * cell + 1, y * cell + 1, cell - 2, cell - 2);
+          const px = x * cell;
+          const py = y * cell;
+          const isYou = x === 2 && y === 2;
+          const isExit = x === 0 && y === 4;
+          ctx.fillStyle = isExit ? "rgba(232,181,58,0.10)" : "rgba(20,22,26,0.025)";
+          ctx.fillRect(px + 6, py + 6, cell - 12, cell - 12);
+          ctx.strokeStyle = isYou ? "rgba(232,181,58,0.9)" : "rgba(20,22,26,0.14)";
+          ctx.lineWidth = isYou ? 2.5 : 1;
+          ctx.strokeRect(px + 6, py + 6, cell - 12, cell - 12);
+
+          const e = grid[y][x].edges;
+          const pulse = 0.55 + 0.35 * Math.sin(t / 24 + x + y);
+          const bars = [
+            [px + 12, py + 6, cell - 24, 4, e[0]],
+            [px + cell - 10, py + 12, 4, cell - 24, e[1]],
+            [px + 12, py + cell - 10, cell - 24, 4, e[2]],
+            [px + 6, py + 12, 4, cell - 24, e[3]],
+          ] as const;
+          for (const [bx, by, bw, bh, color] of bars) {
+            ctx.globalAlpha = pulse;
+            ctx.fillStyle = color;
+            ctx.fillRect(bx, by, bw, bh);
+            ctx.globalAlpha = 1;
+          }
+          ctx.fillStyle = "rgba(20,22,26,0.55)";
+          ctx.font = "11px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(grid[y][x].sigil, px + cell / 2, py + cell / 2);
         }
       }
       raf = requestAnimationFrame(draw);
@@ -34,137 +65,164 @@ function MiniMaze() {
     draw();
     return () => cancelAnimationFrame(raf);
   }, []);
-  return <canvas ref={ref} width={320} height={320} className="h-full w-full" />;
+  return <canvas ref={ref} width={420} height={420} className="h-full w-full" />;
 }
 
+const LOOP = [
+  ["Roll", "Every room rolls four coloured d10s. The result is this round's door capacity."],
+  ["Cross", "Pass a doorway only when both sides are open. Crossing costs a point."],
+  ["Read", "Each role sees a different slice: the grid, sigils, dice or the previous arena."],
+  ["Predict", "Call the next shift. Correct calls delay the grid; wrong ones hurry it."],
+];
+
+const ROLES = [
+  ["Navigator", "Sees the grid and exactly which rooms shifted. Calls the route.", "text-blue"],
+  ["Oracle", "Sees sigils, door colours and the cleanest possible futures.", "text-yellow"],
+  ["Timekeeper", "Sees d10 results and remaining door capacity. Calls the timing.", "text-green"],
+  ["Archivist", "Sees the previous grid as a ghost. Compares it with the living one.", "text-red"],
+];
+
 const PATTERNS = [
-  { name: "Rotation", d: "Blocks spin 90° in place.", c: "text-cir" },
-  { name: "Reflection", d: "The pattern mirrors across an axis.", c: "text-sqr" },
-  { name: "Translation", d: "Openings shift to neighbouring blocks.", c: "text-tri" },
-  { name: "Symbol", d: "Only blocks with a given symbol obey.", c: "text-ok" },
-  { name: "Sequential", d: "A schedule cycles one symbol at a time.", c: "text-cir" },
-  { name: "Conditional", d: "It fires only on some transitions.", c: "text-sqr" },
-  { name: "Compound", d: "Two transformations chain in one step.", c: "text-tri" },
+  ["Rotation", "A block of rooms turns ninety degrees in place.", "text-blue"],
+  ["Reflection", "A row or column mirrors across an axis.", "text-green"],
+  ["Translation", "Rows and columns slide, carrying players with them.", "text-yellow"],
+  ["Symbol", "Only rooms carrying a sigil obey the rule.", "text-red"],
+  ["Sequential", "A schedule moves one sigil at a time.", "text-blue"],
+  ["Conditional", "The rule fires only on certain rounds.", "text-green"],
+  ["Compound", "Two transformations chain in a single shift.", "text-yellow"],
 ];
 
 const STAGES = [
-  ["1", "Introduction", "Learn movement and interaction."],
-  ["2", "First Pattern", "The first hidden rule appears."],
-  ["3", "Cooperation", "Each role sees a different piece."],
-  ["4", "Prediction", "Call the next maze state."],
-  ["5", "Adaptive Labyrinth", "NEXUS reacts to your team."],
-  ["6", "Complex Patterns", "Rules interact and deepen."],
-  ["7", "Escape", "Combine everything and break out."],
+  ["1", "Induction", "Learn the room, the coloured doors and the d10 pedestal."],
+  ["2", "First Shift", "The grid moves. Re-read the wristband map every round."],
+  ["3", "Split", "Door capacity forces the team apart. Communication is essential."],
+  ["4", "Visions", "LED walls show possible futures. Predict before committing."],
+  ["5", "Lockdown", "The Dealer reacts to the team and seals doors."],
+  ["6", "Convergence", "Several rules interact and the grid becomes hard to read."],
+  ["7", "The Last Room", "Reach A5 with every living player and open the final door."],
 ];
 
 export default function Landing() {
   return (
-    <main className="relative min-h-screen overflow-hidden bg-void text-bone">
+    <main className="relative min-h-screen overflow-hidden bg-paper text-ink">
       <div className="pointer-events-none absolute inset-0 grid-backdrop" />
-      <div className="pointer-events-none absolute -top-40 left-1/2 h-[560px] w-[560px] -translate-x-1/2 rounded-full bg-cir/10 blur-[120px]" />
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-[560px] w-[560px] -translate-x-1/2 rounded-full bg-yellow/15 blur-[130px]" />
 
       <nav className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
         <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-lg border border-edge bg-panel text-cir shadow-glow">
-            ◆
+          <span className="grid h-9 w-9 place-items-center rounded-lg border border-ink/15 bg-white/70 text-ink shadow-card">
+            ◈
           </span>
           <span className="text-lg font-semibold tracking-[0.3em]">AXIOM</span>
+          <span className="hidden text-xs tracking-[0.3em] text-ink/50 sm:inline">THE LAST ROOM</span>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <Link href="/login" className="rounded-lg px-4 py-2 text-dim transition hover:text-bone">
+          <Link href="/login" className="rounded-lg px-4 py-2 text-ink/60 transition hover:text-ink">
             Sign in
           </Link>
           <Link
             href="/lobby"
-            className="rounded-lg bg-cir px-4 py-2 font-medium text-void transition hover:brightness-110"
+            className="rounded-lg bg-ink px-4 py-2 font-medium text-paper transition hover:brightness-110"
           >
-            Play now
+            Enter
           </Link>
         </div>
       </nav>
 
       <section className="relative z-10 mx-auto grid max-w-6xl items-center gap-12 px-6 pb-16 pt-10 md:grid-cols-2">
         <div className="animate-rise">
-          <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-edge bg-panel/60 px-3 py-1 text-xs tracking-wide text-dim">
-            <span className="h-1.5 w-1.5 animate-pulse-glow rounded-full bg-cir" />
-            AI-driven multiplayer dynamic labyrinth
+          <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white/60 px-3 py-1 text-xs tracking-wide text-ink/60">
+            <span className="h-1.5 w-1.5 animate-pulse-glow rounded-full bg-red" />
+            A four-player game of possible futures
           </p>
           <h1 className="text-5xl font-semibold leading-[1.05] tracking-tight md:text-6xl">
-            The maze has a pattern.
+            Every door is a choice.
             <br />
-            <span className="bg-gradient-to-r from-cir via-sqr to-tri bg-clip-text text-transparent">
-              Find it before it changes.
+            <span className="bg-gradient-to-r from-red via-yellow to-green bg-clip-text text-transparent">
+              Every room can move.
             </span>
           </h1>
-          <p className="mt-6 max-w-lg text-dim">
-            Four players share a labyrinth that rearranges itself by hidden, discoverable rules.
-            Observe. Hypothesise. Predict. While an AI director called <span className="text-bone">NEXUS</span>{" "}
-            studies your team and adapts the maze around you.
+          <p className="mt-6 max-w-lg text-ink/70">
+            Four players wake inside a 5×5 matrix of white cube rooms. Each room has four coloured
+            doors and a pedestal of four d10s. Cross only when both sides open, spend points to move,
+            and read the LED futures on the walls — while an AI director called{" "}
+            <span className="font-medium text-ink">The Dealer</span> learns your team and shifts the
+            grid beneath you.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/lobby"
-              className="rounded-xl bg-bone px-6 py-3 font-semibold text-void shadow-card transition hover:translate-y-[-1px]"
+              className="rounded-xl bg-ink px-6 py-3 font-semibold text-paper shadow-card transition hover:translate-y-[-1px]"
             >
-              Enter the labyrinth
+              Enter the Last Room
             </Link>
             <Link
               href="/login"
-              className="rounded-xl border border-edge px-6 py-3 font-medium text-bone transition hover:border-cir"
+              className="rounded-xl border border-ink/15 px-6 py-3 font-medium text-ink transition hover:border-ink/40"
             >
               Create account
             </Link>
           </div>
-          <p className="mt-6 text-xs text-dim">
-            Players learn the maze → NEXUS learns the players → the maze evolves → players adapt again.
+          <p className="mt-6 text-xs text-ink/50">
+            15 points. 15 rounds. A team of four. Spawn C3 · exit A5.
           </p>
         </div>
 
         <div className="relative animate-rise">
           <div className="glass relative aspect-square w-full overflow-hidden rounded-3xl p-4 shadow-card">
             <div className="absolute inset-0 opacity-90">
-              <MiniMaze />
+              <FutureBoard />
             </div>
-            <div className="absolute inset-x-0 top-0 h-px animate-scan bg-gradient-to-r from-transparent via-cir to-transparent" />
-            <div className="absolute bottom-4 left-4 rounded-lg border border-edge bg-void/80 px-3 py-2 text-xs">
-              <span className="text-dim">cycle</span>{" "}
-              <span className="mono text-cir">{Math.floor(Math.random() * 40 + 12)}</span>
-              <span className="ml-3 text-dim">rule</span> <span className="mono text-tri">symbol</span>
+            <div className="absolute inset-x-0 top-0 h-px animate-scan bg-gradient-to-r from-transparent via-yellow to-transparent" />
+            <div className="absolute bottom-4 left-4 rounded-lg border border-ink/10 bg-paper/90 px-3 py-2 text-xs">
+              <span className="text-ink/50">round</span>{" "}
+              <span className="mono text-ink">07</span>
+              <span className="ml-3 text-ink/50">door</span>{" "}
+              <span className="mono text-blue">blue</span>
+              <span className="ml-3 text-ink/50">points</span>{" "}
+              <span className="mono text-ink">09</span>
             </div>
           </div>
         </div>
       </section>
 
       <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-dim">How it works</h2>
+        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">The loop</h2>
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            ["Observe", "Watch the blocks and symbols shift between cycles."],
-            ["Recognise", "Form a hypothesis about the hidden rule."],
-            ["Predict", "Submit the next state before the timer ends."],
-            ["Adapt", "NEXUS changes the maze based on how you play."],
-          ].map(([t, d], i) => (
-            <div key={t} className="glass rounded-2xl p-5">
-              <div className="mono text-cir">{String(i + 1).padStart(2, "0")}</div>
+          {LOOP.map(([t, d], i) => (
+            <div key={t} className="rounded-2xl border border-ink/10 bg-white/60 p-5">
+              <div className="mono text-yellow">{String(i + 1).padStart(2, "0")}</div>
               <h3 className="mt-3 font-semibold">{t}</h3>
-              <p className="mt-1 text-sm text-dim">{d}</p>
+              <p className="mt-1 text-sm text-ink/60">{d}</p>
             </div>
           ))}
         </div>
       </section>
 
       <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-dim">
+        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">Four roles, one truth</h2>
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {ROLES.map(([name, d, c]) => (
+            <div key={name} className="rounded-2xl border border-ink/10 bg-white/50 p-5 transition hover:border-ink/25">
+              <h3 className={`font-semibold ${c}`}>{name}</h3>
+              <p className="mt-1 text-sm text-ink/60">{d}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
+        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">
           Seven transformation types
         </h2>
         <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {PATTERNS.map((p) => (
-            <div key={p.name} className="rounded-2xl border border-edge bg-panel/50 p-5 transition hover:border-cir/60">
-              <h3 className={`font-semibold ${p.c}`}>{p.name}</h3>
-              <p className="mt-1 text-sm text-dim">{p.d}</p>
+          {PATTERNS.map(([name, d, c]) => (
+            <div key={name} className="rounded-2xl border border-ink/10 bg-white/40 p-5 transition hover:border-ink/25">
+              <h3 className={`font-semibold ${c}`}>{name}</h3>
+              <p className="mt-1 text-sm text-ink/60">{d}</p>
             </div>
           ))}
-          <div className="rounded-2xl border border-dashed border-edge p-5 text-sm text-dim">
+          <div className="rounded-2xl border border-dashed border-ink/20 p-5 text-sm text-ink/50">
             Rules are data, not code. New patterns drop in without touching the engine.
           </div>
         </div>
@@ -172,28 +230,28 @@ export default function Landing() {
 
       <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
         <div className="flex items-end justify-between">
-          <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-dim">Seven stages</h2>
-          <span className="text-xs text-dim">from tutorial to escape</span>
+          <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">Seven stages</h2>
+          <span className="text-xs text-ink/50">from induction to the last room</span>
         </div>
         <div className="mt-6 grid gap-3 md:grid-cols-2">
           {STAGES.map(([n, name, d]) => (
-            <div key={n} className="flex items-center gap-4 rounded-2xl border border-edge bg-panel/40 p-4">
-              <span className="mono grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-edge bg-void text-cir">
+            <div key={n} className="flex items-center gap-4 rounded-2xl border border-ink/10 bg-white/40 p-4">
+              <span className="mono grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-ink/15 bg-paper text-ink">
                 {n}
               </span>
               <div>
                 <h3 className="font-medium">{name}</h3>
-                <p className="text-sm text-dim">{d}</p>
+                <p className="text-sm text-ink/60">{d}</p>
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      <footer className="relative z-10 border-t border-edge/60 px-6 py-10">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-sm text-dim sm:flex-row">
-          <span>AXIOM — AI-Driven Multiplayer Dynamic Labyrinth</span>
-          <span className="mono">FastAPI · WebSockets · Three.js · Next.js · NEXUS</span>
+      <footer className="relative z-10 border-t border-ink/10 px-6 py-10">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-sm text-ink/50 sm:flex-row">
+          <span>AXIOM · THE LAST ROOM — a game of possible futures</span>
+          <span className="mono">FastAPI · WebSockets · Three.js · Next.js · The Dealer</span>
         </div>
       </footer>
     </main>

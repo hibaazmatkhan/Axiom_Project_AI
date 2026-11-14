@@ -42,8 +42,14 @@ class PlayerModel:
     follows: int = 0
     puzzle_attempts: int = 0
     puzzle_correct: int = 0
+    waits: int = 0
+    gate_blocks: int = 0
+    unlocks: int = 0
+    hazards: int = 0
+    rounds_survived: int = 0
     escaped: bool = False
     distinct_tiles: set = field(default_factory=set)
+    distinct_rooms: set = field(default_factory=set)
 
     def vector(self) -> np.ndarray:
         return np.array([self.attrs[a] for a in ATTRIBUTES], dtype=float)
@@ -56,7 +62,8 @@ class PlayerModel:
         # Exploration: how much of the labyrinth the player has uncovered,
         # relative to a good-play coverage of 35% of the tiles.
         if self.moves:
-            coverage = len(self.distinct_tiles) / max(1, total_maze_tiles)
+            covered = len(self.distinct_rooms) if self.distinct_rooms else len(self.distinct_tiles)
+            coverage = covered / max(1, total_maze_tiles)
             self.attrs["exploration"] = min(1.0, coverage / 0.35)
         else:
             self.attrs["exploration"] = PRIOR
@@ -67,8 +74,9 @@ class PlayerModel:
         else:
             self.attrs["risk"] = PRIOR
 
-        # Cooperation: how often the player shares information with the team.
-        self.attrs["cooperation"] = min(1.0, self.shares / 3.0) if self.shares else PRIOR
+        # Cooperation: sharing information and freeing locked teammates.
+        cooperative_acts = self.shares + self.unlocks * 2
+        self.attrs["cooperation"] = min(1.0, cooperative_acts / 3.0) if cooperative_acts else PRIOR
 
         # Pattern: accuracy on transition predictions.
         self.attrs["pattern"] = (self.correct / self.predictions) if self.predictions else PRIOR
@@ -120,9 +128,26 @@ class Nexus:
             m.name = data["name"]
         if kind == "move":
             m.moves += 1
-            m.distinct_tiles.add((data.get("x"), data.get("y")))
+            if data.get("x") is not None and data.get("y") is not None:
+                m.distinct_tiles.add((data.get("x"), data.get("y")))
+            room = data.get("room")
+            if room is not None:
+                if isinstance(room, (list, tuple)):
+                    m.distinct_rooms.add(tuple(room))
+                else:
+                    m.distinct_rooms.add(str(room))
         elif kind == "bump":
             m.bumps += 1
+        elif kind in ("gate_blocked", "lockdown"):
+            m.gate_blocks += 1
+        elif kind == "wait":
+            m.waits += 1
+        elif kind == "unlock":
+            m.unlocks += 1
+        elif kind == "hazard":
+            m.hazards += 1
+        elif kind == "round":
+            m.rounds_survived += 1
         elif kind == "predict":
             m.predictions += 1
         elif kind == "predict_ok":
@@ -176,15 +201,19 @@ class Nexus:
         self.team_skill = self.team_skill or 0.0
         candidates: dict[str, float] = {}
 
-        # Strong teams -> raise complexity; weak teams -> hold/clue.
+        # Strong teams -> raise complexity / add hazards; weak teams -> clue / ease dice.
         candidates["raise_complexity"] = (self.team_skill - 0.5) * 2.0 + (0.1 if cycle > 3 else 0)
+        candidates["add_hazard"] = (self.team_skill - 0.5) * 1.2
         candidates["give_clue"] = (0.5 - self.team_skill) * 1.8
+        candidates["lower_dice"] = (0.5 - self.team_skill) * 1.4
         # If unsolvable risk appears, prioritise easing.
         candidates["shift_information"] = 0.25 * (1.0 - self.team_skill)
         candidates["hold"] = 0.2
         if not solvable:
             candidates["give_clue"] += 1.0
+            candidates["shift_information"] += 0.4
             candidates["raise_complexity"] -= 1.0
+            candidates["add_hazard"] -= 1.0
 
         # Add a small deterministic jitter so ties break reproducibly.
         for k in candidates:
@@ -196,10 +225,10 @@ class Nexus:
         self.log.append({"cycle": cycle, **self.last_action})
 
         # Apply the chosen action's effect on difficulty.
-        if action == "raise_complexity":
+        if action in ("raise_complexity", "add_hazard"):
             self.difficulty = min(1.0, self.difficulty + 0.15)
             self.complexity_level += 1
-        elif action in ("give_clue", "shift_information"):
+        elif action in ("give_clue", "shift_information", "lower_dice"):
             self.difficulty = max(-1.0, self.difficulty - 0.15)
         return self.last_action
 
