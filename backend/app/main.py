@@ -65,6 +65,26 @@ def leaderboard(limit: int = 10):
     return {"leaders": db.store.leaderboard(limit)}
 
 
+@app.get("/api/admin/rooms")
+def admin_rooms():
+    """Read-only room inventory for the admin observatory (dummy auth on client)."""
+    return {
+        "rooms": [
+            {
+                "id": rid,
+                "status": r.status,
+                "round": r.round,
+                "stage": r.stage,
+                "players": len(r.players),
+                "connected": sum(1 for p in r.players.values() if p.connected),
+                "spectators": len(r.spectators),
+                "seed": r.seed,
+            }
+            for rid, r in rooms.items()
+        ]
+    }
+
+
 @app.get("/api/stages")
 def stages():
     from .stages import STAGES
@@ -81,13 +101,31 @@ def nexus_tune(team_skill: float = 0.8, cycles: int = 8):
 # WebSocket game loop
 # ---------------------------------------------------------------------------
 @app.websocket("/ws/{room_id}")
-async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: str = ""):
+async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: str = "",
+                      spectator: int = 0):
     await ws.accept()
     room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:8] or "LOBBY"
     room = rooms.get(room_id)
     if room is None:
         ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
         room = rooms[room_id] = Room(room_id, round_seconds=ts, min_players=MIN_PLAYERS)
+    if spectator:
+        await room.watch(ws)
+        try:
+            while True:
+                try:
+                    msg = await ws.receive_json()
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(msg, dict) and msg.get("type") == "ping":
+                    await ws.send_json({"type": "pong"})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await room.unwatch(ws)
+            if not any(p.connected for p in room.players.values()) and not room.spectators:
+                rooms.pop(room_id, None)
+        return
     player = await room.join(ws, name, pid or None)
     if player is None:
         await ws.send_json({"type": "error", "code": "room_full", "message": "Room is full (4 players max)."})
@@ -110,6 +148,6 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
         pass
     finally:
         await room.leave(player)
-        # only drop the room when nobody is around to reconnect
-        if not any(p.connected for p in room.players.values()):
+        # only drop the room when nobody is around to reconnect or observe
+        if not any(p.connected for p in room.players.values()) and not room.spectators:
             rooms.pop(room_id, None)

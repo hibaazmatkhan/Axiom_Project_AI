@@ -131,6 +131,10 @@ class Room:
         self._counter = 0
         self._pending_finish = False
         self.started_at = time.time()
+        # Read-only admin observers. They never take a player slot and receive
+        # the unfiltered arena, dice, visions and event timeline.
+        self.spectators: list[WebSocket] = []
+        self._admin_push_at = 0.0
 
     # ---- stage / rules ---------------------------------------------------
     def _load_stage(self) -> None:
@@ -223,6 +227,99 @@ class Room:
         for p in list(self.players.values()):
             if p.connected:
                 await self.send(p, {"type": "state", "state": self.snapshot(p)})
+        await self.broadcast_admin()
+
+    # ---- admin observers ----------------------------------------------------
+    def admin_arena(self) -> dict:
+        """Unfiltered arena: every sigil, sanction, roll and capacity."""
+        arena = self.arena.to_public()
+        for pub, room in zip(arena["rooms"], self.arena.rooms):
+            pub["sigil"] = room.sigil
+            pub["sanction"] = room.sanction
+            pub["revealed"] = True
+            pub["future"] = room.future
+            for d in DIRECTIONS:
+                door = room.doors[d]
+                pub["doors"][d]["capacity"] = door.capacity
+                pub["doors"][d]["roll"] = door.last_roll
+        return arena
+
+    def timeline_public(self, limit: int = 160) -> list[dict]:
+        names = {p.id: p.name for p in self.players.values()}
+        start = max(0, len(self.events) - limit)
+        out = []
+        for i in range(start, len(self.events)):
+            ev = self.events[i]
+            pid = ev.get("player")
+            out.append({
+                "i": i + 1,
+                "t": round(ev.get("t", 0.0), 3),
+                "player": names.get(pid, "The Dealer" if not pid else str(pid)),
+                "player_id": pid,
+                "kind": ev.get("kind", "event"),
+                "data": ev.get("data", {}),
+            })
+        return out
+
+    def admin_public(self) -> dict:
+        remaining = None
+        if self.status == "running" and self.next_round_at is not None:
+            remaining = max(0.0, self.next_round_at - time.time())
+        return {
+            "type": "admin_state",
+            "room": self.id,
+            "status": self.status,
+            "round": self.round,
+            "max_rounds": self.max_rounds,
+            "stage": self.stage,
+            "stage_name": stage_config(self.stage)["name"],
+            "max_stage": MAX_STAGE,
+            "arena": self.admin_arena(),
+            "players": self.players_public(),
+            "dice": self.dice,
+            "visions": self.visions,
+            "exit_unsealed": self.arena.exit_unsealed,
+            "next_round_in": remaining,
+            "round_seconds": self.round_seconds,
+            "min_players": self.min_players,
+            "rule_count": len(self.engines),
+            "nexus": self.nexus.team_report(),
+            "pa": self.pa,
+            "last_shift": self.last_shift,
+            "puzzle": self.puzzle if self.puzzle else None,
+            "timeline": self.timeline_public(),
+            "seed": self.seed,
+            "started_at": self.started_at,
+            "updated_at": time.time(),
+        }
+
+    async def watch(self, ws: WebSocket) -> None:
+        self.spectators.append(ws)
+        try:
+            await ws.send_json(self.admin_public())
+        except Exception:
+            pass
+
+    async def unwatch(self, ws: WebSocket) -> None:
+        if ws in self.spectators:
+            self.spectators.remove(ws)
+
+    async def broadcast_admin(self, force: bool = False) -> None:
+        if not self.spectators:
+            return
+        now = time.time()
+        if not force and now - self._admin_push_at < 0.4:
+            return
+        self._admin_push_at = now
+        payload = self.admin_public()
+        dead: list[WebSocket] = []
+        for ws in list(self.spectators):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            await self.unwatch(ws)
 
     # ---- lifecycle ----------------------------------------------------------
     async def join(self, ws: WebSocket, name: str, player_id: str | None = None) -> Player | None:
@@ -553,12 +650,14 @@ class Room:
         await self.broadcast({"type": "team_note", "from": player.name, "role": role,
                               "text": text}, exclude=player.id)
         await self.send(player, {"type": "team_note_ack"})
+        await self.broadcast_admin()
 
     async def team_chat(self, player: Player, text) -> None:
         text = re.sub(r"[^\w \-.,!?']", "", str(text or ""))[:200]
         if text:
             await self.broadcast({"type": "chat", "from": player.name, "color": player.color,
                                   "text": text})
+            await self.broadcast_admin()
 
     async def maybe_start(self) -> None:
         connected = [p for p in self.players.values() if p.connected]
@@ -698,6 +797,7 @@ class Room:
             else:
                 view["dice"] = {current: payload["dice"].get(current, {})} if current else {}
             await self.send(p, view)
+        await self.broadcast_admin(force=True)
 
     def puzzle_public(self, role: str) -> dict | None:
         if not self.puzzle:
@@ -753,6 +853,7 @@ class Room:
                 self.purge_disconnected()
                 if not any(p.connected for p in self.players.values()):
                     return
+                await self.broadcast_admin()
                 if (self.status == "running" and self.next_round_at is not None
                         and time.time() >= self.next_round_at):
                     await self.broadcast_round()
