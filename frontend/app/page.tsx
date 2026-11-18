@@ -1,85 +1,64 @@
-"use client";
 import Link from "next/link";
-import { useEffect, useRef } from "react";
+import BroadcastBoard from "@/components/BroadcastBoard";
+import PageShell from "@/components/PageShell";
+import { BroadcastKicker, SuitMark } from "@/components/Brand";
 
-const DOOR_COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"];
-const SIGILS = ["\u2660", "\u2665", "\u2666", "\u2663"];
+const STATS = [
+  ["04", "Players"],
+  ["5×5", "Moving rooms"],
+  ["15", "Starting points"],
+  ["07", "Stages"],
+];
 
-function FutureBoard() {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current!;
-    const ctx = c.getContext("2d")!;
-    const N = 5;
-    const cell = c.width / N;
-    const makeCell = () => ({
-      edges: DOOR_COLORS.slice().sort(() => Math.random() - 0.5),
-      sigil: SIGILS[Math.floor(Math.random() * SIGILS.length)],
-    });
-    let grid = Array.from({ length: N }, () => Array.from({ length: N }, makeCell));
-    let t = 0;
-    let raf = 0;
-    const draw = () => {
-      t++;
-      if (t % 80 === 0) {
-        const row = Math.floor(Math.random() * N);
-        const shift = Math.random() > 0.5 ? 1 : -1;
-        grid[row] = grid[row].slice().sort(() => shift * (Math.random() - 0.5));
-      }
-      ctx.clearRect(0, 0, c.width, c.height);
-      for (let y = 0; y < N; y++) {
-        for (let x = 0; x < N; x++) {
-          const px = x * cell;
-          const py = y * cell;
-          const isYou = x === 2 && y === 2;
-          const isExit = x === 0 && y === 4;
-          ctx.fillStyle = isExit ? "rgba(232,181,58,0.10)" : "rgba(20,22,26,0.025)";
-          ctx.fillRect(px + 6, py + 6, cell - 12, cell - 12);
-          ctx.strokeStyle = isYou ? "rgba(232,181,58,0.9)" : "rgba(20,22,26,0.14)";
-          ctx.lineWidth = isYou ? 2.5 : 1;
-          ctx.strokeRect(px + 6, py + 6, cell - 12, cell - 12);
-
-          const e = grid[y][x].edges;
-          const pulse = 0.55 + 0.35 * Math.sin(t / 24 + x + y);
-          const bars = [
-            [px + 12, py + 6, cell - 24, 4, e[0]],
-            [px + cell - 10, py + 12, 4, cell - 24, e[1]],
-            [px + 12, py + cell - 10, cell - 24, 4, e[2]],
-            [px + 6, py + 12, 4, cell - 24, e[3]],
-          ] as const;
-          for (const [bx, by, bw, bh, color] of bars) {
-            ctx.globalAlpha = pulse;
-            ctx.fillStyle = color;
-            ctx.fillRect(bx, by, bw, bh);
-            ctx.globalAlpha = 1;
-          }
-          ctx.fillStyle = "rgba(20,22,26,0.55)";
-          ctx.font = "11px ui-monospace, monospace";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(grid[y][x].sigil, px + cell / 2, py + cell / 2);
-        }
-      }
-      raf = requestAnimationFrame(draw);
-    };
-    draw();
-    return () => cancelAnimationFrame(raf);
-  }, []);
-  return <canvas ref={ref} width={420} height={420} className="h-full w-full" />;
-}
+const TICKER = [
+  "THE DEALER IS WATCHING",
+  "FOUR PLAYERS ENTER",
+  "EVERY DOOR IS A CHOICE",
+  "THE GRID MOVES EVERY ROUND",
+  "PREDICT THE SHIFT",
+  "UNSEAL THE FINAL DOOR AT A5",
+];
 
 const LOOP = [
-  ["Roll", "Every room rolls four coloured d10s. The result is this round's door capacity."],
-  ["Cross", "Pass a doorway only when both sides are open. Crossing costs a point."],
-  ["Read", "Each role sees a different slice: the grid, sigils, dice or the previous arena."],
-  ["Predict", "Call the next shift. Correct calls delay the grid; wrong ones hurry it."],
+  ["01", "Roll", "Four coloured d10s set the capacity of every doorway."],
+  ["02", "Cross", "Both rooms must open the same side. Crossing spends a point."],
+  ["03", "Read", "Each role sees a different slice of the truth."],
+  ["04", "Predict", "Call the next shift. Correct calls delay the arena."],
 ];
 
 const ROLES = [
-  ["Navigator", "Sees the grid and exactly which rooms shifted. Calls the route.", "text-blue"],
-  ["Oracle", "Sees sigils, door colours and the cleanest possible futures.", "text-yellow"],
-  ["Timekeeper", "Sees d10 results and remaining door capacity. Calls the timing.", "text-green"],
-  ["Archivist", "Sees the previous grid as a ghost. Compares it with the living one.", "text-red"],
+  {
+    name: "Navigator",
+    suit: "\u2660",
+    tag: "Route",
+    tone: "text-blue",
+    border: "group-hover:border-blue/50",
+    desc: "Sees the grid and exactly which rooms shifted. Calls the route.",
+  },
+  {
+    name: "Oracle",
+    suit: "\u2665",
+    tag: "Visions",
+    tone: "text-red",
+    border: "group-hover:border-red/50",
+    desc: "Sees sigils, door colours and the cleanest possible futures.",
+  },
+  {
+    name: "Timekeeper",
+    suit: "\u2666",
+    tag: "Fate",
+    tone: "text-yellow",
+    border: "group-hover:border-yellow/50",
+    desc: "Sees every roll and the capacity left behind each door.",
+  },
+  {
+    name: "Archivist",
+    suit: "\u2663",
+    tag: "Memory",
+    tone: "text-green",
+    border: "group-hover:border-green/50",
+    desc: "Sees the previous arena as a ghost and compares it to the living grid.",
+  },
 ];
 
 const PATTERNS = [
@@ -93,167 +72,367 @@ const PATTERNS = [
 ];
 
 const STAGES = [
-  ["1", "Induction", "Learn the room, the coloured doors and the d10 pedestal."],
-  ["2", "First Shift", "The grid moves. Re-read the wristband map every round."],
-  ["3", "Split", "Door capacity forces the team apart. Communication is essential."],
-  ["4", "Visions", "LED walls show possible futures. Predict before committing."],
-  ["5", "Lockdown", "The Dealer reacts to the team and seals doors."],
-  ["6", "Convergence", "Several rules interact and the grid becomes hard to read."],
-  ["7", "The Last Room", "Reach A5 with every living player and open the final door."],
+  ["01", "Induction", "Learn the room, the coloured doors and the d10 pedestal."],
+  ["02", "First Shift", "The grid moves. Re-read the wristband every round."],
+  ["03", "Split", "Capacity forces the team apart. Communication becomes survival."],
+  ["04", "Visions", "LED walls show possible futures. Predict before committing."],
+  ["05", "Lockdown", "The Dealer reacts to the team and seals doors."],
+  ["06", "Convergence", "Several rules interact and the grid becomes hard to read."],
+  ["07", "The Last Room", "Reach A5 with every living player and open the final door."],
 ];
+
+function SectionHeading({
+  eyebrow,
+  title,
+  copy,
+}: {
+  eyebrow: string;
+  title: string;
+  copy?: string;
+}) {
+  return (
+    <div className="max-w-2xl">
+      <p className="mono text-[10px] uppercase tracking-[0.38em] text-gold">{eyebrow}</p>
+      <h2 className="mt-3 font-display text-4xl uppercase leading-[0.95] tracking-[0.04em] text-bone sm:text-5xl">
+        {title}
+      </h2>
+      {copy && <p className="mt-4 text-sm leading-relaxed text-dim">{copy}</p>}
+    </div>
+  );
+}
 
 export default function Landing() {
   return (
-    <main className="relative min-h-screen overflow-hidden bg-paper text-ink">
-      <div className="pointer-events-none absolute inset-0 grid-backdrop" />
-      <div className="pointer-events-none absolute -top-40 left-1/2 h-[560px] w-[560px] -translate-x-1/2 rounded-full bg-yellow/15 blur-[130px]" />
+    <PageShell>
+      <main>
+        <section className="relative mx-auto grid max-w-7xl gap-12 px-4 pb-16 pt-12 sm:px-6 lg:grid-cols-[1.04fr_0.96fr] lg:items-center lg:pb-24 lg:pt-20">
+          <div className="relative z-10 animate-rise">
+            <BroadcastKicker tone="red">
+              <span className="signal-dot" />
+              Live broadcast · Round 07
+            </BroadcastKicker>
 
-      <nav className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-        <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-lg border border-ink/15 bg-white/70 text-ink shadow-card">
-            ◈
-          </span>
-          <span className="text-lg font-semibold tracking-[0.3em]">AXIOM</span>
-          <span className="hidden text-xs tracking-[0.3em] text-ink/50 sm:inline">THE LAST ROOM</span>
-        </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Link href="/login" className="rounded-lg px-4 py-2 text-ink/60 transition hover:text-ink">
-            Sign in
-          </Link>
-          <Link
-            href="/lobby"
-            className="rounded-lg bg-ink px-4 py-2 font-medium text-paper transition hover:brightness-110"
-          >
-            Enter
-          </Link>
-        </div>
-      </nav>
+            <h1 className="mt-7 font-display text-[4.5rem] uppercase leading-[0.82] tracking-[0.015em] text-bone sm:text-[6rem] lg:text-[8.2rem]">
+              The Last
+              <span className="block text-red red-glow">Room</span>
+            </h1>
 
-      <section className="relative z-10 mx-auto grid max-w-6xl items-center gap-12 px-6 pb-16 pt-10 md:grid-cols-2">
-        <div className="animate-rise">
-          <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-ink/15 bg-white/60 px-3 py-1 text-xs tracking-wide text-ink/60">
-            <span className="h-1.5 w-1.5 animate-pulse-glow rounded-full bg-red" />
-            A four-player game of possible futures
-          </p>
-          <h1 className="text-5xl font-semibold leading-[1.05] tracking-tight md:text-6xl">
-            Every door is a choice.
-            <br />
-            <span className="bg-gradient-to-r from-red via-yellow to-green bg-clip-text text-transparent">
-              Every room can move.
-            </span>
-          </h1>
-          <p className="mt-6 max-w-lg text-ink/70">
-            Four players wake inside a 5×5 matrix of white cube rooms. Each room has four coloured
-            doors and a pedestal of four d10s. Cross only when both sides open, spend points to move,
-            and read the LED futures on the walls — while an AI director called{" "}
-            <span className="font-medium text-ink">The Dealer</span> learns your team and shifts the
-            grid beneath you.
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href="/lobby"
-              className="rounded-xl bg-ink px-6 py-3 font-semibold text-paper shadow-card transition hover:translate-y-[-1px]"
-            >
-              Enter the Last Room
-            </Link>
-            <Link
-              href="/login"
-              className="rounded-xl border border-ink/15 px-6 py-3 font-medium text-ink transition hover:border-ink/40"
-            >
-              Create account
-            </Link>
-          </div>
-          <p className="mt-6 text-xs text-ink/50">
-            15 points. 15 rounds. A team of four. Spawn C3 · exit A5.
-          </p>
-        </div>
+            <p className="mono mt-6 text-[10px] uppercase tracking-[0.42em] text-gold/90">
+              Alice in Borderland · A game of possible futures
+            </p>
 
-        <div className="relative animate-rise">
-          <div className="glass relative aspect-square w-full overflow-hidden rounded-3xl p-4 shadow-card">
-            <div className="absolute inset-0 opacity-90">
-              <FutureBoard />
+            <p className="mt-6 max-w-xl text-sm leading-relaxed text-dim sm:text-base">
+              Four players wake inside a five-by-five matrix of white cube rooms. Every door is
+              coloured. Every room can move. Read the broadcast, trust your role, and reach the final
+              door at <span className="mono text-bone">A5</span> before the points run out.
+            </p>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/lobby"
+                className="group inline-flex items-center gap-3 border border-gold bg-gold px-6 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-void transition hover:bg-bone hover:border-bone focus-ring"
+              >
+                Enter the arena
+                <span className="transition group-hover:translate-x-1">→</span>
+              </Link>
+              <Link
+                href="/login"
+                className="inline-flex items-center border border-bone/20 bg-bone/[0.03] px-6 py-3 text-sm font-medium uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon focus-ring"
+              >
+                Create account
+              </Link>
             </div>
-            <div className="absolute inset-x-0 top-0 h-px animate-scan bg-gradient-to-r from-transparent via-yellow to-transparent" />
-            <div className="absolute bottom-4 left-4 rounded-lg border border-ink/10 bg-paper/90 px-3 py-2 text-xs">
-              <span className="text-ink/50">round</span>{" "}
-              <span className="mono text-ink">07</span>
-              <span className="ml-3 text-ink/50">door</span>{" "}
-              <span className="mono text-blue">blue</span>
-              <span className="ml-3 text-ink/50">points</span>{" "}
-              <span className="mono text-ink">09</span>
+
+            <div className="mt-9 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {STATS.map(([value, label]) => (
+                <div key={label} className="border border-bone/10 bg-bone/[0.025] px-3 py-3">
+                  <div className="font-display text-2xl leading-none text-gold">{value}</div>
+                  <div className="mono mt-1 text-[9px] uppercase tracking-[0.2em] text-dim">
+                    {label}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
-      </section>
 
-      <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">The loop</h2>
-        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {LOOP.map(([t, d], i) => (
-            <div key={t} className="rounded-2xl border border-ink/10 bg-white/60 p-5">
-              <div className="mono text-yellow">{String(i + 1).padStart(2, "0")}</div>
-              <h3 className="mt-3 font-semibold">{t}</h3>
-              <p className="mt-1 text-sm text-ink/60">{d}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+          <div className="relative animate-rise">
+            <div className="pointer-events-none absolute -inset-8 rounded-full bg-red/10 blur-[90px]" />
+            <SuitMark
+              className="pointer-events-none absolute -right-2 -top-10 hidden text-6xl text-red/25 suit-float sm:block"
+              animated
+            />
 
-      <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">Four roles, one truth</h2>
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {ROLES.map(([name, d, c]) => (
-            <div key={name} className="rounded-2xl border border-ink/10 bg-white/50 p-5 transition hover:border-ink/25">
-              <h3 className={`font-semibold ${c}`}>{name}</h3>
-              <p className="mt-1 text-sm text-ink/60">{d}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+            <div className="broadcast-panel panel-cut relative overflow-hidden p-3 sm:p-4">
+              <div className="flex items-center justify-between gap-4 border-b border-bone/10 pb-3">
+                <span className="mono flex items-center gap-2 text-[10px] uppercase tracking-[0.28em] text-red">
+                  <span className="signal-dot" />
+                  Arena feed
+                </span>
+                <span className="mono text-[10px] uppercase tracking-[0.24em] text-dim">
+                  5×5 · live
+                </span>
+              </div>
 
-      <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">
-          Seven transformation types
-        </h2>
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {PATTERNS.map(([name, d, c]) => (
-            <div key={name} className="rounded-2xl border border-ink/10 bg-white/40 p-5 transition hover:border-ink/25">
-              <h3 className={`font-semibold ${c}`}>{name}</h3>
-              <p className="mt-1 text-sm text-ink/60">{d}</p>
-            </div>
-          ))}
-          <div className="rounded-2xl border border-dashed border-ink/20 p-5 text-sm text-ink/50">
-            Rules are data, not code. New patterns drop in without touching the engine.
-          </div>
-        </div>
-      </section>
+              <div className="relative mt-3 aspect-square overflow-hidden border border-bone/10 bg-void">
+                <BroadcastBoard />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-void via-transparent to-void/25" />
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px animate-scan bg-gradient-to-r from-transparent via-gold to-transparent" />
+                <div className="absolute left-3 top-3 border border-red/40 bg-void/80 px-2 py-1">
+                  <span className="mono text-[9px] uppercase tracking-[0.2em] text-red">Rec</span>
+                </div>
+                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-3">
+                  <div className="border border-bone/15 bg-void/85 px-3 py-2 backdrop-blur">
+                    <div className="mono text-[9px] uppercase tracking-[0.22em] text-dim">
+                      You · C3
+                    </div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-gold" />
+                      <span className="mono text-xs text-bone">9 pts</span>
+                    </div>
+                  </div>
+                  <div className="border border-gold/40 bg-gold/10 px-3 py-2 text-right">
+                    <div className="mono text-[9px] uppercase tracking-[0.22em] text-gold/80">
+                      Exit
+                    </div>
+                    <div className="mono mt-1 text-xs text-gold">A5 sealed</div>
+                  </div>
+                </div>
+              </div>
 
-      <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-        <div className="flex items-end justify-between">
-          <h2 className="text-sm font-medium uppercase tracking-[0.3em] text-ink/50">Seven stages</h2>
-          <span className="text-xs text-ink/50">from induction to the last room</span>
-        </div>
-        <div className="mt-6 grid gap-3 md:grid-cols-2">
-          {STAGES.map(([n, name, d]) => (
-            <div key={n} className="flex items-center gap-4 rounded-2xl border border-ink/10 bg-white/40 p-4">
-              <span className="mono grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-ink/15 bg-paper text-ink">
-                {n}
-              </span>
-              <div>
-                <h3 className="font-medium">{name}</h3>
-                <p className="text-sm text-ink/60">{d}</p>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                {[
+                  ["Door", "Blue"],
+                  ["Shift", "07.4s"],
+                  ["Team", "4/4"],
+                ].map(([label, value]) => (
+                  <div key={label} className="border border-bone/10 bg-bone/[0.025] px-2 py-2">
+                    <div className="mono text-[8px] uppercase tracking-[0.22em] text-dim">{label}</div>
+                    <div className="mono mt-1 text-[11px] text-bone">{value}</div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
-      </section>
+          </div>
+        </section>
 
-      <footer className="relative z-10 border-t border-ink/10 px-6 py-10">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 text-sm text-ink/50 sm:flex-row">
-          <span>AXIOM · THE LAST ROOM — a game of possible futures</span>
-          <span className="mono">FastAPI · WebSockets · Three.js · Next.js · The Dealer</span>
+        <div className="ticker relative z-10">
+          <div className="ticker-track">
+            {[0, 1].map((copy) => (
+              <div
+                key={copy}
+                className="ticker-segment"
+                aria-hidden={copy === 1 ? true : undefined}
+              >
+                {TICKER.map((item) => (
+                  <span key={`${copy}-${item}`} className="flex items-center gap-4">
+                    <span className="mono text-[10px] uppercase tracking-[0.28em] text-dim">
+                      {item}
+                    </span>
+                    <span className="text-[8px] text-gold">◆</span>
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
-      </footer>
-    </main>
+
+        <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
+          <SectionHeading
+            eyebrow="The loop"
+            title="Four moves. No safe door."
+            copy="The arena is server-authoritative and every intent is validated. Points are life, time is pressure, and the grid never stays still."
+          />
+          <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {LOOP.map(([number, title, description]) => (
+              <article
+                key={number}
+                className="group relative border border-bone/10 bg-bone/[0.025] p-5 transition hover:-translate-y-1 hover:border-gold/40 hover:bg-bone/[0.045]"
+              >
+                <div className="font-display text-3xl leading-none text-gold/80">{number}</div>
+                <h3 className="mt-5 text-lg font-semibold text-bone">{title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-dim">{description}</p>
+                <span className="absolute bottom-0 left-0 h-px w-0 bg-gold transition-all duration-500 group-hover:w-full" />
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="border-y border-bone/10 bg-coal/50">
+          <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
+            <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
+              <SectionHeading
+                eyebrow="Four roles · one truth"
+                title="You cannot see the whole game."
+                copy="Information is asymmetric by design. The Navigator sees movement, the Oracle sees futures, the Timekeeper sees fate, and the Archivist sees what the room used to be."
+              />
+              <p className="mono max-w-xs text-[10px] uppercase leading-relaxed tracking-[0.2em] text-ash">
+                Every role receives a different server-filtered slice. No client can see the hidden
+                rule.
+              </p>
+            </div>
+
+            <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {ROLES.map((role) => (
+                <article
+                  key={role.name}
+                  className={`group border border-bone/10 bg-void/50 p-5 transition hover:-translate-y-1 ${role.border}`}
+                >
+                  <div className={`font-display text-5xl leading-none ${role.tone}`}>{role.suit}</div>
+                  <div className="mono mt-5 text-[9px] uppercase tracking-[0.3em] text-ash">
+                    {role.tag}
+                  </div>
+                  <h3 className={`mt-1 text-lg font-semibold ${role.tone}`}>{role.name}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-dim">{role.desc}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
+          <SectionHeading
+            eyebrow="Seven transformations"
+            title="The room is the enemy."
+            copy="Rules are data, not code. Each stage introduces fresh transformations and combines them into patterns the team has to recognise before the next shift."
+          />
+          <div className="mt-8 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {PATTERNS.map(([name, description, tone]) => (
+              <div
+                key={name}
+                className="border border-bone/[0.08] bg-bone/[0.02] px-4 py-4 transition hover:border-bone/25 hover:bg-bone/[0.04]"
+              >
+                <h3 className={`text-sm font-semibold ${tone}`}>{name}</h3>
+                <p className="mt-1 text-xs leading-relaxed text-dim">{description}</p>
+              </div>
+            ))}
+            <div className="border border-dashed border-bone/15 px-4 py-4 text-xs leading-relaxed text-ash">
+              New transformation types can be added without touching the game engine.
+            </div>
+          </div>
+        </section>
+
+        <section className="border-y border-bone/10 bg-coal/50">
+          <div className="mx-auto grid max-w-7xl gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:py-24">
+            <div>
+              <SectionHeading
+                eyebrow="Seven stages"
+                title="From induction to the last room."
+                copy="The Dealer watches how the team learns, then changes the arena in response. The broadcast moves from simple pattern recognition to compound rules and lockdowns."
+              />
+              <Link
+                href="/lobby"
+                className="mt-7 inline-flex items-center gap-2 border-b border-gold/40 pb-1 text-sm uppercase tracking-[0.18em] text-gold transition hover:border-gold"
+              >
+                Start the broadcast <span>→</span>
+              </Link>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              {STAGES.map(([number, name, description]) => (
+                <div
+                  key={number}
+                  className="group flex gap-4 border border-bone/10 bg-void/60 p-4 transition hover:border-gold/35"
+                >
+                  <span className="mono flex h-9 w-9 shrink-0 items-center justify-center border border-bone/15 text-xs text-gold transition group-hover:border-gold/50">
+                    {number}
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-semibold text-bone">{name}</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-dim">{description}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
+          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="broadcast-panel panel-cut relative overflow-hidden p-6 sm:p-9">
+              <BroadcastKicker tone="neon">The Dealer · NEXUS</BroadcastKicker>
+              <blockquote className="mt-6 font-display text-3xl uppercase leading-[1.02] tracking-[0.03em] text-bone sm:text-4xl">
+                “The arena does not get harder. It gets more honest.”
+              </blockquote>
+              <p className="mt-5 max-w-xl text-sm leading-relaxed text-dim">
+                A six-attribute player model, k-means clustering and utility-based adaptation let
+                The Dealer choose between raising complexity, adding hazards, giving clues, lowering
+                dice or shifting information.
+              </p>
+              <div className="mt-7 flex flex-wrap gap-2">
+                {["A* search", "CSP", "k-means", "Utility AI", "Pattern engine"].map((tag) => (
+                  <span
+                    key={tag}
+                    className="mono border border-bone/15 bg-bone/[0.03] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-dim"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-3">
+              {[
+                ["Team skill", "82%", "from-blue to-neon"],
+                ["Arena pressure", "64%", "from-green via-yellow to-red"],
+                ["Rule complexity", "71%", "from-yellow to-gold"],
+              ].map(([label, value, tone]) => (
+                <div key={label} className="border border-bone/10 bg-bone/[0.025] p-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="mono text-[10px] uppercase tracking-[0.22em] text-dim">
+                      {label}
+                    </span>
+                    <span className="mono text-sm text-bone">{value}</span>
+                  </div>
+                  <div className="mt-3 h-1.5 overflow-hidden bg-bone/10">
+                    <div
+                      className={`h-full bg-gradient-to-r ${tone}`}
+                      style={{ width: value.replace("%", "") + "%" }}
+                    />
+                  </div>
+                </div>
+              ))}
+              <div className="border border-gold/30 bg-gold/[0.05] p-5">
+                <div className="mono text-[10px] uppercase tracking-[0.22em] text-gold">
+                  Next action
+                </div>
+                <p className="mt-2 text-sm text-bone">
+                  Shift information. The team is solving patterns faster than it is coordinating.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="relative mx-auto max-w-7xl px-4 pb-20 sm:px-6 lg:pb-28">
+          <div className="relative overflow-hidden border border-gold/35 bg-gold/[0.04] px-6 py-12 text-center sm:px-10 sm:py-16">
+            <SuitMark className="pointer-events-none absolute -left-4 -top-6 text-7xl text-gold/10" />
+            <SuitMark className="pointer-events-none absolute -bottom-7 -right-3 text-7xl text-red/10" />
+            <p className="mono text-[10px] uppercase tracking-[0.4em] text-gold">
+              The broadcast is live
+            </p>
+            <h2 className="mx-auto mt-4 max-w-3xl font-display text-5xl uppercase leading-[0.9] tracking-[0.03em] text-bone sm:text-6xl">
+              Four players. One final door.
+            </h2>
+            <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-dim">
+              Assemble your team, choose a role, and find out what the room has planned for you.
+            </p>
+            <div className="mt-7 flex flex-wrap justify-center gap-3">
+              <Link
+                href="/lobby"
+                className="border border-gold bg-gold px-7 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-void transition hover:bg-bone hover:border-bone focus-ring"
+              >
+                Enter the Last Room
+              </Link>
+              <Link
+                href="/login"
+                className="border border-bone/20 px-7 py-3 text-sm font-medium uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon focus-ring"
+              >
+                Create your account
+              </Link>
+            </div>
+          </div>
+        </section>
+      </main>
+    </PageShell>
   );
 }

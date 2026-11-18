@@ -9,10 +9,15 @@ script asserts a terminal state was reached and persisted, not that the team won
 import asyncio
 import json
 import os
+import sys
 import urllib.request
 from collections import deque
 
 import websockets
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app import config  # noqa: E402
 
 BASE = os.getenv("AXIOM_WS", "ws://localhost:8000")
 HTTP = os.getenv("AXIOM_HTTP", "http://localhost:8000")
@@ -116,22 +121,36 @@ async def main():
     with urllib.request.urlopen(f"{HTTP}/health", timeout=5) as r:
         assert json.loads(r.read())["ok"]
 
-    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "axiom.db")
-    if os.path.exists(db_path):
-        import sqlite3
-        con = sqlite3.connect(db_path)
-        row = con.execute(
-            "SELECT room, winner, cycles, team_skill FROM matches WHERE room=?"
-            " ORDER BY id DESC LIMIT 1",
-            (room,),
-        ).fetchone()
-        con.close()
-        assert row is not None, "match was not persisted"
+    if config.supabase_match_store_enabled():
+        import psycopg
+
+        with psycopg.connect(config.SUPABASE_DB_URL, connect_timeout=15) as con:
+            row = con.execute(
+                "SELECT room, winner, cycles, team_skill FROM public.matches"
+                " WHERE room=%s ORDER BY created_at DESC LIMIT 1",
+                (room,),
+            ).fetchone()
+        assert row is not None, "match was not persisted to Supabase"
         assert row[1] == int(over["won"]), "stored winner does not match game_over"
-        print("persisted:", row)
+        print("persisted to Supabase:", row)
         print("DB OK")
     else:
-        print("DB OK (skipped, no database file)")
+        db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "axiom.db")
+        if os.path.exists(db_path):
+            import sqlite3
+            con = sqlite3.connect(db_path)
+            row = con.execute(
+                "SELECT room, winner, cycles, team_skill FROM matches WHERE room=?"
+                " ORDER BY id DESC LIMIT 1",
+                (room,),
+            ).fetchone()
+            con.close()
+            assert row is not None, "match was not persisted"
+            assert row[1] == int(over["won"]), "stored winner does not match game_over"
+            print("persisted:", row)
+            print("DB OK")
+        else:
+            print("DB OK (skipped, no database file)")
 
 
 if __name__ == "__main__":

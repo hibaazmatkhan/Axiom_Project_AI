@@ -13,6 +13,7 @@ round_start -> shift_grid -> roll_dice -> choose_doors -> resolve_lockdowns
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 import time
@@ -35,6 +36,8 @@ from .nexus import Nexus
 from .knowledge import KnowledgeBase, PuzzleGenerator
 from .roles import ROLES, filter_arena, filter_round, filter_snapshot, filter_visions, role_for_slot
 from . import fate, db
+
+logger = logging.getLogger(__name__)
 
 MAX_PLAYERS = 4
 COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"]
@@ -60,6 +63,8 @@ class Player:
     color: str
     role: str
     room_id: str
+    uid: str | None = None
+    verified: bool = False
     escaped: bool = False
     ready: bool = False
     connected: bool = True
@@ -322,17 +327,21 @@ class Room:
             await self.unwatch(ws)
 
     # ---- lifecycle ----------------------------------------------------------
-    async def join(self, ws: WebSocket, name: str, player_id: str | None = None) -> Player | None:
+    async def join(self, ws: WebSocket, name: str, player_id: str | None = None,
+                   uid: str | None = None, verified: bool = False) -> Player | None:
         if player_id and player_id in self.players:
             p = self.players[player_id]
-            p.ws = ws
-            p.connected = True
-            if self.arena.room_by_id(p.room_id) is None:
-                p.room_id = self.arena.start_room().rid
-            self.log(p.id, "reconnect")
-            await self.send(p, {"type": "welcome", "you": p.id, "state": self.snapshot(p)})
-            await self.broadcast_state()
-            return p
+            if (p.uid or None) == (uid or None):
+                p.ws = ws
+                p.connected = True
+                p.verified = verified
+                if self.arena.room_by_id(p.room_id) is None:
+                    p.room_id = self.arena.start_room().rid
+                self.log(p.id, "reconnect")
+                await self.send(p, {"type": "welcome", "you": p.id, "state": self.snapshot(p)})
+                await self.broadcast_state()
+                return p
+            player_id = None
         if len(self.players) >= MAX_PLAYERS:
             return None
         used = {p.slot for p in self.players.values()}
@@ -340,7 +349,8 @@ class Room:
         self._counter += 1
         pid = f"p{self._counter}"
         player = Player(pid, clean_name(name) or f"Player {slot + 1}", slot,
-                        COLORS[slot], role_for_slot(slot), self.arena.start_room().rid, ws=ws)
+                        COLORS[slot], role_for_slot(slot), self.arena.start_room().rid,
+                        uid=uid, verified=verified, ws=ws)
         self.players[pid] = player
         self.log(pid, "join", {"role": player.role, "name": player.name})
         if self._task is None or self._task.done():
@@ -828,7 +838,8 @@ class Room:
             "eliminated": sum(1 for p in self.players.values() if p.eliminated),
             "players": [
                 {
-                    "name": p.name, "slot": p.slot, "escaped": p.escaped,
+                    "name": p.name, "slot": p.slot, "uid": p.uid,
+                    "verified": p.verified, "escaped": p.escaped,
                     "eliminated": p.eliminated, "points": p.points,
                     "revives": p.revives,
                     "predictions": p.predictions, "correct": p.correct,
@@ -839,9 +850,9 @@ class Room:
             ],
         }
         try:
-            db.store.record_match(summary)
+            await asyncio.to_thread(db.store.record_match, summary)
         except Exception:
-            pass
+            logger.exception("failed to persist match")
         self.log(None, "won" if won else "over", {"round": self.round})
         await self.broadcast({"type": "game_over", "won": won, "summary": summary,
                               "nexus": report})

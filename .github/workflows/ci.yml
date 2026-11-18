@@ -31,6 +31,3 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run build
-        env:
-          NEXT_PUBLIC_WS_URL: ws://localhost:8000
-          NEXT_PUBLIC_API_URL: http://localhost:8000

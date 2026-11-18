@@ -1,124 +1,266 @@
 "use client";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, auth } from "@/lib/api";
+import PageShell from "@/components/PageShell";
+import { BroadcastKicker, SuitMark } from "@/components/Brand";
+import { useAuth } from "@/components/AuthProvider";
+import { api } from "@/lib/api";
+import { guest } from "@/lib/guest";
 
 const randomCode = () => Math.random().toString(36).slice(2, 6).toUpperCase();
 
+const ROLES = [
+  ["\u2660", "Navigator", "Grid + shift", "text-blue"],
+  ["\u2665", "Oracle", "Sigils + futures", "text-red"],
+  ["\u2666", "Timekeeper", "Dice + capacity", "text-yellow"],
+  ["\u2663", "Archivist", "Previous arena", "text-green"],
+];
+
 export default function LobbyPage() {
   const router = useRouter();
+  const { user, loading } = useAuth();
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const [user, setUser] = useState<string | null>(null);
   const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
 
   useEffect(() => {
-    const u = auth.current();
-    setUser(u);
-    if (u) setName(u);
+    if (loading) return;
+    if (!user) {
+      setName(guest.get());
+      return;
+    }
+    const fallback = user.displayName || user.email?.split("@")[0] || "";
+    setName(fallback);
+    api
+      .me()
+      .then((result) => setName(result.profile.username || fallback))
+      .catch(() => undefined);
+  }, [user, loading]);
+
+  useEffect(() => {
     api.health().then(setHealth);
-    const t = setInterval(() => api.health().then(setHealth), 5000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => api.health().then(setHealth), 5000);
+    return () => clearInterval(timer);
   }, []);
 
   const go = (room: string) => {
     if (!name.trim() || !room.trim()) return;
-    router.push(`/game?room=${encodeURIComponent(room.trim().toUpperCase())}&name=${encodeURIComponent(name.trim())}`);
+    if (!user) guest.set(name.trim());
+    router.push(
+      `/game?room=${encodeURIComponent(room.trim().toUpperCase())}&name=${encodeURIComponent(name.trim())}`
+    );
   };
 
+  const displayName = user?.displayName || user?.email?.split("@")[0] || "player";
+
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-paper px-4 text-ink">
-      <div className="pointer-events-none absolute inset-0 grid-backdrop" />
-      <div className="pointer-events-none absolute left-1/2 top-0 h-[420px] w-[420px] -translate-x-1/2 rounded-full bg-blue/10 blur-[110px]" />
+    <PageShell>
+      <main className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:py-16">
+        <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+          <div>
+            <BroadcastKicker tone="gold">
+              <span className="signal-dot" />
+              Lobby · Matchmaking
+            </BroadcastKicker>
+            <h1 className="mt-4 font-display text-5xl uppercase leading-[0.9] tracking-[0.03em] text-bone sm:text-6xl">
+              Choose your room.
+            </h1>
+            <p className="mt-3 max-w-xl text-sm leading-relaxed text-dim">
+              Open a new arena or enter a friend's code. Four players, four roles. The match begins
+              when everyone is ready.
+            </p>
+          </div>
 
-      <div className="relative z-10 w-full max-w-lg animate-rise">
-        <Link href="/" className="mono text-xs tracking-[0.3em] text-ink/50 transition hover:text-ink">
-          ← AXIOM · THE LAST ROOM
-        </Link>
-
-        <div className="glass mt-6 rounded-3xl p-6 shadow-card sm:p-8">
-          <div className="flex items-center justify-between">
-            <h1 className="text-3xl font-semibold tracking-tight">The Last Room</h1>
-            <div className="flex items-center gap-2 text-xs">
-              <span className={`h-2 w-2 rounded-full ${health?.ok ? "bg-green animate-pulse-glow" : "bg-red"}`} />
-              <span className="text-ink/60">
-                {health?.ok ? `${health.players} in ${health.rooms} rooms` : "server offline"}
-              </span>
+          <div className="flex items-center gap-3 border border-bone/10 bg-bone/[0.025] px-4 py-3">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                health?.ok ? "bg-green shadow-[0_0_12px_rgba(88,214,141,.8)]" : "bg-red"
+              }`}
+            />
+            <div>
+              <div className="mono text-[9px] uppercase tracking-[0.22em] text-ash">
+                Broadcast status
+              </div>
+              <div className="mono mt-1 text-xs text-bone">
+                {health?.ok
+                  ? `${health.players} in ${health.rooms} room${health.rooms === 1 ? "" : "s"}`
+                  : "Server offline"}
+              </div>
             </div>
           </div>
+        </div>
 
-          <label htmlFor="name" className="mt-6 block text-sm text-ink/60">
-            Display name
-          </label>
-          <input
-            id="name"
-            value={name}
-            maxLength={16}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Huzaifa"
-            className="mt-1 w-full rounded-xl border border-ink/15 bg-white/70 p-3 outline-none transition focus:border-blue"
-          />
+        <div className="mt-8 grid gap-5 lg:grid-cols-[1.08fr_0.92fr]">
+          <section className="broadcast-panel panel-cut relative p-6 sm:p-8">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="mono text-[10px] uppercase tracking-[0.3em] text-gold">
+                  Player terminal
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-bone">Enter the arena</h2>
+              </div>
+              <SuitMark className="text-2xl text-bone/60" />
+            </div>
 
-          <button
-            onClick={() => go(randomCode())}
-            disabled={!name.trim()}
-            className="mt-4 w-full rounded-xl bg-ink p-3 font-semibold text-paper shadow-card transition hover:brightness-110 disabled:opacity-40"
-          >
-            Open a room
-          </button>
-
-          <div className="my-6 flex items-center gap-3 text-xs text-ink/50">
-            <span className="h-px flex-1 bg-ink/10" /> or join an existing room <span className="h-px flex-1 bg-ink/10" />
-          </div>
-
-          <label htmlFor="code" className="block text-sm text-ink/60">
-            Room code
-          </label>
-          <div className="mt-1 flex gap-2">
+            <label htmlFor="name" className="mono mt-7 block text-[10px] uppercase tracking-[0.2em] text-dim">
+              Display name
+            </label>
             <input
-              id="code"
-              value={code}
-              maxLength={8}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="ABCD"
-              className="mono w-full rounded-xl border border-ink/15 bg-white/70 p-3 tracking-[0.3em] outline-none transition focus:border-blue"
+              id="name"
+              value={name}
+              maxLength={24}
+              autoComplete="nickname"
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Your broadcast name"
+              className="mt-2 w-full border border-bone/15 bg-void/70 px-4 py-3 text-sm text-bone outline-none transition placeholder:text-ash focus:border-gold/70"
             />
+
             <button
-              onClick={() => go(code)}
-              disabled={!name.trim() || !code.trim()}
-              className="rounded-xl border border-ink/15 px-6 font-medium transition hover:border-ink/40 disabled:opacity-40"
+              type="button"
+              onClick={() => go(randomCode())}
+              disabled={!name.trim()}
+              className="mt-4 flex w-full items-center justify-between gap-4 border border-gold bg-gold px-5 py-4 text-left text-void transition hover:border-bone hover:bg-bone disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Join
-            </button>
-          </div>
-
-          <p className="mt-6 text-xs leading-relaxed text-ink/60">
-            Rooms hold up to 4 players, one per role: Navigator, Oracle, Timekeeper, Archivist.
-            You spawn in C3; the exit is fixed at A5. Open this page in 4 tabs to test locally.
-          </p>
-        </div>
-
-        <div className="mt-4 flex items-center justify-between px-2 text-sm">
-          {user ? (
-            <>
-              <span className="text-ink/60">
-                Signed in as <span className="text-ink">{user}</span>
+              <span>
+                <span className="block text-sm font-bold uppercase tracking-[0.16em]">
+                  Open a new room
+                </span>
+                <span className="mono mt-1 block text-[9px] uppercase tracking-[0.16em] text-void/60">
+                  Create a 4-player broadcast
+                </span>
               </span>
-              <Link href="/profile" className="text-blue transition hover:underline">
-                View profile →
-              </Link>
-            </>
-          ) : (
-            <>
-              <span className="text-ink/60">Playing as guest</span>
-              <Link href="/login" className="text-blue transition hover:underline">
-                Sign in for stats →
-              </Link>
-            </>
-          )}
+              <span className="font-display text-3xl leading-none">→</span>
+            </button>
+
+            <div className="my-7 flex items-center gap-3">
+              <span className="h-px flex-1 bg-bone/10" />
+              <span className="mono text-[9px] uppercase tracking-[0.24em] text-ash">
+                or join with a code
+              </span>
+              <span className="h-px flex-1 bg-bone/10" />
+            </div>
+
+            <label htmlFor="code" className="mono block text-[10px] uppercase tracking-[0.2em] text-dim">
+              Room code
+            </label>
+            <div className="mt-2 flex gap-2">
+              <input
+                id="code"
+                value={code}
+                maxLength={8}
+                onChange={(event) => setCode(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") go(code);
+                }}
+                placeholder="ABCD"
+                className="mono w-full border border-bone/15 bg-void/70 px-4 py-3 text-sm tracking-[0.35em] text-bone outline-none transition placeholder:text-ash focus:border-neon/70"
+              />
+              <button
+                type="button"
+                onClick={() => go(code)}
+                disabled={!name.trim() || !code.trim()}
+                className="shrink-0 border border-bone/25 px-6 text-xs font-semibold uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Join
+              </button>
+            </div>
+
+            {user && !user.emailVerified && (
+              <div className="mt-5 border border-yellow/35 bg-yellow/[0.06] p-4 text-xs leading-relaxed text-yellow">
+                This account is not verified. You can play, but ranked history and leaderboard
+                placement are locked.{" "}
+                <Link href="/profile" className="underline underline-offset-2 hover:text-bone">
+                  Verify in your dossier
+                </Link>
+                .
+              </div>
+            )}
+
+            <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-bone/10 pt-5 text-xs">
+              {user ? (
+                <>
+                  <span className="text-dim">
+                    Signed in as <span className="text-bone">{displayName}</span>
+                  </span>
+                  <Link href="/profile" className="text-gold transition hover:text-bone">
+                    View profile →
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <span className="text-dim">Playing as guest</span>
+                  <Link href="/login" className="text-gold transition hover:text-bone">
+                    Sign in for stats →
+                  </Link>
+                </>
+              )}
+            </div>
+          </section>
+
+          <aside className="space-y-4">
+            <section className="border border-bone/10 bg-bone/[0.025] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="mono text-[10px] uppercase tracking-[0.28em] text-gold">
+                  Role assignment
+                </p>
+                <span className="mono text-[9px] uppercase tracking-[0.16em] text-ash">
+                  1 per player
+                </span>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                {ROLES.map(([suit, role, detail, tone]) => (
+                  <div
+                    key={role}
+                    className="flex items-center gap-3 border border-bone/[0.08] bg-void/50 px-3 py-3 transition hover:border-bone/20"
+                  >
+                    <span className={`font-display text-2xl leading-none ${tone}`}>{suit}</span>
+                    <div>
+                      <div className={`text-sm font-semibold ${tone}`}>{role}</div>
+                      <div className="mono text-[9px] uppercase tracking-[0.14em] text-ash">
+                        {detail}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="border border-bone/10 bg-bone/[0.025] p-5">
+              <p className="mono text-[10px] uppercase tracking-[0.28em] text-gold">
+                Match briefing
+              </p>
+              <ul className="mt-4 space-y-3 text-xs leading-relaxed text-dim">
+                <li className="flex gap-3">
+                  <span className="mono text-gold">01</span>
+                  <span>Spawn in C3. The exit is fixed at A5.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="mono text-gold">02</span>
+                  <span>Every player starts with 15 points. Crossing and waiting cost 1.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="mono text-gold">03</span>
+                  <span>The grid shifts every round. Read the wristband, not the walls.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="mono text-gold">04</span>
+                  <span>Reach A5 with every living player and solve the cooperative cipher.</span>
+                </li>
+              </ul>
+            </section>
+
+            <div className="border border-red/25 bg-red/[0.04] p-5">
+              <p className="mono text-[10px] uppercase tracking-[0.24em] text-red">Warning</p>
+              <p className="mt-2 text-xs leading-relaxed text-dim">
+                The Dealer never reveals the hidden rule. Anything you see is a slice of the arena,
+                not the whole truth.
+              </p>
+            </div>
+          </aside>
         </div>
-      </div>
-    </main>
+      </main>
+    </PageShell>
   );
 }

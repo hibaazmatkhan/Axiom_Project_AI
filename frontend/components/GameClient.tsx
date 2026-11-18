@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import GameCanvas from "./GameCanvas";
 import WristbandMap from "./WristbandMap";
+import { SuitMark } from "./Brand";
 import { useGameSocket } from "@/lib/useGameSocket";
 import type { Direction, Door, DoorColor, PatternType } from "@/lib/types";
 
@@ -66,6 +67,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [secs, setSecs] = useState<number | null>(null);
   const [guessType, setGuessType] = useState<PatternType | "">("");
   const [guessSigils, setGuessSigils] = useState<string[]>([]);
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "team" | "chat" | "notes">("none");
   const { sendChooseDoor, sendWait } = g;
 
   const me = g.me;
@@ -117,7 +119,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const isOver = g.status === "won" || g.status === "over";
 
   return (
-    <main className="relative h-screen w-screen overflow-hidden bg-coal text-bone">
+    <main className="relative h-screen w-screen overflow-hidden bg-void text-bone">
       <GameCanvas
         arena={g.arena}
         you={me}
@@ -134,38 +136,48 @@ export default function GameClient({ room, name }: { room: string; name: string 
       />
 
       {/* top bar */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between p-4">
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2">
-          <span className="mono rounded-xl border border-edge bg-ink/85 px-3 py-2 text-sm tracking-[0.25em] backdrop-blur">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 p-3 sm:p-4">
+        <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
+          <span className="mono flex items-center gap-2 border border-red/40 bg-void/85 px-2.5 py-2 text-[9px] uppercase tracking-[0.2em] text-red backdrop-blur">
+            <span className="signal-dot" />
+            Live
+          </span>
+          <span className="mono border border-gold/30 bg-void/85 px-2.5 py-2 text-xs tracking-[0.2em] text-gold backdrop-blur">
             {room}
           </span>
-          <span className="rounded-xl border border-edge bg-ink/85 px-3 py-2 text-xs text-dim backdrop-blur">
-            Stage <span className="mono text-yellow">{g.stage}</span>/{g.maxStage} · {g.stageName}
+          <span className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur sm:inline-flex">
+            Stage <span className="mono ml-1 text-yellow">{g.stage}</span>/{g.maxStage}
+            <span className="mx-1 text-ash">·</span>
+            {g.stageName}
           </span>
-          <span className="rounded-xl border border-edge bg-ink/85 px-3 py-2 text-xs text-dim backdrop-blur">
-            Round <span className="mono text-bone">{g.round}</span>/{g.maxRounds}
+          <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
+            R<span className="mono ml-1 text-bone">{g.round}</span>/{g.maxRounds}
           </span>
-          <span className="rounded-xl border border-edge bg-ink/85 px-3 py-2 text-xs text-dim backdrop-blur">
-            Room <span className="mono text-bone">{me?.room_code ?? "--"}</span>
+          <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
+            Room <span className="mono ml-1 text-bone">{me?.room_code ?? "--"}</span>
           </span>
         </div>
-        <div className="pointer-events-auto flex items-center gap-2">
-          <div className="rounded-xl border border-edge bg-ink/85 px-4 py-2 text-center backdrop-blur">
-            <div className="text-[10px] uppercase tracking-widest text-dim">Next shift</div>
-            <div className={`mono text-lg tabular-nums ${secs != null && secs < 4 ? "text-red" : "text-bone"}`}>
+        <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+          <div className="border border-edge bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
+            <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
+              Next shift
+            </div>
+            <div className={`mono text-base tabular-nums sm:text-lg ${secs != null && secs < 4 ? "text-red" : "text-bone"}`}>
               {secs == null ? "--" : secs.toFixed(1) + "s"}
             </div>
           </div>
           <button
             onClick={() => setFirstPerson((v) => !v)}
-            className="rounded-xl border border-edge bg-ink/85 px-3 py-2 text-xs text-dim backdrop-blur transition hover:text-bone"
+            className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-neon/50 hover:text-bone sm:block"
             title="Toggle camera (V)"
+            aria-label="Toggle camera"
           >
-            {firstPerson ? "First person" : "Third person"}
+            {firstPerson ? "First" : "Third"}
           </button>
           <button
             onClick={() => setShowNotes((s) => !s)}
-            className="rounded-xl border border-edge bg-ink/85 px-3 py-2 text-xs text-dim backdrop-blur transition hover:text-bone"
+            className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-gold/50 hover:text-bone sm:block"
+            aria-label="Toggle team notes"
           >
             {showNotes ? "Hide notes" : "Notes"}
           </button>
@@ -182,7 +194,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {/* left column */}
-      <div className="absolute left-4 top-20 z-20 max-h-[calc(100vh-6rem)] w-64 space-y-3 overflow-y-auto pb-4 scroll-thin">
+      <div className="absolute left-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-64 space-y-3 overflow-y-auto pb-4 scroll-thin xl:block">
         <Panel>
           <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">Your role</span>
@@ -299,7 +311,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       </div>
 
       {/* right column */}
-      <div className="absolute right-4 top-20 z-20 max-h-[calc(100vh-6rem)] w-72 space-y-3 overflow-y-auto pb-4 scroll-thin">
+      <div className="absolute right-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-72 space-y-3 overflow-y-auto pb-4 scroll-thin xl:block">
         <Panel>
           <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">The Dealer</span>
@@ -469,7 +481,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       </div>
 
       {/* bottom chat */}
-      <div className="absolute bottom-4 left-1/2 z-20 w-[min(560px,90vw)] -translate-x-1/2">
+      <div className="absolute bottom-4 left-1/2 z-20 hidden w-[min(560px,90vw)] -translate-x-1/2 xl:block">
         <div className="hud rounded-2xl p-3">
           <div className="scroll-thin mb-2 max-h-24 space-y-1 overflow-y-auto">
             {g.chat.map((c, i) => (
@@ -499,8 +511,191 @@ export default function GameClient({ room, name }: { room: string; name: string 
         </div>
       </div>
 
+      {/* mobile command deck */}
+      <div className="absolute inset-x-0 bottom-0 z-20 xl:hidden">
+        {mobilePanel !== "none" && (
+          <div className="scroll-thin mx-3 mb-2 max-h-[42vh] overflow-y-auto rounded-xl border border-bone/15 bg-void/95 p-3 shadow-hud backdrop-blur-xl">
+            {mobilePanel === "map" && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">
+                    Wristband
+                  </span>
+                  <span className="mono text-[9px] text-dim">A1–E5</span>
+                </div>
+                <WristbandMap arena={g.arena} youCode={me?.room_code ?? null} className="mt-2" />
+                <p className="mt-2 text-[10px] leading-relaxed text-dim">
+                  Edge bars are door colours. Dim bars are sealed. The grid shifts every round.
+                </p>
+              </div>
+            )}
+
+            {mobilePanel === "team" && (
+              <div>
+                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Team</span>
+                <ul className="mt-2 space-y-2">
+                  {g.players.map((player) => (
+                    <li key={player.id} className="flex items-center gap-2 text-sm">
+                      <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: player.color }} />
+                      <span className={player.id === g.you ? "font-semibold" : ""}>{player.name}</span>
+                      <span className="mono text-[10px] text-dim">{player.room_code ?? "--"}</span>
+                      <span className="mono ml-auto text-xs text-dim">{player.points}</span>
+                      {player.locked && <span className="text-[10px] text-red">locked</span>}
+                      {player.eliminated && <span className="text-[10px] text-red">out</span>}
+                      {!player.connected && <span className="text-[10px] text-ash">off</span>}
+                    </li>
+                  ))}
+                </ul>
+                {lockedAllies.length > 0 && (
+                  <div className="mt-3 border-t border-bone/10 pt-3">
+                    {lockedAllies.map((player) => (
+                      <button
+                        key={player.id}
+                        type="button"
+                        onClick={() => g.sendUnlock(player.id)}
+                        className="mt-1 w-full border border-red/50 px-2 py-2 text-xs text-red transition hover:bg-red/10"
+                      >
+                        Scan {player.name} free
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {mobilePanel === "chat" && (
+              <div>
+                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Team chat</span>
+                <div className="scroll-thin mt-2 max-h-36 space-y-1 overflow-y-auto">
+                  {g.chat.length === 0 && <p className="text-xs text-dim">No messages yet.</p>}
+                  {g.chat.map((line, index) => (
+                    <p key={index} className="text-xs">
+                      <span style={{ color: line.color }} className="font-medium">
+                        {line.from}
+                      </span>
+                      <span className="text-dim"> · {line.text}</span>
+                    </p>
+                  ))}
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && chatInput.trim()) {
+                        g.sendChat(chatInput);
+                        setChatInput("");
+                      }
+                    }}
+                    placeholder="Message your team…"
+                    className="min-w-0 flex-1 rounded-lg border border-edge bg-ink/60 px-3 py-2 text-sm outline-none focus:border-blue"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (chatInput.trim()) {
+                        g.sendChat(chatInput);
+                        setChatInput("");
+                      }
+                    }}
+                    className="rounded-lg border border-edge px-3 text-xs text-dim transition hover:border-blue hover:text-bone"
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {mobilePanel === "notes" && (
+              <div>
+                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">
+                  Team notes
+                </span>
+                <textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  placeholder="Yellow door in C3 is sealed. Oracle, read the north wall…"
+                  className="scroll-thin mt-2 h-20 w-full resize-none rounded-lg border border-edge bg-ink/60 p-2 text-xs outline-none focus:border-blue"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    g.sendClue(g.role, notes);
+                    setNotes("");
+                  }}
+                  disabled={!notes.trim()}
+                  className="mt-2 w-full rounded-lg border border-edge py-2 text-xs text-dim transition hover:border-blue hover:text-bone disabled:opacity-40"
+                >
+                  Share with team
+                </button>
+                <div className="scroll-thin mt-2 max-h-24 space-y-1 overflow-y-auto">
+                  {g.teamNotes.map((note, index) => (
+                    <p key={index} className="text-xs text-dim">
+                      <span className="text-bone">{note.from}</span> · {note.text}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="border-t border-bone/15 bg-void/95 px-3 pb-3 pt-2 backdrop-blur-xl">
+          <div className="mb-2 flex items-center justify-between gap-2 text-[9px] uppercase tracking-[0.14em] text-dim">
+            <span className="flex items-center gap-2">
+              <SuitMark className="text-[11px] text-gold" />
+              <span className="text-gold">{g.roleLabel}</span>
+            </span>
+            <span>
+              Pts <span className="mono text-bone">{me?.points ?? 0}</span>
+            </span>
+            <span>
+              Next <span className="mono text-bone">{secs == null ? "--" : secs.toFixed(1) + "s"}</span>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-5 gap-1">
+            <DoorButton dir="N" door={me?.doors?.N} onClick={() => sendChooseDoor("N")} />
+            <DoorButton dir="E" door={me?.doors?.E} onClick={() => sendChooseDoor("E")} />
+            <DoorButton dir="S" door={me?.doors?.S} onClick={() => sendChooseDoor("S")} />
+            <DoorButton dir="W" door={me?.doors?.W} onClick={() => sendChooseDoor("W")} />
+            <button
+              type="button"
+              onClick={sendWait}
+              className="rounded-lg border border-edge bg-ink/50 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow"
+              title="Wait (−1 point)"
+            >
+              WAIT
+            </button>
+          </div>
+
+          <div className="mt-1 grid grid-cols-4 gap-1">
+            {([
+              ["map", "Map"],
+              ["team", "Team"],
+              ["chat", "Chat"],
+              ["notes", "Notes"],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setMobilePanel((current) => (current === key ? "none" : key))}
+                aria-pressed={mobilePanel === key}
+                className={`rounded-lg border py-1.5 text-[10px] uppercase tracking-[0.12em] transition ${
+                  mobilePanel === key
+                    ? "border-gold/60 bg-gold/10 text-gold"
+                    : "border-edge text-dim hover:text-bone"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* event toasts */}
-      <div className="pointer-events-none absolute bottom-32 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2">
+      <div className="pointer-events-none absolute bottom-44 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2 xl:bottom-32">
         {g.doorEvent?.locked && (
           <div className="rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
             Lockdown. Two teammates must scan your wristband free.
@@ -545,7 +740,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {isLobby && !g.error && g.connected && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-coal/80 backdrop-blur-sm">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-void/80 backdrop-blur-sm">
           <div className="hud w-[min(460px,92vw)] rounded-3xl p-8 text-center animate-rise">
             <p className="mono text-[10px] uppercase tracking-[0.3em] text-yellow">The Last Room</p>
             <h2 className="mt-2 text-2xl font-semibold">Assembling the team</h2>
@@ -582,7 +777,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {isOver && !g.error && g.connected && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-coal/80 backdrop-blur-sm">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-void/80 backdrop-blur-sm">
           <div className="hud w-[min(460px,92vw)] rounded-3xl p-8 text-center animate-rise">
             <p className="mono text-[10px] uppercase tracking-[0.3em] text-yellow">
               {g.status === "won" ? "Escape" : "Game over"}
@@ -613,7 +808,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {me?.eliminated && g.status === "running" && (
-        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-coal/45">
+        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-void/45">
           <p className="rounded-2xl border border-red/60 bg-ink/90 px-6 py-3 text-sm text-red backdrop-blur">
             Points spent. You are eliminated — the team plays on.
           </p>
@@ -621,14 +816,14 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {(g.error || !g.connected) && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-coal/90">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-void/90">
           <div className="hud rounded-2xl px-6 py-4 text-center">
             {g.error ? <p className="text-red">{g.error}</p> : <p className="text-dim">Connecting to the arena…</p>}
           </div>
         </div>
       )}
 
-      <div className="mono pointer-events-none absolute bottom-2 right-3 z-10 text-[10px] text-dim">
+      <div className="mono pointer-events-none absolute bottom-2 right-3 z-10 hidden text-[10px] text-dim xl:block">
         {alive.length}/{g.players.length} alive · exit {exitCode} {g.exitUnsealed ? "open" : "sealed"}
       </div>
     </main>

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Arena, Dice, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, You,
 } from "./types";
+import { getFirebaseAuth } from "./firebase";
 
 export type RoundTransition = {
   id: number;
@@ -78,10 +79,17 @@ export function useGameSocket(room: string, name: string) {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const base = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000";
+    const base = new URL(
+      process.env.NEXT_PUBLIC_WS_URL?.trim() || window.location.origin,
+      window.location.origin
+    );
+    base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+    base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;
+    base.searchParams.set("name", name);
     const storedId = sessionStorage.getItem(`axiom_pid_${room}`) || "";
-    const url = `${base}/ws/${encodeURIComponent(room)}?name=${encodeURIComponent(name)}${storedId ? `&pid=${storedId}` : ""}`;
-    const ws = new WebSocket(url);
+    if (storedId) base.searchParams.set("pid", storedId);
+    base.searchParams.set("auth", "1");
+    const ws = new WebSocket(base.toString());
     wsRef.current = ws;
 
     const apply = (s: Snapshot) => {
@@ -109,9 +117,29 @@ export function useGameSocket(room: string, name: string) {
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
     };
 
-    ws.onopen = () => { setConnected(true); setError(null); };
+    ws.onopen = () => {
+      setConnected(true);
+      setError(null);
+      void (async () => {
+        let idToken: string | null = null;
+        try {
+          idToken = (await getFirebaseAuth().currentUser?.getIdToken(true)) ?? null;
+        } catch {
+          idToken = null;
+        }
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            token: idToken,
+            name,
+            pid: storedId || undefined,
+          })
+        );
+      })();
+    };
     ws.onclose = () => setConnected(false);
-    ws.onerror = () => setError("Cannot reach the game server. Is the backend running on port 8000?");
+    ws.onerror = () => setError("Cannot reach the game server.");
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.type === "welcome") {

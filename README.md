@@ -4,9 +4,8 @@
 
 > Every door is a choice. Every room can move.
 
-THE LAST ROOM is a browser-based, four-player 3D game inspired by the final game
-of *Alice in Borderland* season 3 ("Possible Futures") and rebuilt around an
-original theme. Four players wake inside a **5×5 matrix of white cube rooms**,
+THE LAST ROOM is a browser-based, four-player 3D fan game set in an *Alice in
+Borderland* broadcast theme. Four players wake inside a **5×5 matrix of white cube rooms**,
 each with four coloured doors and a pedestal of four coloured d10s. Every round
 the grid rearranges itself by hidden, discoverable rules; an AI director called
 **The Dealer** (NEXUS) models each player and adapts the arena to the team in
@@ -40,9 +39,10 @@ players adapt again.
 | Asymmetric information across 4 roles (Navigator / Oracle / Timekeeper / Archivist) | Done |
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
-| Accounts, match history, statistics and Dealer model persistence | Done |
+| Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
+| Supabase public profiles + match history, statistics and Dealer model persistence | Done |
 | Full 3D client: first-person cube room, coloured doors, LED futures, d10 gems, wristband map | Done |
-| Security: PBKDF2 password hashing, input validation, rate limiting, anti-cheat | Done |
+| Security: Firebase ID tokens, first-frame WebSocket auth, server-only Supabase service key, input validation, rate limiting, anti-cheat | Done |
 | Tests, Docker, architecture + protocol docs | Done |
 
 Seven transformation types: `rotation, reflection, translation, symbol,
@@ -65,31 +65,64 @@ Convergence → The Last Room`.
 
 ## Run it (local)
 
+### Configuration
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local
+```
+
+Fill the Firebase web config in `frontend/.env.local` and the Firebase Admin +
+Supabase service credentials in `backend/.env`. The service-role key and private
+key must never be exposed to the browser or committed.
+
+Set `AXIOM_MATCH_STORE=supabase` in production so match history, stats and
+Dealer models use Supabase. `AXIOM_MATCH_STORE=sqlite` keeps the local/test
+fallback; it must not be used for deployed ranked data.
+
+Run the Supabase migrations once in the Supabase SQL editor:
+
+```text
+backend/migrations/001_profiles.sql
+backend/migrations/002_matches.sql
+```
+
+Or, with a working `SUPABASE_DB_URL` in `backend/.env`:
+
+```bash
+cd backend
+python scripts/apply_migrations.py
+```
+
 ### Backend (Python 3.12+)
 
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-python -m pytest            # 64 tests
+python -m pytest            # 68 tests
 ```
 
 ### Frontend (Node 20+)
 
 ```bash
 cd frontend
-cp .env.example .env.local
 npm install
 npm run dev                 # http://localhost:3000
 ```
 
-Open http://localhost:3000, create an account (optional), then open a room or
-join with a code. Open the game URL in up to **4 browser tabs** to play the full
-four-role experience. Each tab is auto-assigned a role.
+Open http://localhost:3000, sign in with email/password or Google (optional),
+then open a room or join with a code. Guests and unverified accounts can play;
+only verified accounts persist ranked match data. Open the game URL in up to
+**4 browser tabs** to play the full four-role experience. Each tab is
+auto-assigned a role.
 
 > For a real match set the backend env `MIN_PLAYERS=4`. For quick demos set
 > `ROUND_SECONDS=8`. Players press **Ready up**; the match starts when all
 > connected players are ready.
+>
+> Firebase Auth needs Email/Password and Google enabled, with `localhost`
+> authorized. TOTP MFA is optional and may require Identity Platform.
 
 ### Docker
 
@@ -97,6 +130,14 @@ four-role experience. Each tab is auto-assigned a role.
 docker compose up --build
 # frontend → http://localhost:3000   backend → http://localhost:8000
 ```
+
+### Vercel
+
+The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. The browser uses same-origin `/backend/*` for REST calls, and the Next.js service forwards them to the backend through the `BACKEND_URL` service binding. `/ws/*` is the backend's only public route. Do not set `BACKEND_URL` in Vercel; the binding injects it for each deployment, including previews.
+
+For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `NEXT_PUBLIC_WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Run `vercel dev` at the repository root to test both services with bindings.
+
+Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and move room state out of the backend process: Vercel Functions have ephemeral filesystems and multiple instances, so the in-memory `rooms` dictionary is not shared across instances. Match data is shared through Supabase.
 
 ---
 
@@ -175,11 +216,13 @@ GET http://localhost:8000/api/nexus/tune?team_skill=0.9&cycles=10
 
 ## Theme and naming
 
-The game is **inspired by** the final game of *Alice in Borderland* season 3
-("Possible Futures") but uses original names and assets. No copyrighted names,
-art or text from the show are used.
+The client uses a full **Alice in Borderland** broadcast theme as an unofficial
+fan project. The project owner is responsible for the rights to any show
+character portraits placed in `frontend/public/avatars/characters/`; the
+codebase does not generate or source those likenesses. Character art is loaded
+from user-supplied assets.
 
-| Show concept | Original name here |
+| Show concept | Game term |
 |---|---|
 | points | **Points** (start 15) |
 | dice | **d10 pedestal** (four coloured dice per room) |
@@ -191,6 +234,10 @@ art or text from the show are used.
 | final room | **The Last Room** (A5) |
 | roles | **Navigator / Oracle / Timekeeper / Archivist** |
 
+The shell uses a near-black broadcast palette with signal red, card gold and
+neon cyan. The landing page, login, lobby, profile and game HUD share the same
+responsive design system and animated favicon.
+
 Palette: paper `#f4f1ea`, ink `#14161a`, coal `#0b0c0e`, door red `#e23b3b`,
 blue `#3f7bd9`, yellow `#e8b53a`, green `#3f9f6b`.
 
@@ -198,7 +245,12 @@ blue `#3f7bd9`, yellow `#e8b53a`, green `#3f9f6b`.
 
 ## Security
 
-- Passwords stored as PBKDF2-HMAC-SHA256 with per-user salts.
+- Firebase Authentication owns credentials; the backend verifies ID tokens with
+  Firebase Admin and never sees passwords.
+- WebSocket gameplay requires a first-frame auth message; verified identity is
+  attached server-side, and guests cannot write ranked data.
+- Supabase service-role credentials stay in `backend/.env`; the browser only
+  receives Firebase public web config.
 - All intents validated server-side (doors, capacity, cooldown, adjacency,
   rate limit) — clients cannot cheat by sending state.
 - Token-bucket rate limiting on game intents.
