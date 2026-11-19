@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: axiom-backend
+    runtime: docker
+    plan: starter
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      - key: AXIOM_MATCH_STORE
+        value: supabase
+      - key: ENVIRONMENT
+        value: production
+      - key: MIN_PLAYERS
+        value: "4"
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: ADMIN_UIDS
+        sync: false

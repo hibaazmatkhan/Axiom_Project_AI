@@ -3,7 +3,12 @@ import type { Metadata, Viewport } from "next";
 import AnimatedFavicon from "@/components/AnimatedFavicon";
 import { AuthProvider } from "@/components/AuthProvider";
 
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: {
     default: "Alice in Borderland · The Last Room",
     template: "%s · The Last Room",
@@ -27,6 +32,12 @@ export const metadata: Metadata = {
     description:
       "Four players. Five by five moving rooms. One final door. The broadcast is live.",
     type: "website",
+    siteName: "Alice in Borderland: The Last Room",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Alice in Borderland · The Last Room",
+    description: "Four players. Five by five moving rooms. One final door.",
   },
 };
 

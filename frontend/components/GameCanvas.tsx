@@ -390,9 +390,22 @@ export default function GameCanvas(props: Props) {
         pitchRef.current = Math.max(-1.2, Math.min(1.2, pitchRef.current - e.movementY * 0.0024));
       }
     };
+    const canLockPointer =
+      typeof renderer.domElement.requestPointerLock === "function" &&
+      window.matchMedia("(pointer: fine)").matches;
     const onPointerDown = () => {
-      if (propsRef.current.firstPerson && document.pointerLockElement !== renderer.domElement) {
-        renderer.domElement.requestPointerLock?.();
+      if (
+        canLockPointer &&
+        propsRef.current.firstPerson &&
+        document.pointerLockElement !== renderer.domElement
+      ) {
+        try {
+          const result = renderer.domElement.requestPointerLock();
+          if (result instanceof Promise) result.catch(() => pick());
+        } catch {
+          pick();
+          return;
+        }
         return;
       }
       pick();

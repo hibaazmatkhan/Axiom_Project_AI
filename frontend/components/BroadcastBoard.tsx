@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
+// Decorative broadcast preview: the grid shifts on a timer and is not authoritative game state.
 const DOOR_COLORS = ["#ff4655", "#5aa7ff", "#f4c542", "#58d68d"];
 const SIGILS = ["\u2660", "\u2665", "\u2666", "\u2663"];
 const N = 5;
