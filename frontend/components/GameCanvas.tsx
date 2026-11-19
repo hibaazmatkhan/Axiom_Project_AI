@@ -8,7 +8,7 @@ type Props = {
   you: You | null;
   players: Player[];
   youId: string | null;
-  role: Role;
+  role: Role | null;
   dice: Dice;
   futures: Visions;
   exitUnsealed: boolean;

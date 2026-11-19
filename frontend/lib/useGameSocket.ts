@@ -35,6 +35,21 @@ export type EliminationEvent = { player: string; reason: string };
 const EMPTY_NEXUS: NexusReport = {
   team_skill: 0, difficulty: 0, complexity_level: 0, players: [], last_action: null,
 };
+const FATAL_ERRORS = new Set([
+  "auth_required", "auth_invalid", "auth_timeout", "auth_unavailable",
+  "admin_required", "room_full", "server_full",
+]);
+
+function socketUrl(room: string, name: string, pid: string) {
+  const configured = process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.WS_URL?.trim();
+  const base = new URL(configured || window.location.origin, window.location.origin);
+  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;
+  base.searchParams.set("name", name);
+  base.searchParams.set("auth", "1");
+  if (pid) base.searchParams.set("pid", pid);
+  return base.toString();
+}
 
 export function useGameSocket(room: string, name: string) {
   const [connected, setConnected] = useState(false);
@@ -55,9 +70,9 @@ export function useGameSocket(room: string, name: string) {
   const [minPlayers, setMinPlayers] = useState(1);
   const [nexus, setNexus] = useState<NexusReport>(EMPTY_NEXUS);
   const [pa, setPa] = useState("The Last Room is open. Find the final door.");
-  const [role, setRole] = useState<Role>("navigator");
-  const [roleLabel, setRoleLabel] = useState("Navigator");
-  const [roleHint, setRoleHint] = useState("");
+  const [role, setRole] = useState<Role | null>(null);
+  const [roleLabel, setRoleLabel] = useState("Assigning role");
+  const [roleHint, setRoleHint] = useState("Waiting for the Dealer to assign your role.");
   const [me, setMe] = useState<You | null>(null);
   const [dice, setDice] = useState<Dice>({});
   const [futures, setFutures] = useState<Visions>({});
@@ -79,18 +94,11 @@ export function useGameSocket(room: string, name: string) {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const base = new URL(
-      process.env.WS_URL?.trim() || window.location.origin,
-      window.location.origin
-    );
-    base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
-    base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;
-    base.searchParams.set("name", name);
-    const storedId = sessionStorage.getItem(`axiom_pid_${room}`) || "";
-    if (storedId) base.searchParams.set("pid", storedId);
-    base.searchParams.set("auth", "1");
-    const ws = new WebSocket(base.toString());
-    wsRef.current = ws;
+    let disposed = false;
+    let attempts = 0;
+    let reconnectTimer: number | null = null;
+    let heartbeatTimer: number | null = null;
+    let fatalClose = false;
 
     const apply = (s: Snapshot) => {
       setArena(s.arena);
@@ -117,97 +125,134 @@ export function useGameSocket(room: string, name: string) {
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
     };
 
-    ws.onopen = () => {
-      setConnected(true);
-      setError(null);
-      void (async () => {
-        let idToken: string | null = null;
-        try {
-          idToken = (await getFirebaseAuth().currentUser?.getIdToken(true)) ?? null;
-        } catch {
-          idToken = null;
-        }
-        if (ws.readyState !== WebSocket.OPEN) return;
-        ws.send(
-          JSON.stringify({
+    const connect = () => {
+      if (disposed) return;
+      const storedId = sessionStorage.getItem(`axiom_pid_${room}`) || "";
+      const ws = new WebSocket(socketUrl(room, name, storedId));
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        attempts = 0;
+        setConnected(true);
+        setError(null);
+        void (async () => {
+          let idToken: string | null = null;
+          try {
+            idToken = (await getFirebaseAuth().currentUser?.getIdToken()) ?? null;
+          } catch {
+            idToken = null;
+          }
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({
             type: "auth",
             token: idToken,
             name,
             pid: storedId || undefined,
-          })
-        );
-      })();
+          }));
+        })();
+        heartbeatTimer = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+        }, 25000);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+        if (disposed || fatalClose) return;
+        const delay = Math.min(15000, 1000 * 2 ** attempts);
+        attempts += 1;
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        if (!fatalClose) setError("Cannot reach the game server. Retrying…");
+      };
+
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "welcome") {
+          setYou(m.you);
+          sessionStorage.setItem(`axiom_pid_${room}`, m.you);
+          apply(m.state);
+        } else if (m.type === "state") {
+          apply(m.state);
+        } else if (m.type === "players") {
+          setPlayers(m.players);
+          setStatus(m.status);
+          if (m.status !== "running") setNextAt(null);
+        } else if (m.type === "round") {
+          const tv = m as RoundView;
+          if (tv.arena) setArena(tv.arena);
+          if (tv.previous) setPrevArena(tv.previous);
+          if (tv.players) setPlayers(tv.players);
+          setTransition((t) => ({
+            id: t.id + 1,
+            round: tv.round,
+            moved: (tv.moved ?? []).map((x) => ({
+              from: x.from, to: x.to, code_from: x.code_from, code_to: x.code_to,
+            })),
+            sigils: tv.sigils ?? [],
+            patternType: tv.pattern_type,
+            previous: tv.previous ?? null,
+          }));
+          setRound(tv.round);
+          if (tv.pa) setPa(tv.pa);
+          setExitUnsealed(!!tv.exit_unsealed);
+          if (tv.dice) setDice(tv.dice);
+          if (tv.futures) setFutures(tv.futures);
+          if (tv.puzzle !== undefined) setPuzzle(tv.puzzle ?? null);
+          if (tv.next_round_in != null) setNextAt(performance.now() + tv.next_round_in * 1000);
+          if (tv.state) apply(tv.state);
+        } else if (m.type === "door_result") {
+          setDoorEvent({
+            accepted: !!m.accepted, locked: m.locked, door: m.door, color: m.color,
+            remaining: m.remaining, room_code: m.room_code, target_code: m.target_code,
+            message: m.message,
+          });
+        } else if (m.type === "lockdown") {
+          setDoorEvent({ accepted: false, locked: true, door: m.door, room_code: m.room_code, message: m.message });
+        } else if (m.type === "hazard") {
+          setHazard({ player: m.player, room_code: m.room_code, penalty: m.penalty, points: m.points });
+        } else if (m.type === "revive") {
+          setRevive({ player: m.player, by: m.by, points: m.points });
+        } else if (m.type === "elimination") {
+          setEliminated({ player: m.player, reason: m.reason });
+        } else if (m.type === "prediction_result") {
+          setPrediction({ correct: m.correct, score: m.score, message: m.message });
+        } else if (m.type === "puzzle_result") {
+          setPuzzleResult(m.correct);
+        } else if (m.type === "exit_unsealed") {
+          setExitUnsealed(true);
+          setExitNotice(m.message ?? "The final door is unsealed.");
+        } else if (m.type === "chat") {
+          setChat((c) => [...c, { from: m.from, color: m.color, text: m.text }].slice(-60));
+        } else if (m.type === "team_note") {
+          setTeamNotes((n) => [...n, { from: m.from, role: m.role, text: m.text }].slice(-40));
+        } else if (m.type === "game_over") {
+          setGameOver({ won: m.won, summary: m.summary });
+          setStatus(m.won ? "won" : "over");
+        } else if (m.type === "error") {
+          setError(m.message || m.code);
+          if (FATAL_ERRORS.has(m.code)) {
+            fatalClose = true;
+            ws.close();
+          }
+        }
+      };
     };
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => setError("Cannot reach the game server.");
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type === "welcome") {
-        setYou(m.you);
-        sessionStorage.setItem(`axiom_pid_${room}`, m.you);
-        apply(m.state);
-      } else if (m.type === "state") {
-        apply(m.state);
-      } else if (m.type === "players") {
-        setPlayers(m.players);
-        setStatus(m.status);
-        if (m.status !== "running") setNextAt(null);
-      } else if (m.type === "round") {
-        const tv = m as RoundView;
-        if (tv.arena) setArena(tv.arena);
-        if (tv.previous) setPrevArena(tv.previous);
-        setPlayers(tv.players);
-        setTransition((t) => ({
-          id: t.id + 1,
-          round: tv.round,
-          moved: (tv.moved ?? []).map((x) => ({
-            from: x.from, to: x.to, code_from: x.code_from, code_to: x.code_to,
-          })),
-          sigils: tv.sigils ?? [],
-          patternType: tv.pattern_type,
-          previous: tv.previous ?? null,
-        }));
-        setRound(tv.round);
-        if (tv.pa) setPa(tv.pa);
-        setExitUnsealed(!!tv.exit_unsealed);
-        if (tv.dice) setDice(tv.dice);
-        if (tv.futures) setFutures(tv.futures);
-        if (tv.puzzle !== undefined) setPuzzle(tv.puzzle ?? null);
-        setNextAt(performance.now() + tv.next_round_in * 1000);
-        if (tv.state) apply(tv.state);
-      } else if (m.type === "door_result") {
-        setDoorEvent({
-          accepted: !!m.accepted, locked: m.locked, door: m.door, color: m.color,
-          remaining: m.remaining, room_code: m.room_code, target_code: m.target_code,
-          message: m.message,
-        });
-      } else if (m.type === "lockdown") {
-        setDoorEvent({ accepted: false, locked: true, door: m.door, room_code: m.room_code, message: m.message });
-      } else if (m.type === "hazard") {
-        setHazard({ player: m.player, room_code: m.room_code, penalty: m.penalty, points: m.points });
-      } else if (m.type === "revive") {
-        setRevive({ player: m.player, by: m.by, points: m.points });
-      } else if (m.type === "elimination") {
-        setEliminated({ player: m.player, reason: m.reason });
-      } else if (m.type === "prediction_result") {
-        setPrediction({ correct: m.correct, score: m.score, message: m.message });
-      } else if (m.type === "puzzle_result") {
-        setPuzzleResult(m.correct);
-      } else if (m.type === "exit_unsealed") {
-        setExitUnsealed(true);
-        setExitNotice(m.message ?? "The final door is unsealed.");
-      } else if (m.type === "chat") {
-        setChat((c) => [...c, { from: m.from, color: m.color, text: m.text }].slice(-60));
-      } else if (m.type === "team_note") {
-        setTeamNotes((n) => [...n, { from: m.from, role: m.role, text: m.text }].slice(-40));
-      } else if (m.type === "game_over") {
-        setGameOver({ won: m.won, summary: m.summary });
-        setStatus(m.won ? "won" : "over");
-      } else if (m.type === "error") {
-        setError(m.message);
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
       }
+      wsRef.current = null;
     };
-    return () => ws.close();
   }, [room, name]);
 
   const send = useCallback((payload: Record<string, unknown>) => {

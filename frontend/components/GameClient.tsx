@@ -293,8 +293,8 @@ export default function GameClient({ room, name }: { room: string; name: string 
               className="scroll-thin mt-2 h-24 w-full resize-none rounded-lg border border-edge bg-ink/60 p-2 text-xs outline-none focus:border-blue"
             />
             <button
-              onClick={() => { g.sendClue(g.role, notes); setNotes(""); }}
-              disabled={!notes.trim()}
+              onClick={() => { g.sendClue(g.role ?? "unassigned", notes); setNotes(""); }}
+              disabled={!g.role || !notes.trim()}
               className="mt-2 w-full rounded-lg border border-edge py-1.5 text-xs text-dim transition hover:border-blue hover:text-bone disabled:opacity-40"
             >
               Share with team
@@ -620,10 +620,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 <button
                   type="button"
                   onClick={() => {
-                    g.sendClue(g.role, notes);
+                    g.sendClue(g.role ?? "unassigned", notes);
                     setNotes("");
                   }}
-                  disabled={!notes.trim()}
+                  disabled={!g.role || !notes.trim()}
                   className="mt-2 w-full rounded-lg border border-edge py-2 text-xs text-dim transition hover:border-blue hover:text-bone disabled:opacity-40"
                 >
                   Share with team

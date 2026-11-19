@@ -68,6 +68,17 @@ def test_role_assignment_covers_four_roles():
     assert {role_for_slot(i) for i in range(4)} == set(ROLES)
 
 
+def test_join_assigns_unique_dynamic_roles():
+    async def scenario():
+        room = Room("T", seed=23)
+        joined = [await room.join(None, f"P{i}") for i in range(4)]
+        return room, joined
+
+    room, joined = asyncio.run(scenario())
+    assert {p.role for p in joined} == set(ROLES)
+    assert set(room.role_pool) == set(ROLES)
+
+
 def test_join_welcome_and_move():
     client = TestClient(app)
     with client.websocket_connect("/ws/MOVE?name=Hiba") as ws:

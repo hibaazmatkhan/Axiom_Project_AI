@@ -34,7 +34,7 @@ from .patterns import PatternEngine
 from .stages import MAX_STAGE, rules_for_stage, stage_config
 from .nexus import Nexus
 from .knowledge import KnowledgeBase, PuzzleGenerator
-from .roles import ROLES, filter_arena, filter_round, filter_snapshot, filter_visions, role_for_slot
+from .roles import ROLES, filter_arena, filter_round, filter_snapshot, filter_visions
 from . import fate, db
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,9 @@ class Room:
         self.prev_arena: dict | None = None
         self.pa = "THE LAST ROOM. FIND THE FINAL DOOR."
         self.rng = random.Random(self.seed ^ 0x9E3779B9)
+        self._role_rng = random.Random(self.seed ^ 0x51ED270B)
+        self.role_pool = list(ROLES)
+        self._role_rng.shuffle(self.role_pool)
         self.dice: dict = {}
         self.visions: dict = {}
         self.last_shift: dict = {"pattern_type": None, "moved": [], "ops": [], "repairs": []}
@@ -198,7 +201,7 @@ class Room:
         remaining = None
         if self.status == "running" and self.next_round_at is not None:
             remaining = max(0.0, self.next_round_at - time.time())
-        role = for_player.role if for_player else "navigator"
+        role = for_player.role if for_player else "unassigned"
         snap = {
             "room": self.id, "status": self.status, "round": self.round,
             "max_rounds": self.max_rounds,
@@ -346,10 +349,14 @@ class Room:
             return None
         used = {p.slot for p in self.players.values()}
         slot = next(i for i in range(MAX_PLAYERS) if i not in used)
+        used_roles = {p.role for p in self.players.values()}
+        role = next((r for r in self.role_pool if r not in used_roles), None)
+        if role is None:
+            return None
         self._counter += 1
         pid = f"p{self._counter}"
         player = Player(pid, clean_name(name) or f"Player {slot + 1}", slot,
-                        COLORS[slot], role_for_slot(slot), self.arena.start_room().rid,
+                        COLORS[slot], role, self.arena.start_room().rid,
                         uid=uid, verified=verified, ws=ws)
         self.players[pid] = player
         self.log(pid, "join", {"role": player.role, "name": player.name})

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Alice in Borderland: The Last Room">
+  <defs>
+    <radialGradient id="red" cx="78%" cy="18%" r="55%">
+      <stop offset="0" stop-color="#e23b3b" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#e23b3b" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="gold" cx="12%" cy="82%" r="55%">
+      <stop offset="0" stop-color="#e8b53a" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#e8b53a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#040507"/>
+  <rect width="1200" height="630" fill="url(#red)"/>
+  <rect width="1200" height="630" fill="url(#gold)"/>
+  <g fill="none" stroke="#f4f1ea" stroke-opacity="0.12" stroke-width="2">
+    <path d="M72 138H1128M72 492H1128"/>
+    <path d="M72 138V492M1128 138V492"/>
+  </g>
+  <g transform="translate(72 72)">
+    <rect width="250" height="54" fill="none" stroke="#e23b3b" stroke-width="2"/>
+    <text x="18" y="37" fill="#e23b3b" font-family="monospace" font-size="22" letter-spacing="6">♠ LIVE BROADCAST</text>
+  </g>
+  <text x="342" y="108" fill="#8a8f98" font-family="monospace" font-size="20" letter-spacing="4">5×5 · FOUR PLAYERS · ONE DOOR</text>
+  <text x="72" y="348" fill="#f4f1ea" font-family="monospace" font-size="116" font-weight="800" letter-spacing="2">THE LAST ROOM</text>
+  <text x="76" y="404" fill="#e8b53a" font-family="monospace" font-size="34" letter-spacing="8">ALICE IN BORDERLAND</text>
+  <text x="72" y="556" fill="#8a8f98" font-family="monospace" font-size="22">EVERY DOOR IS A CHOICE. EVERY ROOM CAN MOVE.</text>
+  <text x="1008" y="556" fill="#f4f1ea" font-family="monospace" font-size="22" font-weight="700" letter-spacing="4">AXIOM</text>
+</svg>

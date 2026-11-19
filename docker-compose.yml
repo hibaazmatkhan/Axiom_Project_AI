@@ -14,12 +14,12 @@ services:
     build:
       context: ./frontend
       args:
-        WS_URL: "ws://localhost:8000"
+        NEXT_PUBLIC_WS_URL: "ws://localhost:8000"
     ports:
       - "3000:3000"
     environment:
       BACKEND_URL: "http://backend:8000"
-      WS_URL: "ws://localhost:8000"
+      NEXT_PUBLIC_WS_URL: "ws://localhost:8000"
     depends_on:
       - backend
 

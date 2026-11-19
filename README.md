@@ -135,7 +135,7 @@ docker compose up --build
 
 The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. The browser uses same-origin `/backend/*` for REST calls, and the Next.js service forwards them to the backend through the `BACKEND_URL` service binding. `/ws/*` is the backend's only public route. Do not set `BACKEND_URL` in Vercel; the binding injects it for each deployment, including previews.
 
-For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Run `vercel dev` at the repository root to test both services with bindings.
+For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `NEXT_PUBLIC_WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Run `vercel dev` at the repository root to test both services with bindings.
 
 Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and move room state out of the backend process: Vercel Functions have ephemeral filesystems and multiple instances, so the in-memory `rooms` dictionary is not shared across instances. Match data is shared through Supabase.
 

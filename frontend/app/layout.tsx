@@ -33,11 +33,18 @@ export const metadata: Metadata = {
       "Four players. Five by five moving rooms. One final door. The broadcast is live.",
     type: "website",
     siteName: "Alice in Borderland: The Last Room",
+    images: [{
+      url: "/opengraph.svg",
+      width: 1200,
+      height: 630,
+      alt: "Alice in Borderland: The Last Room",
+    }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Alice in Borderland · The Last Room",
     description: "Four players. Five by five moving rooms. One final door.",
+    images: ["/opengraph.svg"],
   },
 };
 
