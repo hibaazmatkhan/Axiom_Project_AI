@@ -100,7 +100,7 @@ python scripts/apply_migrations.py
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-python -m pytest            # 68 tests
+python -m pytest -q         # 77 tests
 ```
 
 ### Frontend (Node 20+)
@@ -133,11 +133,11 @@ docker compose up --build
 
 ### Vercel
 
-The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. The browser uses same-origin `/backend/*` for REST calls, and the Next.js service forwards them to the backend through the `BACKEND_URL` service binding. `/ws/*` is the backend's only public route. Do not set `BACKEND_URL` in Vercel; the binding injects it for each deployment, including previews.
+The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. `/backend/*` is rewritten directly to the backend service and `/ws/*` is also routed to the backend; keep both on the same Vercel domain. The internal `BACKEND_URL` binding is injected by Vercel and is only needed by the local Next.js fallback proxy at `frontend/app/backend/[...path]/route.ts`; do not set it manually in Vercel.
 
-For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Run `vercel dev` at the repository root to test both services with bindings.
+For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables. Run `vercel dev` at the repository root to test both services with bindings.
 
-Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and move room state out of the backend process: Vercel Functions have ephemeral filesystems and multiple instances, so the in-memory `rooms` dictionary is not shared across instances. Match data is shared through Supabase.
+Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and keep the backend long-lived. Rooms are in memory (`rooms` in `backend/app/main.py`), so Vercel Services must run a single long-lived backend instance or be replaced by shared state/Redis before scaling. Configure Fluid Compute/max duration for the backend service in the Vercel dashboard so WebSocket connections are not cut off by short function timeouts. The Render Blueprint uses one Docker instance (`numInstances: 1`) for the same reason. Match data is shared through Supabase.
 
 ---
 
@@ -173,9 +173,9 @@ axiom/
 │   │   ├── stages.py       # seven-stage progression
 │   │   ├── roles.py        # four roles + asymmetric information filtering
 │   │   ├── game.py         # rooms, round loop, points, locks, revives, reconnect
-│   │   ├── db.py           # SQLite persistence
+│   │   ├── db.py           # match store selection (Supabase / SQLite fallback)
 │   │   └── main.py         # FastAPI HTTP API + WebSocket endpoint
-│   ├── tests/              # 64 pytest tests + live-server smoke scripts
+│   ├── tests/              # 77 pytest tests + live-server smoke scripts
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
@@ -238,8 +238,8 @@ The shell uses a near-black broadcast palette with signal red, card gold and
 neon cyan. The landing page, login, lobby, profile and game HUD share the same
 responsive design system and animated favicon.
 
-Palette: paper `#f4f1ea`, ink `#14161a`, coal `#0b0c0e`, door red `#e23b3b`,
-blue `#3f7bd9`, yellow `#e8b53a`, green `#3f9f6b`.
+Palette: paper `#f4f1ea`, ink `#14161a`, void `#040507`, door red `#ff4655`,
+blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
 
 ---
 
@@ -261,10 +261,11 @@ blue `#3f7bd9`, yellow `#e8b53a`, green `#3f9f6b`.
 
 ## Tests
 
-`cd backend && python -m pytest` covers the arena engine, all seven pattern
+`cd backend && python -m pytest -q` covers the arena engine, all seven pattern
 types, solvability, The Dealer model and adaptation, the cipher solver across
-1,000 seeds, and the server (movement, anti-cheat, prediction, asymmetric
-information, locks/revives, reconnect, rate limiting).
+1,000 seeds, Supabase migration contracts, WebSocket first-frame auth, and the
+server (movement, anti-cheat, prediction, asymmetric information,
+locks/revives, reconnect, rate limiting).
 
 Live-server smoke scripts (start the backend first, then run from `backend/`):
 

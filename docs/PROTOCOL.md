@@ -1,9 +1,11 @@
 # AXIOM · THE LAST ROOM protocol (WP1 shared contracts)
 
-All WebSocket messages are JSON over
-`ws://HOST:8000/ws/{ROOM}?name={NAME}&pid={PID}`.
-`pid` is optional and used for reconnect. The server is authoritative: clients
-send intents, never state.
+All WebSocket messages are JSON. On Vercel the browser connects to
+`wss://HOST/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`; local development uses
+`ws://HOST:8000/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`. `pid` is optional and
+used for reconnect. The client must send an `auth` frame immediately after
+opening an `auth=1` socket. The server is authoritative: clients send intents,
+never state.
 
 The arena is a **5×5 matrix of white cube rooms** labelled `A1`–`E5`:
 `bx` runs A→E (0–4), `by` runs 1→5 (0–4). Players spawn in **C3** `(2,2)` and the
@@ -16,6 +18,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 
 | type | fields | notes |
 |---|---|---|
+| `auth` | `token` (nullable), `name`, `pid` | required first frame when `auth=1`; no token creates a guest identity |
 | `choose_door` | `door` (`N`/`E`/`S`/`W`) or `color` | cross a coloured doorway; costs 1 point; a 0-capacity door triggers a lockdown |
 | `choose_gate` | `door` | alias of `choose_door` |
 | `move` | `door`, or `dx`,`dy`, or `color` | legacy alias; `dx/dy` is mapped to the matching direction |
@@ -64,7 +67,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
       "N": { "color": "blue", "sealed": false, "open": true, "capacity": 2, "roll": 2 }
     },
     "locked": false, "eliminated": false, "escaped": false,
-    "points": 15, "role": "navigator"
+    "points": 15, "role": "archivist"
   },
   "next_round_in": 12.4, "round_seconds": 22,
   "min_players": 1, "rule_count": 1,
@@ -112,8 +115,8 @@ the round.
 
 ```jsonc
 {
-  "id": "p1", "name": "Hiba", "slot": 0, "color": "#e23b3b",
-  "role": "navigator", "room_id": "r12", "room_code": "C3", "room": [2, 2],
+  "id": "p1", "name": "Hiba", "slot": 0, "color": "#ff4655",
+  "role": "archivist", "room_id": "r12", "room_code": "C3", "room": [2, 2],
   "points": 15, "locked": false, "eliminated": false, "escaped": false,
   "ready": false, "connected": true,
   "predictions": 0, "correct": 0, "streak": 0,
@@ -179,13 +182,20 @@ No client ever receives another role's hidden data, and the hidden rule itself
 
 ## HTTP API
 
+Browser calls use the `/backend` prefix (for example `/backend/health`), which
+Vercel rewrites directly to the FastAPI service. Local development can use the
+Next.js fallback proxy at the same prefix or call FastAPI on port 8000 directly.
+Firebase ID tokens are sent as `Authorization: Bearer <token>`; only endpoints
+marked public omit auth.
+
 | method | path | purpose |
 |---|---|---|
-| GET | `/health` | liveness + live room/player counts |
-| POST | `/api/signup` | create account (PBKDF2-hashed password) |
-| POST | `/api/login` | verify credentials |
-| GET | `/api/profile/{username}` | The Dealer's attributes, style, aggregate stats |
-| GET | `/api/history/{username}` | match history |
-| GET | `/api/leaderboard` | top players |
-| GET | `/api/stages` | stage definitions |
-| GET | `/api/nexus/tune?team_skill=&cycles=` | run a simulated team through The Dealer |
+| GET | `/health` | public liveness + live room/player counts |
+| GET | `/api/me` | create/read the caller's Supabase profile and stats |
+| PUT | `/api/me/profile` | update username and display name |
+| POST | `/api/me/mfa` | update optional MFA flag |
+| GET | `/api/me/history?limit=` | verified caller's match history |
+| GET | `/api/leaderboard?limit=` | public top players |
+| GET | `/api/stages` | public stage definitions |
+| GET | `/api/nexus/tune?team_skill=&cycles=` | public simulated-team tuning |
+| GET | `/api/admin/rooms` | administrator-only room inventory |

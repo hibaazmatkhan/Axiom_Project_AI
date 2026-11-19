@@ -31,4 +31,5 @@ create trigger profiles_set_updated_at
 
 alter table public.profiles enable row level security;
 
+revoke all on public.profiles from anon, authenticated;
 grant select, insert, update, delete on public.profiles to service_role;

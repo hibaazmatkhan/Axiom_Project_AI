@@ -42,14 +42,29 @@ strips on the walls previewing possible futures.
               │  · stage progression       │
               └────────────┬───────────────┘
                            │
-              ┌────────────▼───────────────┐
-              │   Persistence (WP7, SQLite) │
-              │  users · matches · stats    │
-              │  · Dealer player models     │
-              └────────────────────────────┘
+               ┌────────────────────────────────┐
+               │ Persistence (WP7, Supabase)     │
+               │ profiles · matches · stats      │
+               │ Dealer player models · RPCs     │
+               └────────────────────────────────┘
 ```
 
+## Deployment
+
+Vercel Services builds `frontend/` and `backend/` into one deployment. Public
+`/backend/*` rewrites route to the FastAPI service with the prefix removed, and
+`/ws/*` routes to the same backend service. The frontend keeps a local Next.js
+proxy for `vercel dev` and Docker development; on Vercel it is bypassed by the
+top-level rewrite. The `BACKEND_URL` binding is internal and injected by Vercel.
+
+Rooms are authoritative but process-local. Keep one long-lived backend instance,
+and configure Fluid Compute/max duration for WebSocket traffic in the Vercel
+dashboard. Before horizontal scaling, move `rooms` to shared state such as Redis
+or a pub/sub-backed coordinator. The Render Blueprint keeps `numInstances: 1`
+for the same reason. Persistent data is shared through Supabase.
+
 ## Round loop
+
 
 ```
 round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
@@ -113,7 +128,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `backend/app/stages.py` | Seven stage definitions and per-stage rules |
 | `backend/app/roles.py` | Navigator/Oracle/Timekeeper/Archivist + per-role filtering |
 | `backend/app/game.py` | Rooms, round state machine, points, locks, revives, reconnect |
-| `backend/app/db.py` | SQLite schema + repository (users, matches, models) |
+| `backend/app/db.py` | Match store selection: Supabase production store with SQLite fallback |
 | `backend/app/main.py` | FastAPI HTTP API + WebSocket endpoint |
 | `frontend/app/page.tsx` | Landing page |
 | `frontend/app/lobby/page.tsx` | Lobby / room create & join |
@@ -140,9 +155,9 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 
 ## Theme and naming
 
-The game is inspired by the final game of *Alice in Borderland* season 3
-("Possible Futures") but uses original names and assets. No copyrighted names,
-art or text from the show are used.
+The game is an unofficial fan project inspired by the final game of *Alice in
+Borderland* season 3 ("Possible Futures"). It uses the broadcast theme and show
+roles; character likenesses are loaded only from user-supplied assets.
 
 | Show concept | Original name here |
 |---|---|
@@ -158,7 +173,7 @@ art or text from the show are used.
 
 ## Palette
 
-Off-white paper `#f4f1ea`, charcoal ink `#14161a`, near-black `#0b0c0e`, door
-red `#e23b3b`, blue `#3f7bd9`, yellow `#e8b53a`, green `#3f9f6b`.
+Off-white paper `#f4f1ea`, charcoal ink `#14161a`, near-black void `#040507`,
+door red `#ff4655`, blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
 The shell pages use the paper palette; the in-game HUD uses charcoal glass over
 the white cube room.
