@@ -7,8 +7,17 @@ __pycache__/
 venv/
 .env
 .env.local
+.env.*.local
+.env.production
+.env.development
+.vercel/
 .pytest_cache/
 *.db
 *.sqlite3
 *.tsbuildinfo
+*.log
+*.pem
+service-account*.json
 .DS_Store
+.idea/
+.vscode/
