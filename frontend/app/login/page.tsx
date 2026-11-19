@@ -248,7 +248,7 @@ export default function LoginPage() {
 
           {!firebaseConfigured && (
             <div className="mt-6 border border-red/40 bg-red/10 p-4 text-sm text-red">
-              Firebase is not configured. Add the `NEXT_PUBLIC_FIREBASE_*` values to
+              Firebase is not configured. Add the `FIREBASE_*` values to
               `frontend/.env.local`.
             </div>
           )}

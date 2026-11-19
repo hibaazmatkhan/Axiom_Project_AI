@@ -41,7 +41,7 @@ const FATAL_ERRORS = new Set([
 ]);
 
 function socketUrl(room: string, name: string, pid: string) {
-  const configured = process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.WS_URL?.trim();
+  const configured = process.env.WS_URL?.trim();
   const base = new URL(configured || window.location.origin, window.location.origin);
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;

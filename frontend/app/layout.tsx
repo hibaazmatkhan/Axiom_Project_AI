@@ -4,7 +4,7 @@ import AnimatedFavicon from "@/components/AnimatedFavicon";
 import { AuthProvider } from "@/components/AuthProvider";
 
 const siteUrl =
-  process.env.NEXT_PUBLIC_SITE_URL ||
+  process.env.SITE_URL ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 export const metadata: Metadata = {
