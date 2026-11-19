@@ -100,7 +100,7 @@ python scripts/apply_migrations.py
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-python -m pytest -q         # 77 tests
+python -m pytest -q         # 79 tests
 ```
 
 ### Frontend (Node 20+)
@@ -133,7 +133,7 @@ docker compose up --build
 
 ### Vercel
 
-The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. `/backend/*` is rewritten directly to the backend service and `/ws/*` is also routed to the backend; keep both on the same Vercel domain. The internal `BACKEND_URL` binding is injected by Vercel and is only needed by the local Next.js fallback proxy at `frontend/app/backend/[...path]/route.ts`; do not set it manually in Vercel.
+The root `vercel.json` deploys `frontend/` and `backend/` as one Services project. `/backend/*` is rewritten directly to the backend service and normalized by `BackendPrefixMiddleware`; `/ws/*` is also routed to the backend. Keep both on the same Vercel domain. The internal `BACKEND_URL` binding is injected by Vercel and is only needed by the local Next.js fallback proxy at `frontend/app/backend/[...path]/route.ts`; do not set it manually in Vercel.
 
 For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables. Run `vercel dev` at the repository root to test both services with bindings.
 
@@ -175,7 +175,7 @@ axiom/
 │   │   ├── game.py         # rooms, round loop, points, locks, revives, reconnect
 │   │   ├── db.py           # match store selection (Supabase / SQLite fallback)
 │   │   └── main.py         # FastAPI HTTP API + WebSocket endpoint
-│   ├── tests/              # 77 pytest tests + live-server smoke scripts
+│   ├── tests/              # 79 pytest tests + live-server smoke scripts
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/

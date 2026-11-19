@@ -35,7 +35,23 @@ ROUND_SECONDS = os.getenv("ROUND_SECONDS")
 MIN_PLAYERS = int(os.getenv("MIN_PLAYERS", "1"))
 ORIGINS = config.ALLOWED_ORIGINS
 
+
+class BackendPrefixMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/backend/"):
+            scope = dict(scope)
+            scope["path"] = scope["path"][len("/backend"):] or "/"
+            raw_path = scope.get("raw_path")
+            if raw_path:
+                scope["raw_path"] = raw_path[len("/backend"):] or b"/"
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="THE LAST ROOM game server", version="1.0.0")
+app.add_middleware(BackendPrefixMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGINS,

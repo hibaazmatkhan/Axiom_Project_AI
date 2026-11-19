@@ -52,9 +52,10 @@ strips on the walls previewing possible futures.
 ## Deployment
 
 Vercel Services builds `frontend/` and `backend/` into one deployment. Public
-`/backend/*` rewrites route to the FastAPI service with the prefix removed, and
-`/ws/*` routes to the same backend service. The frontend keeps a local Next.js
-proxy for `vercel dev` and Docker development; on Vercel it is bypassed by the
+`/backend/*` rewrites route to the FastAPI service, which normalizes the prefix
+with `BackendPrefixMiddleware`; `/ws/*` routes to the same backend service. The
+frontend keeps a local Next.js proxy for `vercel dev` and Docker development; on
+Vercel it is bypassed by the
 top-level rewrite. The `BACKEND_URL` binding is internal and injected by Vercel.
 
 Rooms are authoritative but process-local. Keep one long-lived backend instance,
