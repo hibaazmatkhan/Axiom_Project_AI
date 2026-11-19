@@ -80,7 +80,7 @@ export function useGameSocket(room: string, name: string) {
 
   useEffect(() => {
     const base = new URL(
-      process.env.NEXT_PUBLIC_WS_URL?.trim() || window.location.origin,
+      process.env.WS_URL?.trim() || window.location.origin,
       window.location.origin
     );
     base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
