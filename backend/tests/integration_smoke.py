@@ -21,7 +21,8 @@ def check_http():
 
 
 async def player(room, name):
-    ws = await websockets.connect(f"{BASE}/ws/{room}?name={name}")
+    ws = await websockets.connect(f"{BASE}/ws/{room}?name={name}&auth=1")
+    await ws.send(json.dumps({"type": "auth", "name": name}))
     welcome = json.loads(await ws.recv())
     assert welcome["type"] == "welcome"
     role = welcome["state"]["role"]
