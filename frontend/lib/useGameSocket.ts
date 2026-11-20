@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, Dice, Direction, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, WalkEvent, You,
+  Arena, CrossEvent, Dice, Direction, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -99,8 +99,8 @@ export function useGameSocket(room: string, name: string) {
   const [prediction, setPrediction] = useState<{ correct: boolean; score: number; message: string } | null>(null);
   const [puzzleResult, setPuzzleResult] = useState<boolean | null>(null);
   const [doorEvent, setDoorEvent] = useState<DoorEvent | null>(null);
-  const [walk, setWalk] = useState<WalkEvent>({
-    id: 0, dir: null, from: null, to: null, cost: 1, player: null,
+  const [cross, setCross] = useState<CrossEvent>({
+    id: 0, door: null, from: null, to: null, cost: 0, player: null,
   });
   const [hazard, setHazard] = useState<HazardEvent | null>(null);
   const [revive, setRevive] = useState<ReviveEvent | null>(null);
@@ -267,16 +267,23 @@ export function useGameSocket(room: string, name: string) {
             remaining: m.remaining, room_code: m.room_code, target_code: m.target_code,
             message: m.message, cost,
           });
-          if (m.accepted && m.player === youRef.current) {
-            setWalk((prev) => ({
-              id: prev.id + 1,
-              dir: (m.door as Direction) ?? null,
-              from: m.room_code ?? null,
-              to: m.target_code ?? null,
-              cost,
-              player: m.player ?? null,
-            }));
-          }
+        } else if (m.type === "door_opened") {
+          setDoorEvent({
+            accepted: !!m.accepted, door: m.door, color: m.color,
+            remaining: m.remaining, room_code: m.room_code, target_code: m.target_code,
+            cost: Number(m.cost ?? 1) || 1, message: m.message,
+          });
+        } else if (m.type === "door_closed") {
+          setDoorEvent(null);
+        } else if (m.type === "room_entered") {
+          setCross((prev) => ({
+            id: prev.id + 1,
+            door: (m.door as Direction) ?? null,
+            from: m.from ?? null,
+            to: m.to ?? null,
+            cost: Number(m.cost ?? 0) || 0,
+            player: m.player ?? null,
+          }));
         } else if (m.type === "lockdown") {
           setDoorEvent({ accepted: false, locked: true, door: m.door, room_code: m.room_code, message: m.message });
         } else if (m.type === "hazard") {
@@ -329,7 +336,8 @@ export function useGameSocket(room: string, name: string) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   }, []);
 
-  const sendChooseDoor = useCallback((door: string) => send({ type: "choose_door", door }), [send]);
+  const sendOpenDoor = useCallback((door: string) => send({ type: "open_door", door }), [send]);
+  const sendCrossDoor = useCallback((door: string) => send({ type: "cross_door", door }), [send]);
   const sendWait = useCallback(() => send({ type: "wait" }), [send]);
   const sendUnlock = useCallback((target: string) => send({ type: "unlock", target }), [send]);
   const sendPredict = useCallback(
@@ -344,8 +352,8 @@ export function useGameSocket(room: string, name: string) {
   return {
     connected, attempts, restored, error, you, me, arena, prevArena, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, minPlayers, nexus, pa, role, roleLabel,
-    roleHint, dice, futures, puzzle, exitUnsealed, transition, prediction, puzzleResult, doorEvent, walk,
+    roleHint, dice, futures, puzzle, exitUnsealed, transition, prediction, puzzleResult, doorEvent, cross,
     hazard, revive, eliminated, chat, teamNotes, exitNotice, gameOver,
-    sendChooseDoor, sendWait, sendUnlock, sendPredict, sendReady, sendPuzzle, sendChat, sendClue,
+    sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendPuzzle, sendChat, sendClue,
   };
 }

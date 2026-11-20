@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import type { Arena, Dice, Direction, Door, DoorColor, Player, Role, Visions, You, WalkEvent } from "@/lib/types";
+import type { Arena, CrossEvent, Dice, Direction, Door, DoorColor, Player, Role, Visions, You } from "@/lib/types";
 
 type Props = {
   arena: Arena | null;
@@ -14,9 +14,10 @@ type Props = {
   exitUnsealed: boolean;
   transitionId: number;
   moved: { from: [number, number]; to: [number, number]; code_from: string; code_to: string }[];
-  walk: WalkEvent;
+  cross: CrossEvent;
   firstPerson: boolean;
-  onChooseDoor: (dir: Direction) => void;
+  onOpenDoor: (dir: Direction) => void;
+  onCrossDoor: (dir: Direction) => void;
 };
 
 const H = 3;
@@ -24,9 +25,12 @@ const WH = 3.2;
 const DW = 1.7;
 const DH = 2.5;
 const T = 0.22;
-const ROOM_STEP = H * 2;
-const WALK_MS = 920;
 const FREE_SPEED = 2.6;
+const DOOR_REACH = DW * 0.62;
+const DOOR_BAND = 0.62;
+const CROSS_COOLDOWN = 500;
+const CROSS_LATCH_TIMEOUT = 1600;
+const LOOK_SENSITIVITY = 0.0024;
 
 const INK = 0x0b0c0e;
 const WHITE = 0xf4f1ea;
@@ -54,11 +58,9 @@ function disposeGroup(group: THREE.Object3D) {
   });
 }
 
-function makeLabel(text: string, color = "#f4f1ea", scale = 1.5) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 96;
+function paintLabel(canvas: HTMLCanvasElement, text: string, color: string) {
   const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "rgba(11,12,14,0.82)";
   ctx.fillRect(8, 14, 240, 68);
   ctx.strokeStyle = "rgba(244,241,234,0.22)";
@@ -68,12 +70,37 @@ function makeLabel(text: string, color = "#f4f1ea", scale = 1.5) {
   ctx.fillStyle = color;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, 128, 50);
+  ctx.fillText(text, 128, 50, 224);
+}
+
+function makeLabel(text: string, color = "#f4f1ea", scale = 1.5) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 96;
+  paintLabel(canvas, text, color);
   const tex = new THREE.CanvasTexture(canvas);
   tex.anisotropy = 4;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(scale, scale * 0.375, 1);
+  return sprite;
+}
+
+function makeDynamicLabel(text: string, color: string, scale: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 96;
+  paintLabel(canvas, text, color);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false,
+  }));
+  sprite.scale.set(scale, scale * 0.375, 1);
+  sprite.userData.setText = (next: string, nextColor: string) => {
+    paintLabel(canvas, next, nextColor);
+    tex.needsUpdate = true;
+  };
   return sprite;
 }
 
@@ -91,20 +118,20 @@ function orientTo(group: THREE.Object3D, dir: Direction) {
   else { group.position.set(-H, 0, 0); group.rotation.y = Math.PI / 2; }
 }
 
-function walkOffset(dir: Direction | null) {
-  if (dir === "N") return { x: 0, z: -ROOM_STEP, yaw: 0 };
-  if (dir === "S") return { x: 0, z: ROOM_STEP, yaw: Math.PI };
-  if (dir === "E") return { x: ROOM_STEP, z: 0, yaw: -Math.PI / 2 };
-  if (dir === "W") return { x: -ROOM_STEP, z: 0, yaw: Math.PI / 2 };
-  return { x: 0, z: 0, yaw: 0 };
+const OPPOSITE: Record<Direction, Direction> = { N: "S", E: "W", S: "N", W: "E" };
+
+function outwardVector(dir: Direction) {
+  if (dir === "N") return { x: 0, z: -1 };
+  if (dir === "S") return { x: 0, z: 1 };
+  if (dir === "E") return { x: 1, z: 0 };
+  return { x: -1, z: 0 };
 }
 
-function doorAnchor(dir: Direction | null) {
-  if (dir === "N") return { x: 0, z: -H, vertical: false };
-  if (dir === "S") return { x: 0, z: H, vertical: false };
-  if (dir === "E") return { x: H, z: 0, vertical: true };
-  if (dir === "W") return { x: -H, z: 0, vertical: true };
-  return { x: 0, z: 0, vertical: false };
+function entryPose(dir: Direction) {
+  if (dir === "N") return { x: 0, z: -H + 0.72, yaw: Math.PI };
+  if (dir === "S") return { x: 0, z: H - 0.72, yaw: 0 };
+  if (dir === "E") return { x: H - 0.72, z: 0, yaw: Math.PI / 2 };
+  return { x: -H + 0.72, z: 0, yaw: -Math.PI / 2 };
 }
 
 function isEdgeDirection(room: [number, number] | null, size: number, dir: Direction) {
@@ -116,35 +143,6 @@ function isEdgeDirection(room: [number, number] | null, size: number, dir: Direc
   return bx <= 0;
 }
 
-function easeInOut(p: number) {
-  return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-}
-
-function roomYouFrom(base: You, room: Arena["rooms"][number]): You {
-  return {
-    ...base,
-    room_id: room.id,
-    room_code: room.code,
-    room: [room.bx, room.by],
-    doors: Object.fromEntries(
-      DIRS.map((dir) => [dir, { ...room.doors[dir], open: !room.doors[dir].sealed }])
-    ) as You["doors"],
-    locked: false,
-    eliminated: false,
-    escaped: false,
-  };
-}
-
-type WalkAnimation = {
-  startedAt: number;
-  to: string;
-  toYou: You;
-  start: THREE.Vector3;
-  gate: THREE.Vector3;
-  end: THREE.Vector3;
-  yaw: number;
-};
-
 export default function GameCanvas(props: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const propsRef = useRef(props);
@@ -152,9 +150,9 @@ export default function GameCanvas(props: Props) {
   const apiRef = useRef<{
     rebuild: () => void;
     pulse: () => void;
-    walk: (event: WalkEvent) => void;
+    entered: (event: CrossEvent) => void;
   } | null>(null);
-  const lastWalkId = useRef(0);
+  const lastCrossId = useRef(0);
 
   useEffect(() => {
     const mount = mountRef.current!;
@@ -191,10 +189,13 @@ export default function GameCanvas(props: Props) {
     const diceGems: { mesh: THREE.Mesh; base: number; phase: number }[] = [];
     const popups: { sprite: THREE.Sprite; born: number; baseY: number }[] = [];
     const flashes: { mesh: THREE.Mesh; born: number }[] = [];
+    const doorSlides: {
+      left: THREE.Mesh; right: THREE.Mesh; open: boolean; baseX: number; span: number;
+    }[] = [];
+    const doorTimers: {
+      sprite: THREE.Sprite; openUntil: number; cost: number; lastText: string;
+    }[] = [];
     let glitch = 0;
-    let renderedCode = "";
-    let walkAnim: WalkAnimation | null = null;
-    let nextGroup: THREE.Group | null = null;
     let freePos = { x: 0, z: 0 };
     let yaw = 0;
     let pitch = 0;
@@ -202,6 +203,14 @@ export default function GameCanvas(props: Props) {
     let orbitPitch = 0.34;
     let orbitDist = 6.2;
     let dragging = false;
+    let pointerLocked = false;
+    let pointerLockRequested = false;
+    let pointerDownAt = 0;
+    let pointerStart = { x: 0, y: 0 };
+    let pointerMoved = false;
+    let crossLatch: Direction | null = null;
+    let crossLatchAt = 0;
+    let lastCrossSent = 0;
     const keys: Record<string, boolean> = {};
 
     const wallMat = new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.92, metalness: 0.02 });
@@ -242,33 +251,47 @@ export default function GameCanvas(props: Props) {
 
       const color: DoorColor = door?.color ?? "red";
       const sealed = !!door?.sealed;
-      const open = !!door?.open && !sealed;
-      const hex = sealed ? 0xe23b3b : DOOR_HEX[color] ?? 0xe23b3b;
+      const tempOpen = !!door?.temporary_open && (door?.open_until ?? 0) > Date.now() / 1000;
+      const structuralOpen = !!door?.open && !sealed && !tempOpen;
+      const passable = structuralOpen || tempOpen;
+      const hex = tempOpen ? 0xe8b53a : sealed ? 0xe23b3b : DOOR_HEX[color] ?? 0xe23b3b;
 
       const frameMat = new THREE.MeshStandardMaterial({
-        color: hex, emissive: hex, emissiveIntensity: sealed ? 1.5 : 0.85,
+        color: hex, emissive: hex, emissiveIntensity: tempOpen ? 2.1 : sealed ? 1.5 : 0.85,
         roughness: 0.35, metalness: 0.45,
       });
       addBox(group, 0.1, DH, T + 0.08, -DW / 2, DH / 2, 0, frameMat);
       addBox(group, 0.1, DH, T + 0.08, DW / 2, DH / 2, 0, frameMat);
       addBox(group, DW + 0.1, 0.1, T + 0.08, 0, DH, 0, frameMat);
 
-      if (!open) {
-        const panel = new THREE.Mesh(
-          new THREE.PlaneGeometry(DW - 0.05, DH - 0.05),
-          new THREE.MeshStandardMaterial({
-            color: sealed ? 0x2a0f0f : 0x1a1c20,
-            emissive: sealed ? 0xe23b3b : 0x000000,
-            emissiveIntensity: sealed ? 0.5 : 0,
-            roughness: 0.6, metalness: 0.2, side: THREE.DoubleSide,
-          })
-        );
-        panel.position.set(0, DH / 2, 0.05);
-        group.add(panel);
-      } else {
-        const beyond = new THREE.Mesh(new THREE.PlaneGeometry(DW - 0.05, DH - 0.05), voidMat);
+      if (!structuralOpen) {
+        const panelMat = new THREE.MeshStandardMaterial({
+          color: tempOpen ? 0x3a3220 : sealed ? 0x2a0f0f : 0x1a1c20,
+          emissive: tempOpen ? 0xe8b53a : sealed ? 0xe23b3b : 0x000000,
+          emissiveIntensity: tempOpen ? 0.35 : sealed ? 0.5 : 0,
+          roughness: 0.6, metalness: 0.2, side: THREE.DoubleSide,
+        });
+        const halfW = (DW - 0.08) / 2;
+        const left = addBox(group, halfW, DH - 0.05, 0.06, -halfW / 2, DH / 2, 0.06, panelMat);
+        const right = addBox(group, halfW, DH - 0.05, 0.06, halfW / 2, DH / 2, 0.06, panelMat);
+        doorSlides.push({ left, right, open: tempOpen, baseX: halfW / 2, span: halfW });
+      }
+      if (passable) {
+        const beyond = new THREE.Mesh(new THREE.PlaneGeometry(DW - 0.05, DH - 0.05),
+          tempOpen
+            ? new THREE.MeshBasicMaterial({
+              color: 0xe8b53a, transparent: true, opacity: 0.14,
+              side: THREE.DoubleSide, depthWrite: false,
+            })
+            : voidMat);
         beyond.position.set(0, DH / 2, -0.16);
         group.add(beyond);
+      }
+      if (tempOpen && door?.open_until) {
+        const timer = makeDynamicLabel(`${Math.ceil(door.open_until - Date.now() / 1000)}s · -1`, "#3f9f6b", 0.94);
+        timer.position.set(0, DH + 0.88, 0.2);
+        group.add(timer);
+        doorTimers.push({ sprite: timer, openUntil: door.open_until, cost: 1, lastText: "" });
       }
 
       const future = propsRef.current.futures?.[roomCode]?.doors?.[dir]?.future;
@@ -402,7 +425,7 @@ export default function GameCanvas(props: Props) {
         parent.add(danger);
       }
 
-      const hideSelf = propsRef.current.firstPerson || walkAnim !== null;
+      const hideSelf = propsRef.current.firstPerson;
       const mates = players.filter(
         (p) => p.room_code === roomYou.room_code && !p.eliminated && (hideSelf ? p.id !== youId : true)
       );
@@ -447,94 +470,31 @@ export default function GameCanvas(props: Props) {
       parent.add(ringMesh);
     };
 
-    const clearNextGroup = () => {
-      if (!nextGroup) return;
-      scene.remove(nextGroup);
-      disposeGroup(nextGroup);
-      nextGroup = null;
-    };
-
     const rebuild = () => {
       const you = propsRef.current.you;
-      if (!you || walkAnim) return;
+      if (!you) return;
       pickMeshes.length = 0;
       diceGems.length = 0;
+      doorSlides.length = 0;
+      doorTimers.length = 0;
       popups.length = 0;
       flashes.length = 0;
-      clearNextGroup();
       buildRoomInto(roomGroup, you, 0, 0, true);
-      renderedCode = you.room_code ?? "";
     };
 
-    const finishWalk = (anim: WalkAnimation) => {
-      clearNextGroup();
-      pickMeshes.length = 0;
-      diceGems.length = 0;
-      popups.length = 0;
-      flashes.length = 0;
-      freePos = { x: 0, z: 0 };
-      buildRoomInto(roomGroup, anim.toYou, 0, 0, true);
-      renderedCode = anim.to;
-      walkAnim = null;
+    const entered = (event: CrossEvent) => {
+      const door = event.door ?? "N";
+      const pose = entryPose(OPPOSITE[door]);
+      freePos = { x: pose.x, z: pose.z };
+      yaw = pose.yaw;
+      pitch = 0;
+      crossLatch = null;
+      crossLatchAt = 0;
+      lastCrossSent = 0;
+      glitch = Math.max(glitch, 0.45);
     };
 
-    const startWalk = (event: WalkEvent) => {
-      const { arena, you } = propsRef.current;
-      if (!arena || !you || !event.dir || !event.to) return;
-      if (walkAnim) finishWalk(walkAnim);
-      popups.length = 0;
-      flashes.length = 0;
-      const fromCode = renderedCode || event.from || you.room_code || "";
-      const fromRoom = arena.rooms.find((r) => r.code === fromCode)
-        ?? arena.rooms.find((r) => r.code === event.from)
-        ?? arena.rooms.find((r) => r.code === you.room_code);
-      const toRoom = arena.rooms.find((r) => r.code === event.to);
-      if (!fromRoom || !toRoom) return;
-
-      clearNextGroup();
-      pickMeshes.length = 0;
-      diceGems.length = 0;
-
-      const fromYou = roomYouFrom(you, fromRoom);
-      const toYou = roomYouFrom(you, toRoom);
-      const offset = walkOffset(event.dir);
-      const anchor = doorAnchor(event.dir);
-
-      buildRoomInto(roomGroup, fromYou, 0, 0, false);
-      renderedCode = fromRoom.code;
-
-      nextGroup = new THREE.Group();
-      nextGroup.position.set(offset.x, 0, offset.z);
-      scene.add(nextGroup);
-      buildRoomInto(nextGroup, toYou, offset.x, offset.z, false);
-
-      const popup = makeLabel(`-${event.cost}`, "#e8b53a", 1.05);
-      const popupY = DH + 0.82;
-      popup.position.set(anchor.x, popupY, anchor.z);
-      roomGroup.add(popup);
-      popups.push({ sprite: popup, born: performance.now(), baseY: popupY });
-
-      const flash = new THREE.Mesh(
-        new THREE.RingGeometry(DW * 0.38, DW * 0.5, 36),
-        new THREE.MeshBasicMaterial({ color: 0xe8b53a, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false })
-      );
-      flash.position.set(anchor.x, DH / 2, anchor.z);
-      if (anchor.vertical) flash.rotation.y = Math.PI / 2;
-      roomGroup.add(flash);
-      flashes.push({ mesh: flash, born: performance.now() });
-
-      walkAnim = {
-        startedAt: performance.now(),
-        to: toRoom.code,
-        toYou,
-        start: new THREE.Vector3(freePos.x, 1.62, freePos.z),
-        gate: new THREE.Vector3(anchor.x, 1.62, anchor.z),
-        end: new THREE.Vector3(offset.x, 1.62, offset.z),
-        yaw: offset.yaw,
-      };
-    };
-
-    apiRef.current = { rebuild, pulse: () => { glitch = 1; }, walk: startWalk };
+    apiRef.current = { rebuild, pulse: () => { glitch = 1; }, entered };
     rebuild();
 
     const resize = () => {
@@ -551,6 +511,7 @@ export default function GameCanvas(props: Props) {
     const ndc = new THREE.Vector2(0, 0);
     const raycaster = new THREE.Raycaster();
 
+    const centerNdc = new THREE.Vector2(0, 0);
     const viewDirection = (): Direction => {
       const fwd = new THREE.Vector3();
       camera.getWorldDirection(fwd);
@@ -558,22 +519,38 @@ export default function GameCanvas(props: Props) {
       return fwd.z > 0 ? "S" : "N";
     };
 
-    const pick = () => {
-      const locked = document.pointerLockElement === renderer.domElement;
-      raycaster.setFromCamera(locked ? new THREE.Vector2(0, 0) : ndc, camera);
-      const hits = raycaster.intersectObjects(pickMeshes, false);
-      const dir = (hits[0]?.object.userData?.dir as Direction | undefined) ?? viewDirection();
-      propsRef.current.onChooseDoor(dir);
+    const intersectDir = (pointer: THREE.Vector2) => {
+      raycaster.setFromCamera(pointer, camera);
+      return raycaster.intersectObjects(pickMeshes, false)
+        .map((hit) => hit.object.userData?.dir as Direction | undefined)
+        .find((dir): dir is Direction => !!dir);
+    };
+
+    const openDoor = (dir: Direction) => {
+      const door = propsRef.current.you?.doors?.[dir];
+      if (door?.temporary_open && (door.open_until ?? 0) > Date.now() / 1000) return;
+      propsRef.current.onOpenDoor(dir);
+    };
+
+    const pick = (pointer?: THREE.Vector2) => {
+      const dir = intersectDir(pointer ?? (pointerLocked ? centerNdc : ndc));
+      if (dir) openDoor(dir);
     };
 
     const onPointerMove = (e: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      if (document.pointerLockElement === renderer.domElement && propsRef.current.firstPerson) {
-        yaw -= e.movementX * 0.0024;
-        pitch = Math.max(-1.2, Math.min(1.2, pitch - e.movementY * 0.0024));
-      } else if (dragging && !propsRef.current.firstPerson) {
+      if (dragging && !pointerLocked) {
+        if (Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 6) pointerMoved = true;
+      }
+      if (pointerLocked && propsRef.current.firstPerson) {
+        yaw -= e.movementX * LOOK_SENSITIVITY;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch - e.movementY * LOOK_SENSITIVITY));
+      } else if (dragging && propsRef.current.firstPerson) {
+        yaw -= e.movementX * LOOK_SENSITIVITY * 1.5;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch - e.movementY * LOOK_SENSITIVITY * 1.5));
+      } else if (dragging) {
         orbitYaw -= e.movementX * 0.005;
         orbitPitch = Math.max(0.08, Math.min(1.12, orbitPitch - e.movementY * 0.004));
       }
@@ -583,24 +560,52 @@ export default function GameCanvas(props: Props) {
       typeof renderer.domElement.requestPointerLock === "function" &&
       window.matchMedia("(pointer: fine)").matches;
 
-    const onPointerDown = () => {
+    const onPointerDown = (e: PointerEvent) => {
+      pointerDownAt = performance.now();
+      pointerStart = { x: e.clientX, y: e.clientY };
+      pointerMoved = false;
       if (!propsRef.current.firstPerson) {
         dragging = true;
         return;
       }
-      if (canLockPointer && document.pointerLockElement !== renderer.domElement) {
+      if (canLockPointer && !pointerLocked) {
+        const hit = intersectDir(ndc);
+        if (hit) openDoor(hit);
+        pointerLockRequested = true;
+        dragging = true;
         try {
           const result = renderer.domElement.requestPointerLock();
-          if (result instanceof Promise) result.catch(() => pick());
+          if (result instanceof Promise) result.catch(() => { pointerLockRequested = false; });
         } catch {
-          pick();
+          pointerLockRequested = false;
         }
         return;
       }
-      pick();
+      dragging = !pointerLocked;
+      pick(pointerLocked ? centerNdc : ndc);
     };
 
-    const onPointerUp = () => { dragging = false; };
+    const onPointerUp = () => {
+      if (pointerLockRequested) {
+        pointerLockRequested = false;
+        dragging = false;
+        return;
+      }
+      if (dragging && !pointerLocked && propsRef.current.firstPerson &&
+          !pointerMoved && performance.now() - pointerDownAt < 350) {
+        pick(ndc);
+      }
+      dragging = false;
+    };
+
+    const onPointerLockChange = () => {
+      pointerLocked = document.pointerLockElement === renderer.domElement;
+      if (!pointerLocked) {
+        dragging = false;
+        pointerLockRequested = false;
+      }
+    };
+
     const onWheel = (e: WheelEvent) => {
       if (propsRef.current.firstPerson) return;
       e.preventDefault();
@@ -614,7 +619,7 @@ export default function GameCanvas(props: Props) {
       const k = e.key.toLowerCase();
       if (k === "e" || k === "enter") {
         e.preventDefault();
-        if (!walkAnim) propsRef.current.onChooseDoor(viewDirection());
+        openDoor(viewDirection());
         return;
       }
       if (movementKeys.has(k)) {
@@ -630,9 +635,23 @@ export default function GameCanvas(props: Props) {
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", onPointerUp);
+    document.addEventListener("pointerlockchange", onPointerLockChange);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+
+    const nearOpenDoor = (pos: { x: number; z: number }, you: You | null, nowMs: number) => {
+      if (!you) return null;
+      for (const dir of DIRS) {
+        const door = you.doors?.[dir];
+        if (!door?.temporary_open || (door.open_until ?? 0) * 1000 <= nowMs) continue;
+        const v = outwardVector(dir);
+        const along = pos.x * v.x + pos.z * v.z;
+        const across = Math.abs(pos.x * v.z - pos.z * v.x);
+        if (along >= H - DOOR_REACH && across <= DOOR_BAND) return dir;
+      }
+      return null;
+    };
 
     const clock = new THREE.Clock();
     let raf = 0;
@@ -642,18 +661,7 @@ export default function GameCanvas(props: Props) {
       const t = performance.now();
       const { firstPerson } = propsRef.current;
 
-      if (walkAnim) {
-        const p = Math.max(0, Math.min(1, (t - walkAnim.startedAt) / WALK_MS));
-        const eased = easeInOut(p);
-        const pos = eased < 0.45
-          ? walkAnim.start.clone().lerp(walkAnim.gate, eased / 0.45)
-          : walkAnim.gate.clone().lerp(walkAnim.end, (eased - 0.45) / 0.55);
-        const bob = Math.sin(eased * Math.PI * 8) * 0.035;
-        pos.y = 1.62 + bob;
-        camera.position.copy(pos);
-        camera.rotation.set(Math.sin(eased * Math.PI * 8) * 0.012, walkAnim.yaw, 0, "YXZ");
-        if (p >= 1) finishWalk(walkAnim);
-      } else if (firstPerson) {
+      if (firstPerson) {
         let localX = 0;
         let localZ = 0;
         if (keys.w || keys.arrowup) localZ -= 1;
@@ -673,6 +681,18 @@ export default function GameCanvas(props: Props) {
           freePos.x = Math.max(-bound, Math.min(bound, freePos.x));
           freePos.z = Math.max(-bound, Math.min(bound, freePos.z));
         }
+        if (crossLatch && t - crossLatchAt > CROSS_LATCH_TIMEOUT) crossLatch = null;
+        const nearDoor = nearOpenDoor(freePos, propsRef.current.you, t);
+        if (nearDoor !== crossLatch) {
+          crossLatch = nearDoor;
+          if (nearDoor) {
+            crossLatchAt = t;
+            if (t - lastCrossSent >= CROSS_COOLDOWN) {
+              lastCrossSent = t;
+              propsRef.current.onCrossDoor(nearDoor);
+            }
+          }
+        }
         const bob = moving ? Math.sin(t / 105) * 0.022 : Math.sin(t / 900) * 0.004;
         camera.position.set(freePos.x, 1.62 + bob, freePos.z);
         camera.rotation.set(pitch, yaw, 0, "YXZ");
@@ -690,6 +710,27 @@ export default function GameCanvas(props: Props) {
       for (const gem of diceGems) {
         gem.mesh.position.y = gem.base + Math.sin(t / 600 + gem.phase) * 0.03;
         gem.mesh.rotation.y += dt * 0.8;
+      }
+
+      const slideEase = Math.min(1, dt * 7);
+      for (const slide of doorSlides) {
+        const target = slide.baseX + (slide.open ? slide.span * 0.95 : 0);
+        const leftTarget = -target;
+        slide.left.position.x += (leftTarget - slide.left.position.x) * slideEase;
+        slide.right.position.x += (target - slide.right.position.x) * slideEase;
+      }
+
+      const nowSeconds = Date.now() / 1000;
+      for (const timer of doorTimers) {
+        const remaining = Math.max(0, timer.openUntil - nowSeconds);
+        const text = `${remaining.toFixed(1)}s · -${timer.cost}`;
+        if (text !== timer.lastText) {
+          timer.lastText = text;
+          (timer.sprite.userData.setText as (value: string, color: string) => void)?.(
+            text, remaining <= 3 ? "#e23b3b" : "#3f9f6b",
+          );
+        }
+        timer.sprite.visible = remaining > 0;
       }
 
       scene.traverse((c) => {
@@ -755,6 +796,7 @@ export default function GameCanvas(props: Props) {
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("wheel", onWheel);
       window.removeEventListener("pointerup", onPointerUp);
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       renderer.dispose();
@@ -771,18 +813,18 @@ export default function GameCanvas(props: Props) {
 
   useEffect(() => {
     apiRef.current?.rebuild();
-  }, [props.arena, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.dice, props.futures, props.role, props.firstPerson, props.exitUnsealed, props.players]);
+  }, [props.arena, props.you?.doors, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.dice, props.futures, props.role, props.firstPerson, props.exitUnsealed, props.players]);
 
   useEffect(() => {
     if (props.transitionId > 0) apiRef.current?.pulse();
   }, [props.transitionId]);
 
   useEffect(() => {
-    if (props.walk.id > 0 && props.walk.id !== lastWalkId.current) {
-      lastWalkId.current = props.walk.id;
-      apiRef.current?.walk(props.walk);
+    if (props.cross.id > 0 && props.cross.id !== lastCrossId.current) {
+      lastCrossId.current = props.cross.id;
+      if (!props.cross.player || props.cross.player === props.you?.id) apiRef.current?.entered(props.cross);
     }
-  }, [props.walk]);
+  }, [props.cross, props.you?.id]);
 
   return <div ref={mountRef} className="absolute inset-0 cursor-crosshair" />;
 }

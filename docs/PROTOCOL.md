@@ -19,9 +19,11 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | type | fields | notes |
 |---|---|---|
 | `auth` | `token` (nullable), `name`, `pid`, `app_check` (optional) | required first frame when `auth=1`; no token creates a guest identity; `app_check` accepts the Firebase App Check token when enforcement is enabled |
-| `choose_door` | `door` (`N`/`E`/`S`/`W`) or `color` | cross a coloured doorway; costs 1 point; a 0-capacity door triggers a lockdown |
-| `choose_gate` | `door` | alias of `choose_door` |
-| `move` | `door`, or `dx`,`dy`, or `color` | legacy alias; `dx/dy` is mapped to the matching direction |
+| `open_door` | `door` (`N`/`E`/`S`/`W`) or `color` | pay 1 point, consume 1 capacity and hold the doorway open for 10s |
+| `choose_door` | `door` or `color` | alias of `open_door` |
+| `choose_gate` | `door` | alias of `open_door` |
+| `cross_door` | `door` | walk through an active temporary doorway; no extra cost |
+| `move` | `door`, or `dx`,`dy`, or `color` | legacy alias of `open_door`; `dx/dy` is mapped to the matching direction |
 | `wait` | none | spends 1 point |
 | `unlock` | `target` (player id) | asks the server to scan a locked teammate free; two helpers in or beside the room are required, each spends 1 point |
 | `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it |
@@ -39,7 +41,10 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `state` | `state` | join/leave, lobby change, move/wait/unlock, prediction, puzzle |
 | `players` | `status`, `players[]` | after every accepted move / wait / unlock |
 | `round` | role-filtered shift + `arena`, `players`, `next_round_in`, `state`, `dice`, `futures`, `puzzle`, `pa` | the grid shifted and new d10s were rolled |
-| `door_result` | `accepted`, `locked`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `message` | result of a door crossing |
+| `door_result` | `accepted`, `locked`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent |
+| `door_opened` | `accepted`, `player`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `open_until`, `message` | a paid doorway opened for 10s |
+| `door_closed` | `door`, `room_code`, `target_code`, `message` | the 10s window expired or the grid shifted |
+| `room_entered` | `player`, `door`, `from`, `to`, `cost` | a player physically crossed an open doorway |
 | `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a 0-capacity door and is locked |
 | `hazard` | `player`, `room_code`, `penalty`, `points` | a Sanction room drained points |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
@@ -64,7 +69,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
   "you": {
     "id": "p1", "room_id": "r12", "room_code": "C3", "room": [2, 2],
     "doors": {
-      "N": { "color": "blue", "sealed": false, "open": true, "capacity": 2, "roll": 2 }
+      "N": { "color": "blue", "sealed": false, "open": true, "capacity": 2, "roll": 2, "temporary_open": true, "open_until": 1730000000.0 }
     },
     "locked": false, "eliminated": false, "escaped": false,
     "points": 15, "role": "archivist"
@@ -94,7 +99,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     "id": "r12", "code": "C3", "bx": 2, "by": 2,
     "sigil": "spade",             // spade | heart | diamond | club (Oracle/Archivist only)
     "doors": {
-      "N": { "color": "red", "sealed": false, "capacity": 3, "roll": 3 }
+      "N": { "color": "red", "sealed": false, "capacity": 3, "roll": 3, "temporary_open": false, "open_until": null }
     },
     "sanction": null,              // hidden until revealed
     "revealed": false,
@@ -105,11 +110,13 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 }
 ```
 
-Door colours are `red | blue | yellow | green`. A doorway is passable only when
-**both** rooms have that side open (`open[d] === true`). A door with
-`capacity <= 0` locks the player who tries to cross it until two helpers scan
-them free. Returning through the door you came from is blocked for the rest of
-the round.
+Door colours are `red | blue | yellow | green`. A structural doorway is passable
+only when **both** rooms have that side open (`open[d] === true`). Paying for a
+doorway sets `temporary_open = true` and `open_until` for 10 seconds; any living
+teammate may send `cross_door` during that window without another cost. A door
+with `capacity <= 0` locks the player who tries to open it until two helpers
+scan them free. Returning through the door you came from is blocked for the rest
+of the round.
 
 ### `players[]`
 

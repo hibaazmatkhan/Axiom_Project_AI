@@ -1,6 +1,7 @@
 """Server tests (v3): round transitions, door movement, lockdown, cheat
 rejection, prediction, asymmetric information, puzzles, reconnect and limits."""
 import asyncio
+import time
 from contextlib import ExitStack
 
 from fastapi.testclient import TestClient
@@ -84,20 +85,39 @@ def test_join_welcome_and_move():
     with client.websocket_connect("/ws/MOVE?name=Hiba") as ws:
         msg = ws.receive_json()
         assert msg["type"] == "welcome"
-        state = msg["state"]
-        assert state["you"]["room_code"] == "C3"
-        door = next((d for d, v in state["you"]["doors"].items() if v["open"]), None)
-        assert door is not None
+        assert msg["state"]["you"]["room_code"] == "C3"
         ws.send_json({"type": "ready", "value": True})
-        ws.send_json({"type": "choose_door", "door": door})
-        for _ in range(20):
+        running = None
+        for _ in range(4):
             m = ws.receive_json()
-            if m["type"] == "door_result" and m.get("accepted"):
+            if m["type"] == "state" and m["state"]["status"] == "running":
+                running = m["state"]
+                break
+        assert running is not None
+        door = next((d for d, v in running["you"]["doors"].items()
+                     if v["open"] and (v.get("capacity") or 0) > 0), None)
+        assert door is not None
+        ws.send_json({"type": "open_door", "door": door})
+        opened = None
+        for _ in range(6):
+            m = ws.receive_json()
+            if m["type"] == "door_opened" and m.get("accepted"):
+                opened = m
+                break
+        assert opened is not None
+        assert opened["door"] == door
+        assert opened["cost"] == 1
+        assert opened["open_until"] > time.time()
+        rooms["MOVE"].players[msg["you"]].last_move = 0
+        ws.send_json({"type": "cross_door", "door": door})
+        for _ in range(6):
+            m = ws.receive_json()
+            if m["type"] == "room_entered" and m.get("player") == msg["you"]:
                 assert m["door"] == door
-                assert m["cost"] == 1
+                assert m["to"] == opened["target_code"]
                 break
         else:
-            raise AssertionError("no door_result received")
+            raise AssertionError("no room_entered received")
 
 
 def test_rejects_cheating_moves():
@@ -190,7 +210,7 @@ def test_finish_builds_a_valid_summary():
     assert room.nexus.team_report()["players"]
 
 
-def test_door_crossing_costs_one_point():
+def test_opening_a_door_costs_one_point_and_crossing_is_free():
     room = Room("COST", seed=7, round_seconds=60)
     room.status = "running"
     p = _player(room)
@@ -201,7 +221,12 @@ def test_door_crossing_costs_one_point():
     door = _open_door(room)
     assert door
     before = p.points
-    asyncio.run(room.move(p, door=door))
+    asyncio.run(room.open_door(p, door=door))
+    assert p.points == before - 1
+    assert p.room_id == room.arena.start_room().rid
+    assert room.open_doors
+    p.last_move = 0
+    asyncio.run(room.cross_door(p, door=door))
     assert p.points == before - 1
     assert p.room_id != room.arena.start_room().rid
 
@@ -215,8 +240,32 @@ def test_low_capacity_door_locks_the_player():
     assert door
     start = room.arena.start_room()
     start.doors[door].capacity = 0
-    asyncio.run(room.move(p, door=door))
+    asyncio.run(room.open_door(p, door=door))
     assert p.locked and p.room_id == start.rid
+    assert not room.open_doors
+
+
+def test_temporary_door_is_shared_and_expires():
+    room = Room("TEMP", seed=7, round_seconds=60)
+    room.status = "running"
+    for r in room.arena.rooms:
+        for d in DIRECTIONS:
+            r.doors[d].capacity = 4
+    opener = _player(room, "a", 0)
+    teammate = _player(room, "b", 1)
+    room.players = {"a": opener, "b": teammate}
+    door = _open_door(room)
+    assert door
+    asyncio.run(room.open_door(opener, door=door))
+    asyncio.run(room.cross_door(teammate, door=door))
+    assert teammate.room_id != room.arena.start_room().rid
+    for temp in room.open_doors.values():
+        temp.expires_at = time.time() - 1
+    asyncio.run(room.expire_open_doors())
+    assert not room.open_doors
+    opener.last_move = 0
+    asyncio.run(room.cross_door(opener, door=door))
+    assert opener.room_id == room.arena.start_room().rid
 
 
 def test_solo_player_can_reach_exit_with_door_cost():
@@ -238,7 +287,10 @@ def test_solo_player_can_reach_exit_with_door_cost():
         p.last_move = 0
         p.last_room_id = None
         p.entered_round = -1
-        asyncio.run(room.move(p, door=_direction(cur, nxt)))
+        d = _direction(cur, nxt)
+        asyncio.run(room.open_door(p, door=d))
+        p.last_move = 0
+        asyncio.run(room.cross_door(p, door=d))
         cur = nxt
         if p.escaped or p.eliminated:
             break

@@ -24,6 +24,7 @@ from fastapi import WebSocket
 from .arena import (
     DIRECTIONS,
     EXIT_ROOM,
+    OPPOSITE,
     START_ROOM,
     STEP,
     Arena,
@@ -52,6 +53,7 @@ INTENT_MAX = 14
 START_POINTS = fate.START_POINTS
 MAX_ROUNDS = fate.MAX_ROUNDS
 DOOR_COST = fate.DOOR_COST
+DOOR_OPEN_SECONDS = 10.0
 WAIT_COST = fate.WAIT_COST
 REVIVE_COST = fate.REVIVE_COST
 
@@ -112,6 +114,17 @@ class Player:
         return self.bucket_n <= INTENT_MAX
 
 
+@dataclass
+class TemporaryDoor:
+    a_rid: str
+    b_rid: str
+    a_dir: str
+    b_dir: str
+    opened_by: str
+    expires_at: float
+    cost: int
+
+
 class Room:
     def __init__(self, room_id: str, seed: int | None = None,
                  round_seconds: float | None = None, min_players: int = 1):
@@ -142,6 +155,7 @@ class Room:
         self._role_rng.shuffle(self.role_pool)
         self.dice: dict = {}
         self.visions: dict = {}
+        self.open_doors: dict[frozenset[str], TemporaryDoor] = {}
         self.last_shift: dict = {"pattern_type": None, "moved": [], "ops": [], "repairs": []}
         self._task: asyncio.Task | None = None
         self._counter = 0
@@ -168,6 +182,50 @@ class Room:
             del self.events[:1000]
         self.nexus.ingest(ev)
 
+    def _temporary_for(self, room: ArenaRoom, d: str) -> TemporaryDoor | None:
+        target = self.arena.door_target(room, d)
+        if target is None:
+            return None
+        temp = self.open_doors.get(frozenset((room.rid, target.rid)))
+        if temp is None or temp.expires_at <= time.time():
+            return None
+        return temp
+
+    def arena_public(self) -> dict:
+        pub = self.arena.to_public()
+        for pub_room, room in zip(pub["rooms"], self.arena.rooms):
+            for d in DIRECTIONS:
+                temp = self._temporary_for(room, d)
+                pub_room["doors"][d]["temporary_open"] = bool(temp)
+                pub_room["doors"][d]["open_until"] = temp.expires_at if temp else None
+                if temp:
+                    pub_room["open"][d] = True
+        return pub
+
+    def _prune_open_doors(self, now: float) -> list[TemporaryDoor]:
+        expired: list[TemporaryDoor] = []
+        for key, temp in list(self.open_doors.items()):
+            if temp.expires_at <= now:
+                self.open_doors.pop(key, None)
+                expired.append(temp)
+        return expired
+
+    async def expire_open_doors(self) -> None:
+        expired = self._prune_open_doors(time.time())
+        if not expired:
+            return
+        for temp in expired:
+            a = self.arena.room_by_id(temp.a_rid)
+            b = self.arena.room_by_id(temp.b_rid)
+            await self.broadcast({
+                "type": "door_closed",
+                "door": temp.a_dir,
+                "room_code": a.code if a else None,
+                "target_code": b.code if b else None,
+                "message": "The doorway slammed shut.",
+            })
+        await self.broadcast_state()
+
     def alive(self) -> list[Player]:
         return [p for p in self.players.values() if p.connected and not p.eliminated]
 
@@ -190,12 +248,15 @@ class Room:
         if room:
             for d in DIRECTIONS:
                 door = room.doors[d]
+                temp = self._temporary_for(room, d)
                 doors[d] = {
                     "color": door.color,
                     "sealed": door.sealed,
-                    "open": self.arena.door_open(room, d),
+                    "open": self.arena.door_open(room, d) or temp is not None,
                     "capacity": door.capacity,
                     "roll": door.last_roll,
+                    "temporary_open": temp is not None,
+                    "open_until": temp.expires_at if temp else None,
                 }
         return {
             "id": p.id, "room_id": p.room_id,
@@ -215,7 +276,7 @@ class Room:
             "max_rounds": self.max_rounds,
             "stage": self.stage, "stage_name": stage_config(self.stage)["name"],
             "max_stage": MAX_STAGE,
-            "arena": self.arena.to_public(), "players": self.players_public(),
+            "arena": self.arena_public(), "players": self.players_public(),
             "you": self.you_public(for_player) if for_player else None,
             "next_round_in": remaining, "round_seconds": self.round_seconds,
             "min_players": self.min_players, "rule_count": len(self.engines),
@@ -248,7 +309,7 @@ class Room:
     # ---- admin observers ----------------------------------------------------
     def admin_arena(self) -> dict:
         """Unfiltered arena: every sigil, sanction, roll and capacity."""
-        arena = self.arena.to_public()
+        arena = self.arena_public()
         for pub, room in zip(arena["rooms"], self.arena.rooms):
             pub["sigil"] = room.sigil
             pub["sanction"] = room.sanction
@@ -404,14 +465,16 @@ class Room:
                                      "message": "Slow down."})
             return
         kind = msg.get("type")
-        if kind in ("choose_door", "choose_gate"):
-            await self.move(player, door=msg.get("door"), color=msg.get("color"))
+        if kind in ("open_door", "choose_door", "choose_gate"):
+            await self.open_door(player, door=msg.get("door"), color=msg.get("color"))
+        elif kind == "cross_door":
+            await self.cross_door(player, msg.get("door"))
         elif kind == "move":
             door = msg.get("door")
             if door is None and msg.get("dx") is not None:
                 step = (msg.get("dx"), msg.get("dy"))
                 door = next((d for d, s in STEP.items() if s == step), None)
-            await self.move(player, door=door, color=msg.get("color"))
+            await self.open_door(player, door=door, color=msg.get("color"))
         elif kind == "wait":
             await self.wait(player)
         elif kind == "unlock":
@@ -432,7 +495,7 @@ class Room:
             await self.send(player, {"type": "pong"})
 
     # ---- movement / doors ---------------------------------------------------
-    async def move(self, player: Player, door=None, color=None) -> None:
+    async def open_door(self, player: Player, door=None, color=None) -> None:
         if self.status != "running" or player.escaped or player.eliminated:
             return
         if player.locked:
@@ -470,6 +533,15 @@ class Room:
                 "message": "You cannot return through that door this round.",
             })
             return
+        key = frozenset((room.rid, target.rid))
+        existing = self.open_doors.get(key)
+        if existing is not None and existing.expires_at > time.time():
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "door": door,
+                "room_code": room.code, "open_until": existing.expires_at,
+                "message": "That doorway is already open.",
+            })
+            return
         accepted, remaining = self.arena.consume(room, door)
         if not accepted:
             player.locked = True
@@ -488,13 +560,91 @@ class Room:
             await self.broadcast_state()
             return
 
+        player.last_move = now
+        player.points -= DOOR_COST
+        expires_at = time.time() + DOOR_OPEN_SECONDS
+        self.open_doors[key] = TemporaryDoor(
+            a_rid=room.rid, b_rid=target.rid, a_dir=door,
+            b_dir=OPPOSITE[door], opened_by=player.id,
+            expires_at=expires_at, cost=DOOR_COST,
+        )
+        self.log(player.id, "door_open", {
+            "room": room.code, "target": target.code, "door": door,
+        })
+        await self.broadcast({
+            "type": "door_opened", "accepted": True, "player": player.id,
+            "door": door, "color": room.doors[door].color, "remaining": remaining,
+            "room_code": room.code, "target_code": target.code,
+            "cost": DOOR_COST, "open_until": expires_at,
+            "message": f"Door open for {int(DOOR_OPEN_SECONDS)}s. Walk through.",
+        })
+        if player.points <= 0:
+            await self._eliminate(player, "Points spent to open a door")
+            return
+        await self.broadcast(self.players_message())
+        await self.broadcast_state()
+
+    async def cross_door(self, player: Player, door=None) -> None:
+        if self.status != "running" or player.escaped or player.eliminated:
+            return
+        if player.locked:
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "locked": True,
+                "message": "You are locked. Two teammates must scan you free.",
+            })
+            return
+        now = time.monotonic()
+        if now - player.last_move < 0.08:
+            return
+        room = self.arena.room_by_id(player.room_id)
+        if room is None:
+            player.room_id = self.arena.start_room().rid
+            return
+        door = str(door or "").upper()
+        if door not in DIRECTIONS:
+            return
+        if not self.arena.door_open(room, door):
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "door": door,
+                "room_code": room.code, "message": "That door is sealed.",
+            })
+            return
+        target = self.arena.door_target(room, door)
+        if target is None:
+            return
+        temp = self.open_doors.get(frozenset((room.rid, target.rid)))
+        if temp is None or temp.expires_at <= time.time():
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "door": door,
+                "room_code": room.code, "message": "That doorway is closed.",
+            })
+            return
+        if target.rid == player.last_room_id and self.round == player.entered_round:
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "door": door,
+                "room_code": room.code,
+                "message": "You cannot return through that door this round.",
+            })
+            return
+        await self._complete_crossing(player, room, target, door)
+
+    async def move(self, player: Player, door=None, color=None) -> None:
+        await self.open_door(player, door=door, color=color)
+
+    async def _complete_crossing(
+        self, player: Player, room: ArenaRoom, target: ArenaRoom, door: str,
+    ) -> None:
         player.last_room_id = room.rid
         player.last_door = door
         player.entered_round = self.round
         player.room_id = target.rid
-        player.last_move = now
-        player.points -= DOOR_COST
-        self.log(player.id, "move", {"room": target.code, "from": room.code, "door": door})
+        player.last_move = time.monotonic()
+        self.log(player.id, "cross", {"room": target.code, "from": room.code, "door": door})
+
+        await self.broadcast({
+            "type": "room_entered", "player": player.id, "door": door,
+            "from": room.code, "to": target.code, "cost": 0,
+        })
 
         if fate.reveal(self.arena, target) and target.sanction:
             player.points -= target.sanction
@@ -504,12 +654,6 @@ class Room:
                 "penalty": target.sanction, "points": player.points,
             })
             self.pa = "A SANCTION ROOM DRAINS THE TEAM."
-
-        await self.broadcast({
-            "type": "door_result", "accepted": True, "player": player.id,
-            "door": door, "color": room.doors[door].color, "remaining": remaining,
-            "room_code": room.code, "target_code": target.code, "cost": DOOR_COST,
-        })
 
         if player.points <= 0:
             await self._eliminate(player, "Points drained to zero")
@@ -710,6 +854,7 @@ class Room:
     # ---- rounds -------------------------------------------------------------
     def step_round(self) -> dict:
         self.prev_arena = self.arena.to_public()
+        self.open_doors.clear()
         moved: list[dict] = []
         ops: list[dict] = []
         for engine in self.engines:
@@ -752,7 +897,7 @@ class Room:
         return {
             "type": "round", "round": self.round,
             "pattern_type": self.last_shift["pattern_type"], "active": True,
-            "moved": moved, "ops": ops, "arena": self.arena.to_public(),
+            "moved": moved, "ops": ops, "arena": self.arena_public(),
             "players": self.players_public(), "next_round_in": self.round_seconds,
             "dice": self.dice, "visions": self.visions, "pa": self.pa,
             "exit_unsealed": self.arena.exit_unsealed,
@@ -887,6 +1032,7 @@ class Room:
                 self.purge_disconnected()
                 if not any(p.connected for p in self.players.values()):
                     return
+                await self.expire_open_doors()
                 await self.broadcast_admin()
                 if (self.status == "running" and self.next_round_at is not None
                         and time.time() >= self.next_round_at):

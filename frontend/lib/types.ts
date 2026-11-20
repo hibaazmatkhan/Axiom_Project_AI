@@ -7,9 +7,9 @@ export type PatternType =
   | "symbol" | "sequential" | "conditional" | "compound";
 export type Status = "lobby" | "running" | "won" | "over";
 
-export type WalkEvent = {
+export type CrossEvent = {
   id: number;
-  dir: Direction | null;
+  door: Direction | null;
   from: string | null;
   to: string | null;
   cost: number;
@@ -22,6 +22,8 @@ export type Door = {
   open?: boolean;
   capacity: number | null;
   roll: number | null;
+  temporary_open?: boolean;
+  open_until?: number | null;
 };
 
 export type ArenaRoom = {

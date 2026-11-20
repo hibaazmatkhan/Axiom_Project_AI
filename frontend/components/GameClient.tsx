@@ -61,7 +61,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const teamRef = useRef<HTMLDivElement>(null);
-  const { sendChooseDoor, sendWait } = g;
+  const { sendOpenDoor, sendCrossDoor, sendWait } = g;
 
   const me = g.me;
   const myRoom = useMemo(
@@ -142,10 +142,20 @@ export default function GameClient({ room, name }: { room: string; name: string 
         exitUnsealed={g.exitUnsealed}
         transitionId={g.transition.id}
         moved={g.transition.moved}
-        walk={g.walk}
+        cross={g.cross}
         firstPerson={firstPerson}
-        onChooseDoor={sendChooseDoor}
+        onOpenDoor={sendOpenDoor}
+        onCrossDoor={sendCrossDoor}
       />
+
+      {firstPerson && g.status === "running" && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center">
+          <div className="mx-auto h-2.5 w-2.5 rounded-full border border-bone/90 bg-void/70 shadow-hud" />
+          <p className="mono mt-3 rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
+            Click to look · click a door to open · walk in
+          </p>
+        </div>
+      )}
 
       {/* top bar */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-start justify-between gap-3 p-3 sm:p-4">
@@ -350,7 +360,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
         <Panel>
           <span className="text-xs uppercase tracking-widest text-dim">Movement</span>
           <p className="mt-2 text-[11px] leading-relaxed text-dim">
-            Click a glowing door or press E while facing it to cross. WASD moves freely; mouse looks. Drag in third person to orbit. Each crossing costs 1 point, shown above the door.
+            Click a door or press E to pay 1 point and hold it open for 10s. Walk into the open doorway to enter the next room; any living teammate can follow for free. WASD moves, mouse looks.
           </p>
         </Panel>
 
@@ -662,7 +672,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
             >
               WAIT
             </button>
-            <span className="text-[9px] leading-tight text-dim">Tap a door in 3D to walk through it.</span>
+            <span className="text-[9px] leading-tight text-dim">Tap a door to open it for 10s, then walk in.</span>
           </div>
 
           <div className="grid grid-cols-3 gap-1">
@@ -701,10 +711,15 @@ export default function GameClient({ room, name }: { room: string; name: string 
         )}
         {g.doorEvent && g.doorEvent.accepted && (
           <div className="rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
-            Crossed the {g.doorEvent.color ?? g.doorEvent.door} door
-            {g.doorEvent.target_code ? ` into ${g.doorEvent.target_code}` : ""}
-            <span className="mono ml-1 text-yellow">−{g.doorEvent.cost ?? 1} pts</span>
-            {g.doorEvent.remaining != null ? ` · ${g.doorEvent.remaining} crossings left` : ""}
+            {g.doorEvent.color ?? g.doorEvent.door} door open for 10s
+            {g.doorEvent.target_code ? ` → ${g.doorEvent.target_code}` : ""}
+            <span className="mono ml-1 text-yellow">−{g.doorEvent.cost ?? 1} pt</span>
+            {g.doorEvent.remaining != null ? ` · ${g.doorEvent.remaining} uses left` : ""}
+          </div>
+        )}
+        {g.cross.id > 0 && g.cross.player === g.you && (
+          <div className="rounded-xl border border-blue/60 bg-ink/90 px-4 py-2 text-xs text-blue backdrop-blur">
+            Entered {g.cross.to ?? "the next room"} · free crossing
           </div>
         )}
         {g.doorEvent && !g.doorEvent.accepted && !g.doorEvent.locked && g.doorEvent.message && (
