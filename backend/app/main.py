@@ -13,19 +13,22 @@ import os
 import re
 from dataclasses import dataclass
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import config  # loads backend/.env before the constants below
-from . import db, supabase_store
+from . import audit, avatar_store, db, supabase_store
+from .characters import character_url, is_character
 from .auth import (
+    AppCheckTokenError,
     AuthConfigurationError,
     AuthTokenError,
     AuthUser,
     get_current_user,
     get_verified_user,
     require_admin,
+    verify_app_check,
     verify_token,
 )
 from .game import Room
@@ -72,6 +75,10 @@ class ProfileUpdate(BaseModel):
 
 class MfaUpdate(BaseModel):
     enabled: bool
+
+
+class AvatarSelect(BaseModel):
+    character_id: str = Field(min_length=1, max_length=32)
 
 
 def _user_public(user: AuthUser) -> dict:
@@ -150,6 +157,63 @@ def update_profile(payload: ProfileUpdate, user: AuthUser = Depends(get_current_
     }
 
 
+@app.put("/api/me/avatar/select")
+def select_avatar(payload: AvatarSelect, user: AuthUser = Depends(get_current_user)):
+    if not is_character(payload.character_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown character avatar.")
+    url = character_url(payload.character_id)
+    try:
+        avatar_store.persist(user.uid, payload.character_id, url)
+    except avatar_store.AvatarUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    audit.log(user.uid, "avatar_select", {"character_id": payload.character_id})
+    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+
+
+@app.post("/api/me/avatar/upload")
+async def upload_avatar(file: UploadFile = File(...), user: AuthUser = Depends(get_current_user)):
+    try:
+        data = await file.read(avatar_store.MAX_BYTES + 1)
+        meta = avatar_store.validate_upload(data, file.content_type or "")
+        path, url = avatar_store.upload(user.uid, data, meta["content_type"])
+        meta["storage_path"] = path
+        avatar_store.persist(user.uid, None, url, meta)
+    except avatar_store.AvatarInvalid as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except avatar_store.AvatarUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    audit.log(user.uid, "avatar_upload", {"bytes": meta["bytes"], "content_type": meta["content_type"]})
+    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+
+
+@app.delete("/api/me/avatar")
+def delete_avatar(user: AuthUser = Depends(get_current_user)):
+    try:
+        avatar_store.clear(user.uid)
+    except avatar_store.AvatarUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    audit.log(user.uid, "avatar_clear", {})
+    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+
+
+@app.get("/api/me/export")
+def export_me(user: AuthUser = Depends(get_verified_user)):
+    audit.log(user.uid, "data_export", {})
+    if config.supabase_configured():
+        return supabase_store.export_user(user.uid)
+    return db.store.export_user(user.uid)
+
+
+@app.delete("/api/me")
+def delete_me(user: AuthUser = Depends(get_verified_user)):
+    if config.supabase_configured():
+        supabase_store.delete_user(user.uid)
+    else:
+        db.store.delete_user(user.uid)
+    audit.log(None, "data_delete", {})
+    return {"ok": True}
+
+
 @app.post("/api/me/mfa")
 def update_mfa(payload: MfaUpdate, user: AuthUser = Depends(get_current_user)):
     try:
@@ -205,6 +269,18 @@ def admin_rooms(_: AuthUser = Depends(require_admin)):
     }
 
 
+@app.post("/api/admin/revoke/{uid}")
+def revoke_sessions(uid: str, _: AuthUser = Depends(require_admin)):
+    from firebase_admin import auth as firebase_auth
+
+    try:
+        firebase_auth.revoke_refresh_tokens(uid)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not revoke sessions.") from exc
+    audit.log(_.uid, "session_revoke", {"target_uid": uid})
+    return {"ok": True, "uid": uid}
+
+
 @app.get("/api/stages")
 def stages():
     from .stages import STAGES
@@ -226,6 +302,8 @@ class WsIdentity:
     name: str
     pid: str | None
     verified: bool
+    avatar_url: str | None = None
+    character_id: str | None = None
 
 
 async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: bool) -> WsIdentity | None:
@@ -251,11 +329,27 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
         await ws.close(code=1008)
         return None
 
+    if config.APP_CHECK_ENFORCE:
+        try:
+            await asyncio.to_thread(
+                verify_app_check,
+                frame.get("app_check") or frame.get("appCheck"),
+            )
+        except (AppCheckTokenError, AuthConfigurationError) as exc:
+            code = "app_check_invalid" if isinstance(exc, AppCheckTokenError) else "app_check_unavailable"
+            await ws.send_json({"type": "error", "code": code, "message": str(exc)})
+            await ws.close(code=1008 if code == "app_check_invalid" else 1013)
+            return None
+
     frame_name = str(frame.get("name") or name or "Player")
     frame_pid = str(frame.get("pid") or pid or "")
     token = frame.get("token")
     if not token:
-        return WsIdentity(uid=None, name=frame_name, pid=frame_pid or None, verified=False)
+        character_id, avatar_url = avatar_store.guest_avatar(frame.get("avatar"))
+        return WsIdentity(
+            uid=None, name=frame_name, pid=frame_pid or None, verified=False,
+            avatar_url=avatar_url, character_id=character_id,
+        )
 
     try:
         user = await asyncio.to_thread(verify_token, str(token))
@@ -281,11 +375,17 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
         or (user.email or "").split("@")[0]
         or "Player"
     )
+    character_id = (profile or {}).get("character_id")
+    avatar_url = (profile or {}).get("avatar_url")
+    if not avatar_url and is_character(character_id):
+        avatar_url = character_url(character_id)
     return WsIdentity(
         uid=user.uid,
         name=display_name,
         pid=frame_pid or None,
         verified=bool(profile and user.email_verified),
+        avatar_url=avatar_url,
+        character_id=character_id if is_character(character_id) else None,
     )
 
 
@@ -298,6 +398,7 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
     if room is None:
         ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
         room = rooms[room_id] = Room(room_id, round_seconds=ts, min_players=MIN_PLAYERS)
+        audit.room_upsert(room_id, room)
     if spectator:
         await room.watch(ws)
         try:
@@ -314,17 +415,23 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
             await room.unwatch(ws)
             if not any(p.connected for p in room.players.values()) and not room.spectators:
                 rooms.pop(room_id, None)
+                audit.room_delete(room_id)
         return
 
     identity = await _ws_identity(ws, name, pid, bool(auth))
     if identity is None:
         return
-    player = await room.join(ws, identity.name, identity.pid,
-                             uid=identity.uid, verified=identity.verified)
+    player = await room.join(
+        ws, identity.name, identity.pid,
+        uid=identity.uid, verified=identity.verified,
+        avatar_url=identity.avatar_url, character_id=identity.character_id,
+    )
     if player is None:
         await ws.send_json({"type": "error", "code": "room_full", "message": "Room is full (4 players max)."})
         await ws.close(code=1008)
         return
+    audit.log(player.uid, "room_join", {"room_id": room_id, "verified": player.verified})
+    audit.room_upsert(room_id, room)
     try:
         while True:
             try:
@@ -344,3 +451,4 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
         await room.leave(player)
         if not any(p.connected for p in room.players.values()) and not room.spectators:
             rooms.pop(room_id, None)
+            audit.room_delete(room_id)

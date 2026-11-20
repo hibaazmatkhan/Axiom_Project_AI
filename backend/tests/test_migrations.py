@@ -47,3 +47,21 @@ def test_matches_migration_protects_ranked_data():
     assert "revoke all on function" in sql
     assert "from public, anon, authenticated" in sql
     assert "grant execute on function" in sql
+
+
+def test_phase4_migration_contract():
+    sql = _sql("003_phase4_avatar.sql")
+    required = [
+        "alter table public.profiles add column if not exists character_id text",
+        "create table if not exists public.avatars",
+        "create table if not exists public.rooms",
+        "create table if not exists public.audit_logs",
+        "alter table public.avatars enable row level security",
+        "alter table public.rooms enable row level security",
+        "alter table public.audit_logs enable row level security",
+        "revoke all on public.avatars, public.rooms, public.audit_logs from anon, authenticated",
+        "create policy avatars_public_read on storage.objects",
+        "'avatar_url', avatar_url",
+        "'character_id', character_id",
+    ]
+    assert all(fragment in sql for fragment in required)

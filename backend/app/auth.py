@@ -6,6 +6,7 @@ from typing import Any
 
 import firebase_admin
 from fastapi import Depends, Header, HTTPException, status
+from firebase_admin import app_check
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 
@@ -17,6 +18,10 @@ class AuthConfigurationError(RuntimeError):
 
 
 class AuthTokenError(ValueError):
+    pass
+
+
+class AppCheckTokenError(ValueError):
     pass
 
 
@@ -86,6 +91,38 @@ def verify_token(token: str) -> AuthUser:
     )
 
 
+def verify_app_check(token: str | None) -> dict[str, Any]:
+    if not token:
+        raise AppCheckTokenError("App Check token is required.")
+    try:
+        return app_check.verify_token(token, app=_firebase_app())
+    except app_check.InvalidTokenError as exc:
+        raise AppCheckTokenError("Invalid App Check token.") from exc
+    except ValueError as exc:
+        raise AppCheckTokenError("App Check token could not be verified.") from exc
+
+
+def enforce_app_check(
+    x_firebase_app_check: str | None = Header(default=None, alias="X-Firebase-AppCheck"),
+) -> None:
+    if not config.APP_CHECK_ENFORCE:
+        return
+    if not config.firebase_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="App Check is not configured.",
+        )
+    try:
+        verify_app_check(x_firebase_app_check)
+    except AppCheckTokenError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except AuthConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="App Check is not configured.",
+        ) from exc
+
+
 def _bearer_token(authorization: str | None) -> str:
     if not authorization:
         raise HTTPException(
@@ -103,7 +140,10 @@ def _bearer_token(authorization: str | None) -> str:
     return token.strip()
 
 
-def get_current_user(authorization: str | None = Header(default=None)) -> AuthUser:
+def get_current_user(
+    authorization: str | None = Header(default=None),
+    _: None = Depends(enforce_app_check),
+) -> AuthUser:
     token = _bearer_token(authorization)
     try:
         return verify_token(token)

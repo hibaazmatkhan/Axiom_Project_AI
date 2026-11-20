@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS match_players (
     match_id INTEGER NOT NULL,
     username TEXT,
     auth_uid TEXT,
+    firebase_uid TEXT,
     slot INTEGER,
     escaped INTEGER DEFAULT 0,
     eliminated INTEGER DEFAULT 0,
@@ -47,11 +48,42 @@ CREATE TABLE IF NOT EXISTS match_players (
 );
 CREATE TABLE IF NOT EXISTS player_models (
     auth_uid TEXT PRIMARY KEY,
+    firebase_uid TEXT,
     username TEXT NOT NULL,
     attributes TEXT NOT NULL,
     style TEXT,
     matches INTEGER DEFAULT 0,
     updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS avatars (
+    firebase_uid TEXT PRIMARY KEY,
+    character_id TEXT,
+    avatar_url TEXT,
+    storage_path TEXT,
+    content_type TEXT,
+    width INTEGER,
+    height INTEGER,
+    bytes INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rooms (
+    id TEXT PRIMARY KEY,
+    seed INTEGER,
+    status TEXT DEFAULT 'lobby',
+    stage INTEGER DEFAULT 1,
+    round INTEGER DEFAULT 0,
+    players INTEGER DEFAULT 0,
+    summary TEXT DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    firebase_uid TEXT,
+    kind TEXT NOT NULL,
+    payload TEXT DEFAULT '{}',
+    created_at REAL NOT NULL
 );
 """
 
@@ -102,6 +134,11 @@ class Store:
                         " FROM player_models_legacy WHERE auth_uid IS NOT NULL"
                     )
                 c.execute("DROP TABLE player_models_legacy")
+            model_cols = {r["name"] for r in c.execute("PRAGMA table_info(player_models)")}
+            if "firebase_uid" not in model_cols:
+                c.execute("ALTER TABLE player_models ADD COLUMN firebase_uid TEXT")
+            if "firebase_uid" not in cols:
+                c.execute("ALTER TABLE match_players ADD COLUMN firebase_uid TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS idx_match_players_auth_uid"
                       " ON match_players(auth_uid)")
 
@@ -121,10 +158,10 @@ class Store:
                 if not uid:
                     continue
                 c.execute(
-                    "INSERT INTO match_players(match_id, username, auth_uid, slot, escaped, eliminated,"
+                    "INSERT INTO match_players(match_id, username, auth_uid, firebase_uid, slot, escaped, eliminated,"
                     " points, revives, predictions, correct, attributes)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (match_id, p.get("name"), uid, p.get("slot"), int(p.get("escaped", 0)),
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (match_id, p.get("name"), uid, uid, p.get("slot"), int(p.get("escaped", 0)),
                      int(p.get("eliminated", 0)), int(p.get("points", 0)),
                      int(p.get("revives", 0)), p.get("predictions", 0), p.get("correct", 0),
                      json.dumps(p.get("attrs", {}))))
@@ -141,12 +178,12 @@ class Store:
         ).fetchone()
         n = (row["matches"] if row else 0) + 1
         c.execute(
-            "INSERT INTO player_models(auth_uid, username, attributes, style, matches, updated_at)"
-            " VALUES (?,?,?,?,?,?)"
+            "INSERT INTO player_models(auth_uid, firebase_uid, username, attributes, style, matches, updated_at)"
+            " VALUES (?,?,?,?,?,?,?)"
             " ON CONFLICT(auth_uid) DO UPDATE SET username=excluded.username,"
-            " attributes=excluded.attributes, style=excluded.style,"
-            " matches=excluded.matches, updated_at=excluded.updated_at",
-            (auth_uid, username, json.dumps(attrs), style, n, time.time()))
+            " firebase_uid=excluded.firebase_uid, attributes=excluded.attributes,"
+            " style=excluded.style, matches=excluded.matches, updated_at=excluded.updated_at",
+            (auth_uid, auth_uid, username, json.dumps(attrs), style, n, time.time()))
 
     def match_history(self, username: str | None = None, limit: int = 20) -> list[dict]:
         with self.conn() as c:
@@ -173,6 +210,66 @@ class Store:
             "style": model["style"] if model else None,
         }
 
+    def set_avatar(self, uid: str, character_id: str | None, avatar_url: str | None,
+                   meta: dict | None = None) -> dict:
+        details = meta or {}
+        row = {
+            "firebase_uid": uid,
+            "character_id": character_id,
+            "avatar_url": avatar_url,
+            "storage_path": details.get("storage_path"),
+            "content_type": details.get("content_type"),
+            "width": details.get("width"),
+            "height": details.get("height"),
+            "bytes": details.get("bytes"),
+        }
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO avatars(firebase_uid, character_id, avatar_url, storage_path,"
+                " content_type, width, height, bytes, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(firebase_uid) DO UPDATE SET character_id=excluded.character_id,"
+                " avatar_url=excluded.avatar_url, storage_path=excluded.storage_path,"
+                " content_type=excluded.content_type, width=excluded.width,"
+                " height=excluded.height, bytes=excluded.bytes, updated_at=excluded.updated_at",
+                (uid, character_id, avatar_url, row["storage_path"], row["content_type"],
+                 row["width"], row["height"], row["bytes"], time.time(), time.time()))
+        return row
+
+    def get_avatar(self, uid: str) -> dict | None:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM avatars WHERE firebase_uid=?", (uid,)).fetchone()
+        return dict(row) if row else None
+
+    def clear_avatar(self, uid: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM avatars WHERE firebase_uid=?", (uid,))
+
+    def upsert_room(self, room_id: str, summary: dict) -> None:
+        now = time.time()
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO rooms(id, seed, status, stage, round, players, summary, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET seed=excluded.seed, status=excluded.status,"
+                " stage=excluded.stage, round=excluded.round, players=excluded.players,"
+                " summary=excluded.summary, updated_at=excluded.updated_at",
+                (room_id, summary.get("seed"), summary.get("status", "lobby"),
+                 summary.get("stage", 1), summary.get("round", 0), summary.get("players", 0),
+                 json.dumps(summary), now, now),
+            )
+
+    def delete_room(self, room_id: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+
+    def log_audit(self, uid: str | None, kind: str, payload: dict) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO audit_logs(firebase_uid, kind, payload, created_at) VALUES (?,?,?,?)",
+                (uid, kind, json.dumps(payload), time.time()),
+            )
+
     def player_stats_for_uid(self, uid: str, username: str) -> dict:
         with self.conn() as c:
             agg = c.execute(
@@ -196,17 +293,51 @@ class Store:
                 " WHERE mp.auth_uid=? ORDER BY m.created_at DESC LIMIT ?", (uid, limit)).fetchall()
         return [dict(r) for r in rows]
 
+    def export_user(self, uid: str) -> dict:
+        model = None
+        with self.conn() as c:
+            row = c.execute("SELECT username FROM player_models WHERE auth_uid=?", (uid,)).fetchone()
+            model = dict(row) if row else None
+        username = model["username"] if model else ""
+        return {
+            "profile": None,
+            "avatar": self.get_avatar(uid),
+            "stats": self.player_stats_for_uid(uid, username),
+            "history": self.match_history_for_uid(uid, 100),
+        }
+
+    def delete_user(self, uid: str) -> None:
+        with self.conn() as c:
+            ids = [row["match_id"] for row in c.execute(
+                "SELECT DISTINCT match_id FROM match_players WHERE auth_uid=?", (uid,)
+            ).fetchall()]
+            for match_id in ids:
+                row = c.execute("SELECT summary FROM matches WHERE id=?", (match_id,)).fetchone()
+                if not row:
+                    continue
+                try:
+                    summary = json.loads(row["summary"] or "{}")
+                except (TypeError, ValueError):
+                    summary = {}
+                summary["players"] = [p for p in summary.get("players", []) if p.get("uid") != uid]
+                c.execute("UPDATE matches SET summary=? WHERE id=?", (json.dumps(summary), match_id))
+            c.execute("DELETE FROM match_players WHERE auth_uid=?", (uid,))
+            c.execute("DELETE FROM player_models WHERE auth_uid=?", (uid,))
+            c.execute("DELETE FROM avatars WHERE firebase_uid=?", (uid,))
+
     def leaderboard(self, limit: int = 10) -> list[dict]:
         with self.conn() as c:
             rows = c.execute(
-                "SELECT username, matches, attributes FROM player_models"
-                " WHERE auth_uid IS NOT NULL ORDER BY matches DESC LIMIT ?",
+                "SELECT m.username, m.matches, m.attributes, a.avatar_url, a.character_id"
+                " FROM player_models m LEFT JOIN avatars a ON a.firebase_uid = m.auth_uid"
+                " WHERE m.auth_uid IS NOT NULL ORDER BY m.matches DESC, m.username ASC LIMIT ?",
                 (limit,)).fetchall()
         out = []
         for r in rows:
             attrs = json.loads(r["attributes"] or "{}")
             out.append({"username": r["username"], "matches": r["matches"],
-                        "pattern": attrs.get("pattern", 0)})
+                        "pattern": attrs.get("pattern", 0),
+                        "avatar_url": r["avatar_url"], "character_id": r["character_id"]})
         return out
 
 

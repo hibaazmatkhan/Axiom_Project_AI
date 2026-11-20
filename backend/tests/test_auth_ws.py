@@ -1,8 +1,10 @@
 import asyncio
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import main
+from app import auth, config, main
 from app.auth import AuthTokenError, AuthUser
 from app.main import WsIdentity, app
 
@@ -95,3 +97,23 @@ def test_ws_route_accepts_auth_frame_before_game_messages():
 
     assert welcome["type"] == "welcome"
     assert any(player["name"] == "Frame Name" for player in welcome["state"]["players"])
+
+
+def test_app_check_enforcement_is_optional(monkeypatch):
+    monkeypatch.setattr(config, "APP_CHECK_ENFORCE", False)
+    assert auth.enforce_app_check(None) is None
+
+
+def test_app_check_enforcement_rejects_missing_token(monkeypatch):
+    monkeypatch.setattr(config, "APP_CHECK_ENFORCE", True)
+    monkeypatch.setattr(config, "firebase_configured", lambda: True)
+    with pytest.raises(HTTPException) as exc:
+        auth.enforce_app_check(None)
+    assert exc.value.status_code == 403
+
+
+def test_app_check_enforcement_accepts_verified_token(monkeypatch):
+    monkeypatch.setattr(config, "APP_CHECK_ENFORCE", True)
+    monkeypatch.setattr(config, "firebase_configured", lambda: True)
+    monkeypatch.setattr(auth, "verify_app_check", lambda token: {"app_check": token})
+    assert auth.enforce_app_check("valid-token") is None
