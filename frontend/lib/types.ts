@@ -55,6 +55,8 @@ export type Player = {
   name: string;
   slot: number;
   color: string;
+  avatar_url: string | null;
+  character_id: string | null;
   role: Role;
   room_id: string;
   room_code: string | null;

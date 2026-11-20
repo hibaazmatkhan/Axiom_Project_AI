@@ -65,6 +65,8 @@ class Player:
     room_id: str
     uid: str | None = None
     verified: bool = False
+    avatar_url: str | None = None
+    character_id: str | None = None
     escaped: bool = False
     ready: bool = False
     connected: bool = True
@@ -89,6 +91,7 @@ class Player:
     def public(self) -> dict:
         return {
             "id": self.id, "name": self.name, "slot": self.slot, "color": self.color,
+            "avatar_url": self.avatar_url, "character_id": self.character_id,
             "role": self.role, "room_id": self.room_id, "escaped": self.escaped,
             "ready": self.ready, "connected": self.connected,
             "correct": self.correct, "predictions": self.predictions, "streak": self.streak,
@@ -331,13 +334,17 @@ class Room:
 
     # ---- lifecycle ----------------------------------------------------------
     async def join(self, ws: WebSocket, name: str, player_id: str | None = None,
-                   uid: str | None = None, verified: bool = False) -> Player | None:
+                   uid: str | None = None, verified: bool = False,
+                   avatar_url: str | None = None,
+                   character_id: str | None = None) -> Player | None:
         if player_id and player_id in self.players:
             p = self.players[player_id]
             if (p.uid or None) == (uid or None):
                 p.ws = ws
                 p.connected = True
                 p.verified = verified
+                p.avatar_url = avatar_url or p.avatar_url
+                p.character_id = character_id or p.character_id
                 if self.arena.room_by_id(p.room_id) is None:
                     p.room_id = self.arena.start_room().rid
                 self.log(p.id, "reconnect")
@@ -357,7 +364,8 @@ class Room:
         pid = f"p{self._counter}"
         player = Player(pid, clean_name(name) or f"Player {slot + 1}", slot,
                         COLORS[slot], role, self.arena.start_room().rid,
-                        uid=uid, verified=verified, ws=ws)
+                        uid=uid, verified=verified, avatar_url=avatar_url,
+                        character_id=character_id, ws=ws)
         self.players[pid] = player
         self.log(pid, "join", {"role": player.role, "name": player.name})
         if self._task is None or self._task.done():
@@ -409,6 +417,7 @@ class Room:
             await self.clue_share(player, msg.get("role"), msg.get("text"))
         elif kind == "ready":
             player.ready = bool(msg.get("value"))
+            await self.broadcast_state()
             await self.maybe_start()
         elif kind == "chat":
             await self.team_chat(player, msg.get("text"))

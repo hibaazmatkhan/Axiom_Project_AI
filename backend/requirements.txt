@@ -7,3 +7,5 @@ pytest>=8.0
 firebase-admin>=6.5
 python-dotenv>=1.0
 psycopg[binary]>=3.2
+pillow>=10.0
+python-multipart>=0.0.9
