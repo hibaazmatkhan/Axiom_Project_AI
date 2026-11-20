@@ -50,7 +50,10 @@ function socketUrl(room: string, name: string, pid: string) {
   } catch {
     base = new URL(origin);
   }
-  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  base.protocol =
+    window.location.protocol === "https:" || base.protocol === "https:" || base.protocol === "wss:"
+      ? "wss:"
+      : "ws:";
   base.hash = "";
   base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;
   base.searchParams.set("name", name);
