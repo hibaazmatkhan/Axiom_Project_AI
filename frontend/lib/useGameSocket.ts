@@ -41,9 +41,17 @@ const FATAL_ERRORS = new Set([
 ]);
 
 function socketUrl(room: string, name: string, pid: string) {
-  const configured = process.env.WS_URL?.trim();
-  const base = new URL(configured || window.location.origin, window.location.origin);
+  const origin = window.location.origin;
+  let base: URL;
+  try {
+    const configured = process.env.WS_URL?.trim();
+    base = new URL(configured || origin, origin);
+    if (!/^(ws|wss|http|https):$/.test(base.protocol)) throw new Error("Invalid WS URL");
+  } catch {
+    base = new URL(origin);
+  }
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  base.hash = "";
   base.pathname = `${base.pathname.replace(/\/+$/, "")}/ws/${encodeURIComponent(room)}`;
   base.searchParams.set("name", name);
   base.searchParams.set("auth", "1");
@@ -125,10 +133,29 @@ export function useGameSocket(room: string, name: string) {
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
     };
 
+    const scheduleReconnect = () => {
+      if (disposed || fatalClose) return;
+      const delay = Math.min(15000, 1000 * 2 ** attempts);
+      attempts += 1;
+      reconnectTimer = window.setTimeout(connect, delay);
+    };
+
     const connect = () => {
       if (disposed) return;
-      const storedId = sessionStorage.getItem(`axiom_pid_${room}`) || "";
-      const ws = new WebSocket(socketUrl(room, name, storedId));
+      let storedId = "";
+      try {
+        storedId = sessionStorage.getItem(`axiom_pid_${room}`) || "";
+      } catch {
+        storedId = "";
+      }
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(socketUrl(room, name, storedId));
+      } catch {
+        setError("Cannot reach the game server. Retrying…");
+        scheduleReconnect();
+        return;
+      }
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -158,10 +185,7 @@ export function useGameSocket(room: string, name: string) {
       ws.onclose = () => {
         setConnected(false);
         if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
-        if (disposed || fatalClose) return;
-        const delay = Math.min(15000, 1000 * 2 ** attempts);
-        attempts += 1;
-        reconnectTimer = window.setTimeout(connect, delay);
+        scheduleReconnect();
       };
 
       ws.onerror = () => {
@@ -169,10 +193,17 @@ export function useGameSocket(room: string, name: string) {
       };
 
       ws.onmessage = (e) => {
-        const m = JSON.parse(e.data);
+        let m: any;
+        try {
+          m = JSON.parse(e.data);
+        } catch {
+          return;
+        }
         if (m.type === "welcome") {
           setYou(m.you);
-          sessionStorage.setItem(`axiom_pid_${room}`, m.you);
+          try {
+            sessionStorage.setItem(`axiom_pid_${room}`, m.you);
+          } catch {}
           apply(m.state);
         } else if (m.type === "state") {
           apply(m.state);
