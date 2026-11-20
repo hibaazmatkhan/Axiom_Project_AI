@@ -13,6 +13,18 @@ export default function manifest(): MetadataRoute.Manifest {
     orientation: "landscape-primary",
     icons: [
       {
+        src: "/favicon-32x32.png",
+        sizes: "32x32",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/apple-touch-icon.png",
+        sizes: "180x180",
+        type: "image/png",
+        purpose: "maskable",
+      },
+      {
         src: "/favicon.svg",
         sizes: "any",
         type: "image/svg+xml",

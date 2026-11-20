@@ -38,6 +38,12 @@ export default function LoginPage() {
   const [resolver, setResolver] = useState<MultiFactorResolver | null>(null);
   const [mfaCode, setMfaCode] = useState("");
 
+  const nextPath = () => {
+    if (typeof window === "undefined") return null;
+    const value = new URLSearchParams(window.location.search).get("next");
+    return value && value.startsWith("/") && !value.startsWith("//") ? value : null;
+  };
+
   const syncProfile = async (preferredUsername?: string) => {
     try {
       await api.me();
@@ -87,7 +93,7 @@ export default function LoginPage() {
         await updateProfile(credential.user, { displayName: cleanUsername });
         await sendEmailVerification(credential.user).catch(() => undefined);
         await syncProfile(cleanUsername);
-        router.push("/profile");
+        router.push(nextPath() ?? "/profile");
       } else {
         const credential = await signInWithEmailAndPassword(
           getFirebaseAuth(),
@@ -95,7 +101,7 @@ export default function LoginPage() {
           password
         );
         await syncProfile();
-        router.push(credential.user.emailVerified ? "/lobby" : "/profile");
+        router.push(nextPath() ?? (credential.user.emailVerified ? "/lobby" : "/profile"));
       }
     } catch (error) {
       handleAuthError(error);
@@ -136,7 +142,7 @@ export default function LoginPage() {
       await syncProfile();
       setResolver(null);
       setMfaCode("");
-      router.push("/lobby");
+      router.push(nextPath() ?? "/lobby");
     } catch (error) {
       handleAuthError(error);
     } finally {

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
+import RequireAuth from "@/components/RequireAuth";
+import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import {
@@ -14,10 +16,14 @@ import {
   type PlayerStats,
 } from "@/lib/api";
 import { authErrorMessage } from "@/lib/authErrors";
-import { getFirebaseAuth } from "@/lib/firebase";
+import { characterUrl, loadCharacters, type Character } from "@/lib/characters";
+import { getFirebaseAuth, getGoogleProvider } from "@/lib/firebase";
 import {
+  EmailAuthProvider,
   TotpMultiFactorGenerator,
   multiFactor,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
   sendEmailVerification,
   signOut,
   type MultiFactorInfo,
@@ -33,7 +39,7 @@ const ATTR_LABELS: Record<string, string> = {
   leadership: "Leadership",
 };
 
-export default function ProfilePage() {
+function ProfilePageContent() {
   const { user, loading } = useAuth();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [history, setHistory] = useState<MatchRecord[]>([]);
@@ -47,6 +53,8 @@ export default function ProfilePage() {
   const [mfaSecret, setMfaSecret] = useState<TotpSecret | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaBusy, setMfaBusy] = useState(false);
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [avatarBusy, setAvatarBusy] = useState(false);
 
   const refresh = async () => {
     try {
@@ -63,6 +71,10 @@ export default function ProfilePage() {
   };
 
   useEffect(() => {
+    void loadCharacters().then(setCharacters);
+  }, []);
+
+  useEffect(() => {
     if (!user) {
       setMe(null);
       setHistory([]);
@@ -72,7 +84,9 @@ export default function ProfilePage() {
     api
       .leaderboard()
       .then((result) => setLeaders(result.leaders))
-      .catch(() => undefined);
+      .catch((cause) =>
+        setError(cause instanceof Error ? cause.message : "Leaderboard is unavailable.")
+      );
     if (user.emailVerified) {
       api
         .history()
@@ -107,6 +121,97 @@ export default function ProfilePage() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save the profile.");
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectCharacterAvatar = async (id: string) => {
+    if (avatarBusy || !user) return;
+    setAvatarBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.selectAvatar(id);
+      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      setNotice("Character avatar assigned.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update the avatar.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const uploadAvatarFile = async (file: File | undefined) => {
+    if (!file || avatarBusy || !user) return;
+    if (file.size > 500 * 1024) {
+      setError("Avatar images must be under 500 KB.");
+      return;
+    }
+    setAvatarBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.uploadAvatar(file);
+      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      setNotice("Avatar uploaded.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not upload the avatar.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const clearAvatarSelection = async () => {
+    if (avatarBusy || !user) return;
+    setAvatarBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.deleteAvatar();
+      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      setNotice("Avatar reset to initials.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not reset the avatar.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const exportData = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const data = await api.exportData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "axiom-data-export.json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setNotice("Data export downloaded.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not export your data.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteAccountData = async () => {
+    if (busy) return;
+    if (!window.confirm("Delete your stored profile, history, models and avatars?")) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await ensureRecentAuth();
+      await api.deleteAccount();
+      await signOut(getFirebaseAuth());
+      window.location.href = "/";
+    } catch (cause) {
+      setError(authErrorMessage(cause));
       setBusy(false);
     }
   };
@@ -166,12 +271,25 @@ export default function ProfilePage() {
     }
   };
 
+  const ensureRecentAuth = async () => {
+    if (!user) return;
+    if (user.providerData.some((provider) => provider.providerId === "google.com")) {
+      await reauthenticateWithPopup(user, getGoogleProvider());
+      return;
+    }
+    if (!user.email) throw new Error("Reauthentication is not available for this account.");
+    const password = window.prompt("Confirm your password to change security settings.");
+    if (!password) throw new Error("Password confirmation is required.");
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
+  };
+
   const disableMfa = async (factor: MultiFactorInfo) => {
     if (!user || mfaBusy) return;
     setMfaBusy(true);
     setError(null);
     setNotice(null);
     try {
+      await ensureRecentAuth();
       await multiFactor(user).unenroll(factor);
       await api.setMfa(false).catch(() => undefined);
       setMfaFactors(multiFactor(user).enrolledFactors);
@@ -232,7 +350,6 @@ export default function ProfilePage() {
   const username = profile?.username || user.displayName || user.email?.split("@")[0] || "Player";
   const displayName = profile?.display_name || username;
   const attrs = stats.attributes ?? {};
-  const initials = displayName.slice(0, 2).toUpperCase();
   const mfaEnabled = mfaFactors.length > 0 || !!profile?.mfa_enabled;
 
   return (
@@ -259,6 +376,22 @@ export default function ProfilePage() {
             >
               Enter a room
             </Link>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void exportData()}
+              className="border border-bone/20 px-5 py-2.5 text-xs uppercase tracking-[0.16em] text-dim transition hover:border-gold/60 hover:text-gold disabled:opacity-40"
+            >
+              Export data
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void deleteAccountData()}
+              className="border border-bone/20 px-5 py-2.5 text-xs uppercase tracking-[0.16em] text-dim transition hover:border-red/60 hover:text-red disabled:opacity-40"
+            >
+              Delete data
+            </button>
             <button
               type="button"
               onClick={async () => {
@@ -288,23 +421,13 @@ export default function ProfilePage() {
         <section className="mt-8 grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
           <div className="broadcast-panel panel-cut relative overflow-hidden p-6 sm:p-8">
             <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-              <div className="relative grid h-28 w-28 shrink-0 place-items-center overflow-hidden border border-gold/40 bg-gradient-to-br from-gold/20 via-panel to-void">
-                {profile?.avatar_url ? (
-                  <img
-                    src={profile.avatar_url}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <>
-                    <span className="absolute inset-2 border border-bone/10" />
-                    <span className="font-display text-4xl tracking-[0.08em] text-bone">
-                      {initials}
-                    </span>
-                  </>
-                )}
-                <span className="absolute bottom-1.5 right-2 text-xs text-gold">♠</span>
-              </div>
+              <Avatar
+                src={profile?.avatar_url}
+                name={displayName}
+                characterId={profile?.character_id}
+                size={112}
+                className="h-28 w-28 border-gold/40"
+              />
               <div className="min-w-0">
                 <p className="mono text-[9px] uppercase tracking-[0.24em] text-ash">
                   Broadcast identity
@@ -313,10 +436,63 @@ export default function ProfilePage() {
                 <p className="mono mt-1 text-[10px] uppercase tracking-[0.18em] text-ash">
                   @{username}
                 </p>
-                <p className="mt-2 max-w-md text-sm leading-relaxed text-dim">
-                  Your public dossier, account controls and security factors. Avatar selection and
-                  uploads arrive with the lobby identity pass.
-                </p>
+                <div className="mt-4 max-w-md border-t border-bone/10 pt-4">
+                  <p className="mono text-[9px] uppercase tracking-[0.2em] text-gold">
+                    Character avatars
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {characters.map((character) => (
+                      <button
+                        key={character.id}
+                        type="button"
+                        disabled={avatarBusy}
+                        onClick={() => selectCharacterAvatar(character.id)}
+                        title={character.name}
+                        className={`border p-1 transition disabled:opacity-40 ${
+                          profile?.character_id === character.id
+                            ? "border-gold bg-gold/10"
+                            : "border-bone/10 hover:border-bone/30"
+                        }`}
+                      >
+                        <Avatar
+                          src={characterUrl(character.id)}
+                          name={character.name}
+                          characterId={character.id}
+                          size={36}
+                          showSuit={false}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <label className="cursor-pointer border border-bone/20 px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-bone transition hover:border-gold/60 hover:text-gold">
+                      {avatarBusy ? "Uploading…" : "Upload PFP"}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="hidden"
+                        disabled={avatarBusy}
+                        onChange={(event) => {
+                          void uploadAvatarFile(event.target.files?.[0]);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                    {(profile?.avatar_url || profile?.character_id) && (
+                      <button
+                        type="button"
+                        disabled={avatarBusy}
+                        onClick={() => clearAvatarSelection()}
+                        className="text-[10px] uppercase tracking-[0.16em] text-dim transition hover:text-red disabled:opacity-40"
+                      >
+                        Reset avatar
+                      </button>
+                    )}
+                    <span className="mono text-[9px] uppercase tracking-[0.14em] text-ash">
+                      PNG/JPEG/WEBP · 64–512px · under 500 KB
+                    </span>
+                  </div>
+                </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {[
                     ["Matches", stats.matches ?? 0],
@@ -646,6 +822,13 @@ export default function ProfilePage() {
                   <span className="mono w-6 text-xs text-gold">
                     {String(index + 1).padStart(2, "0")}
                   </span>
+                  <Avatar
+                    src={leader.avatar_url}
+                    name={leader.username}
+                    characterId={leader.character_id}
+                    size={28}
+                    showSuit={false}
+                  />
                   <span className="flex-1 truncate text-bone">{leader.username}</span>
                   <span className="mono text-[9px] uppercase tracking-[0.12em] text-ash">
                     {leader.matches} matches
@@ -660,5 +843,13 @@ export default function ProfilePage() {
         </div>
       </main>
     </PageShell>
+  );
+}
+
+export default function ProfilePage() {
+  return (
+    <RequireAuth next="/profile">
+      <ProfilePageContent />
+    </RequireAuth>
   );
 }

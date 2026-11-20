@@ -1,5 +1,6 @@
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, type Auth } from "firebase/auth";
+import { getToken, initializeAppCheck, ReCaptchaV3Provider, type AppCheck } from "firebase/app-check";
 
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
@@ -19,6 +20,7 @@ export const firebaseConfigured = Boolean(
 
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
+let appCheck: AppCheck | null = null;
 let googleProvider: GoogleAuthProvider | null = null;
 
 function getFirebaseApp(): FirebaseApp {
@@ -29,8 +31,30 @@ function getFirebaseApp(): FirebaseApp {
 
 export function getFirebaseAuth(): Auth {
   if (auth) return auth;
-  auth = getAuth(getFirebaseApp());
+  const app = getFirebaseApp();
+  auth = getAuth(app);
+  const siteKey = process.env.FIREBASE_APP_CHECK_SITE_KEY;
+  if (siteKey && typeof window !== "undefined") {
+    try {
+      appCheck = initializeAppCheck(app, {
+        provider: new ReCaptchaV3Provider(siteKey),
+        isTokenAutoRefreshEnabled: true,
+      });
+    } catch {}
+  }
   return auth;
+}
+
+export async function appCheckToken(): Promise<string | null> {
+  if (typeof window === "undefined" || !process.env.FIREBASE_APP_CHECK_SITE_KEY) return null;
+  try {
+    getFirebaseAuth();
+    if (!appCheck) return null;
+    const result = await getToken(appCheck);
+    return result.token || null;
+  } catch {
+    return null;
+  }
 }
 
 export function getGoogleProvider(): GoogleAuthProvider {

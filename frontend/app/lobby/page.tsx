@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
+import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import { api } from "@/lib/api";
+import { characterUrl, loadCharacters, type Character } from "@/lib/characters";
 import { guest } from "@/lib/guest";
 
 const randomCode = () => Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -18,32 +20,106 @@ const ROLES = [
   ["\u2663", "Archivist", "Previous arena", "text-green"],
 ];
 
+const ROLE_PREVIEWS: Record<string, string> = {
+  Navigator: "Live grid access: you see every room shift and call the route to A5.",
+  Oracle: "Future sight: you read sigils and predicted doors before the round resolves.",
+  Timekeeper: "Door math: you track dice rolls, capacity and countdown pressure.",
+  Archivist: "Memory access: you keep the previous arena and compare what changed.",
+};
+
 export default function LobbyPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [selectedCharacter, setSelectedCharacter] = useState<string | null>(null);
+  const [previewRole, setPreviewRole] = useState("Navigator");
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   useEffect(() => {
     if (loading) return;
     if (!user) {
       setName(guest.get());
+      setSelectedCharacter(guest.getAvatar().character_id ?? null);
+      setAvatarUrl(null);
       return;
     }
     const fallback = user.displayName || user.email?.split("@")[0] || "";
     setName(fallback);
     api
       .me()
-      .then((result) => setName(result.profile.username || fallback))
+      .then((result) => {
+        setName(result.profile.username || fallback);
+        setSelectedCharacter(result.profile.character_id ?? null);
+        setAvatarUrl(result.profile.avatar_url ?? null);
+      })
       .catch(() => undefined);
   }, [user, loading]);
 
   useEffect(() => {
-    api.health().then(setHealth);
+    void loadCharacters().then(setCharacters);
+  }, []);
+
+  useEffect(() => {
+    setHealthLoading(true);
+    api
+      .health()
+      .then((result) => {
+        setHealth(result);
+        setHealthLoading(false);
+      })
+      .catch(() => {
+        setHealth(null);
+        setHealthLoading(false);
+      });
     const timer = setInterval(() => api.health().then(setHealth), 5000);
     return () => clearInterval(timer);
   }, []);
+
+  const chooseCharacter = async (id: string) => {
+    if (avatarBusy) return;
+    setAvatarError(null);
+    if (!user) {
+      guest.setAvatar({ character_id: id, avatar_url: characterUrl(id) });
+      setSelectedCharacter(id);
+      setAvatarUrl(null);
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const result = await api.selectAvatar(id);
+      setSelectedCharacter(result.profile.character_id ?? id);
+      setAvatarUrl(result.profile.avatar_url ?? characterUrl(id));
+    } catch (cause) {
+      setAvatarError(cause instanceof Error ? cause.message : "Could not save that avatar.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const uploadPfp = async (file: File | undefined) => {
+    if (!file || !user || avatarBusy) return;
+    if (file.size > 500 * 1024) {
+      setAvatarError("Avatar images must be under 500 KB.");
+      return;
+    }
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      const result = await api.uploadAvatar(file);
+      setAvatarUrl(result.profile.avatar_url ?? null);
+      setSelectedCharacter(result.profile.character_id ?? null);
+    } catch (cause) {
+      setAvatarError(cause instanceof Error ? cause.message : "Could not upload that avatar.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
 
   const go = (room: string) => {
     if (!name.trim() || !room.trim()) return;
@@ -84,9 +160,11 @@ export default function LobbyPage() {
                 Broadcast status
               </div>
               <div className="mono mt-1 text-xs text-bone">
-                {health?.ok
-                  ? `${health.players} in ${health.rooms} room${health.rooms === 1 ? "" : "s"}`
-                  : "Server offline"}
+                {healthLoading
+                  ? "Checking signal…"
+                  : health?.ok
+                    ? `${health.players} in ${health.rooms} room${health.rooms === 1 ? "" : "s"}`
+                    : "Server offline"}
               </div>
             </div>
           </div>
@@ -116,6 +194,78 @@ export default function LobbyPage() {
               placeholder="Your broadcast name"
               className="mt-2 w-full border border-bone/15 bg-void/70 px-4 py-3 text-sm text-bone outline-none transition placeholder:text-ash focus:border-gold/70"
             />
+
+            <div className="mt-5 border-t border-bone/10 pt-5">
+              <div className="flex items-center gap-3">
+                <Avatar
+                  src={avatarUrl ?? (selectedCharacter ? characterUrl(selectedCharacter) : null)}
+                  name={name || displayName}
+                  characterId={selectedCharacter}
+                  size={48}
+                />
+                <div>
+                  <p className="mono text-[10px] uppercase tracking-[0.2em] text-gold">
+                    Broadcast face
+                  </p>
+                  <p className="mt-1 text-xs text-dim">
+                    {selectedCharacter ? "Character avatar selected." : "Using initials until you choose."}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {characters.map((character) => (
+                  <button
+                    key={character.id}
+                    type="button"
+                    disabled={avatarBusy}
+                    onClick={() => chooseCharacter(character.id)}
+                    title={character.name}
+                    aria-label={`Choose ${character.name} avatar`}
+                    className={`border p-1 transition disabled:opacity-40 ${
+                      selectedCharacter === character.id
+                        ? "border-gold bg-gold/10"
+                        : "border-bone/10 hover:border-bone/30"
+                    }`}
+                  >
+                    <Avatar
+                      src={characterUrl(character.id)}
+                      name={character.name}
+                      characterId={character.id}
+                      size={34}
+                      showSuit={false}
+                    />
+                  </button>
+                ))}
+              </div>
+              {user ? (
+                <label className="mt-3 inline-block cursor-pointer border border-bone/20 px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-bone transition hover:border-gold/60 hover:text-gold">
+                  {avatarBusy ? "Saving…" : "Upload PFP"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    disabled={avatarBusy}
+                    onChange={(event) => {
+                      void uploadPfp(event.target.files?.[0]);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+              ) : (
+                <p className="mt-3 text-[11px] leading-relaxed text-yellow">
+                  Guests can choose a face for this session.{" "}
+                  <Link href="/login?next=/lobby" className="underline underline-offset-2 hover:text-bone">
+                    Sign in
+                  </Link>{" "}
+                  to keep it on your profile.
+                </p>
+              )}
+              {avatarError && (
+                <p aria-live="polite" className="mt-2 text-[11px] text-red">
+                  {avatarError}
+                </p>
+              )}
+            </div>
 
             <button
               type="button"
@@ -211,9 +361,16 @@ export default function LobbyPage() {
               </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                 {ROLES.map(([suit, role, detail, tone]) => (
-                  <div
+                  <button
+                    type="button"
                     key={role}
-                    className="flex items-center gap-3 border border-bone/[0.08] bg-void/50 px-3 py-3 transition hover:border-bone/20"
+                    onClick={() => setPreviewRole(role)}
+                    aria-pressed={previewRole === role}
+                    className={`flex items-center gap-3 border px-3 py-3 text-left transition ${
+                      previewRole === role
+                        ? "border-gold bg-gold/[0.06]"
+                        : "border-bone/[0.08] bg-void/50 hover:border-bone/20"
+                    }`}
                   >
                     <span className={`font-display text-2xl leading-none ${tone}`}>{suit}</span>
                     <div>
@@ -222,8 +379,16 @@ export default function LobbyPage() {
                         {detail}
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
+              </div>
+              <div className="mt-3 border-t border-bone/10 pt-3">
+                <p className="mono text-[9px] uppercase tracking-[0.18em] text-gold">
+                  {previewRole} preview
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-dim">
+                  {ROLE_PREVIEWS[previewRole]}
+                </p>
               </div>
             </section>
 

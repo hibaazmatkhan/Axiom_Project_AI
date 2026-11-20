@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import GameCanvas from "./GameCanvas";
 import WristbandMap from "./WristbandMap";
 import { SuitMark } from "./Brand";
+import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
 import type { Direction, Door, DoorColor, PatternType } from "@/lib/types";
 
@@ -30,7 +31,7 @@ const DIRS: Direction[] = ["N", "E", "S", "W"];
 const MAX_POINTS = 15;
 
 function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <section className={`hud rounded-2xl p-4 ${className}`}>{children}</section>;
+  return <section className={`broadcast-panel panel-cut p-4 ${className}`}>{children}</section>;
 }
 
 function Stat({ label, value, accent = "text-bone" }: { label: string; value: React.ReactNode; accent?: string }) {
@@ -51,7 +52,7 @@ function Points({ value }: { value: number }) {
         <span className="text-xs uppercase tracking-widest text-dim">Points</span>
         <span className={`mono text-lg ${value <= 3 ? "text-red" : "text-bone"}`}>{value}</span>
       </div>
-      <div className="mt-1 h-2 overflow-hidden rounded-full bg-ink/70">
+      <div className="mt-1 h-2 overflow-hidden rounded-full bg-void/70">
         <div className={`h-full rounded-full bg-gradient-to-r ${tone} transition-all`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -81,8 +82,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (e.metaKey || e.ctrlKey || e.altKey || target?.isContentEditable) return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const k = e.key.toLowerCase();
       if (k === " " || k === "spacebar") { e.preventDefault(); sendWait(); return; }
       if (k === "v") { setFirstPerson((v) => !v); return; }
@@ -255,7 +258,14 @@ export default function GameClient({ room, name }: { room: string; name: string 
           <ul className="mt-2 space-y-2">
             {g.players.map((p) => (
               <li key={p.id} className="flex items-center gap-2 text-sm">
-                <span className="inline-block h-3 w-3 rounded-full" style={{ background: p.color }} />
+                <Avatar
+                  src={p.avatar_url}
+                  name={p.name}
+                  characterId={p.character_id}
+                  color={p.color}
+                  size={24}
+                  showSuit={false}
+                />
                 <span className={p.id === g.you ? "font-semibold" : ""}>{p.name}</span>
                 <span className="mono text-[10px] text-dim">{p.room_code ?? "--"}</span>
                 <span className="mono ml-auto text-xs text-dim">{p.points}</span>
@@ -536,7 +546,14 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 <ul className="mt-2 space-y-2">
                   {g.players.map((player) => (
                     <li key={player.id} className="flex items-center gap-2 text-sm">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: player.color }} />
+                      <Avatar
+                        src={player.avatar_url}
+                        name={player.name}
+                        characterId={player.character_id}
+                        color={player.color}
+                        size={24}
+                        showSuit={false}
+                      />
                       <span className={player.id === g.you ? "font-semibold" : ""}>{player.name}</span>
                       <span className="mono text-[10px] text-dim">{player.room_code ?? "--"}</span>
                       <span className="mono ml-auto text-xs text-dim">{player.points}</span>
@@ -695,7 +712,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
       </div>
 
       {/* event toasts */}
-      <div className="pointer-events-none absolute bottom-44 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2 xl:bottom-32">
+      <div
+        aria-live="polite"
+        className="pointer-events-none absolute bottom-44 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2 xl:bottom-32"
+      >
         {g.doorEvent?.locked && (
           <div className="rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
             Lockdown. Two teammates must scan your wristband free.
@@ -750,7 +770,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <ul className="mt-4 space-y-2 text-left">
               {g.players.map((p) => (
                 <li key={p.id} className="flex items-center gap-2 text-sm">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: p.color }} />
+                  <Avatar
+                    src={p.avatar_url}
+                    name={p.name}
+                    characterId={p.character_id}
+                    color={p.color}
+                    size={28}
+                  />
                   <span>{p.name}</span>
                   <span className="ml-auto text-[10px] uppercase tracking-wider text-dim">{p.role}</span>
                   <span className={`text-xs ${p.ready ? "text-yellow" : "text-dim"}`}>
@@ -792,8 +818,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
             </p>
             <div className="mt-4 space-y-1 text-left">
               {(g.gameOver?.summary?.players ?? []).map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between text-xs">
-                  <span>{p.name}</span>
+                <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Avatar src={p.avatar_url} name={p.name} characterId={p.character_id} size={24} showSuit={false} />
+                    <span className="truncate">{p.name}</span>
+                  </span>
                   <span className="mono text-dim">
                     {p.escaped ? "escaped" : p.eliminated ? "eliminated" : "left behind"} · {p.points} pts
                   </span>
@@ -817,9 +846,23 @@ export default function GameClient({ room, name }: { room: string; name: string 
 
       {(g.error || !g.connected) && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-void/90">
-          <div className="hud rounded-2xl px-6 py-4 text-center">
-            {g.error ? <p className="text-red">{g.error}</p> : <p className="text-dim">Connecting to the arena…</p>}
+          <div className="broadcast-panel panel-cut px-6 py-4 text-center">
+            {g.error ? (
+              <p className="text-red">{g.error}</p>
+            ) : g.attempts > 0 ? (
+              <p className="text-dim">Reconnecting to the arena… attempt {g.attempts}</p>
+            ) : (
+              <p className="text-dim">Connecting to the arena…</p>
+            )}
           </div>
+        </div>
+      )}
+
+      {g.restored && g.connected && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2">
+          <p className="mono border border-green/50 bg-void/90 px-4 py-2 text-[10px] uppercase tracking-[0.2em] text-green">
+            State restored
+          </p>
         </div>
       )}
 

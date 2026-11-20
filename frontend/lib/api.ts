@@ -1,4 +1,4 @@
-import { getFirebaseAuth } from "./firebase";
+import { appCheckToken, getFirebaseAuth } from "./firebase";
 
 const API = "/backend";
 
@@ -16,6 +16,7 @@ export type Profile = {
   username: string;
   display_name: string;
   avatar_url: string | null;
+  character_id?: string | null;
   email_verified: boolean;
   mfa_enabled: boolean;
   created_at: string | null;
@@ -45,6 +46,8 @@ export type Leader = {
   username: string;
   matches: number;
   pattern?: number;
+  avatar_url?: string | null;
+  character_id?: string | null;
   [key: string]: unknown;
 };
 
@@ -79,11 +82,15 @@ async function request<T>(
   authenticated = true
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) {
+  if (init.body && !headers.has("Content-Type") && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   const idToken = authenticated ? await token() : null;
   if (idToken) headers.set("Authorization", `Bearer ${idToken}`);
+  if (authenticated) {
+    const appCheck = await appCheckToken();
+    if (appCheck) headers.set("X-Firebase-AppCheck", appCheck);
+  }
 
   let response: Response;
   try {
@@ -114,6 +121,23 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+  selectAvatar: (characterId: string) =>
+    request<{ profile: Profile }>("/api/me/avatar/select", {
+      method: "PUT",
+      body: JSON.stringify({ character_id: characterId }),
+    }),
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ profile: Profile }>("/api/me/avatar/upload", {
+      method: "POST",
+      body: form,
+    });
+  },
+  deleteAvatar: () =>
+    request<{ profile: Profile }>("/api/me/avatar", { method: "DELETE" }),
+  exportData: () => request<Record<string, unknown>>("/api/me/export"),
+  deleteAccount: () => request<{ ok: boolean }>("/api/me", { method: "DELETE" }),
   setMfa: (enabled: boolean) =>
     request<{ profile: Profile }>("/api/me/mfa", {
       method: "POST",

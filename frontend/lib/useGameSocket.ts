@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Arena, Dice, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, You,
 } from "./types";
-import { getFirebaseAuth } from "./firebase";
+import { appCheckToken, getFirebaseAuth } from "./firebase";
+import { guest } from "./guest";
+import { characterUrl } from "./characters";
 
 export type RoundTransition = {
   id: number;
@@ -64,6 +66,8 @@ function socketUrl(room: string, name: string, pid: string) {
 
 export function useGameSocket(room: string, name: string) {
   const [connected, setConnected] = useState(false);
+  const [attempts, setAttempts] = useState(0);
+  const [restored, setRestored] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [you, setYou] = useState<string | null>(null);
   const [arena, setArena] = useState<Arena | null>(null);
@@ -109,7 +113,9 @@ export function useGameSocket(room: string, name: string) {
     let attempts = 0;
     let reconnectTimer: number | null = null;
     let heartbeatTimer: number | null = null;
+    let restoredTimer: number | null = null;
     let fatalClose = false;
+    let hadConnected = false;
 
     const apply = (s: Snapshot) => {
       setArena(s.arena);
@@ -140,6 +146,7 @@ export function useGameSocket(room: string, name: string) {
       if (disposed || fatalClose) return;
       const delay = Math.min(15000, 1000 * 2 ** attempts);
       attempts += 1;
+      setAttempts(attempts);
       reconnectTimer = window.setTimeout(connect, delay);
     };
 
@@ -163,8 +170,15 @@ export function useGameSocket(room: string, name: string) {
 
       ws.onopen = () => {
         attempts = 0;
+        setAttempts(0);
         setConnected(true);
         setError(null);
+        if (hadConnected) {
+          setRestored(true);
+          if (restoredTimer !== null) window.clearTimeout(restoredTimer);
+          restoredTimer = window.setTimeout(() => setRestored(false), 3200);
+        }
+        hadConnected = true;
         void (async () => {
           let idToken: string | null = null;
           try {
@@ -172,12 +186,19 @@ export function useGameSocket(room: string, name: string) {
           } catch {
             idToken = null;
           }
+          const appCheck = await appCheckToken();
           if (ws.readyState !== WebSocket.OPEN) return;
+          const guestAvatar = guest.getAvatar();
+          const characterId = guestAvatar.character_id || null;
           ws.send(JSON.stringify({
             type: "auth",
             token: idToken,
+            app_check: appCheck,
             name,
             pid: storedId || undefined,
+            avatar: characterId
+              ? { character_id: characterId, avatar_url: characterUrl(characterId) }
+              : undefined,
           }));
         })();
         heartbeatTimer = window.setInterval(() => {
@@ -280,6 +301,7 @@ export function useGameSocket(room: string, name: string) {
       disposed = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+      if (restoredTimer !== null) window.clearTimeout(restoredTimer);
       const ws = wsRef.current;
       if (ws) {
         ws.onclose = null;
@@ -307,7 +329,7 @@ export function useGameSocket(room: string, name: string) {
   const sendClue = useCallback((roleName: string, text: string) => send({ type: "clue_share", role: roleName, text }), [send]);
 
   return {
-    connected, error, you, me, arena, prevArena, players, status, round, maxRounds, stage,
+    connected, attempts, restored, error, you, me, arena, prevArena, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, minPlayers, nexus, pa, role, roleLabel,
     roleHint, dice, futures, puzzle, exitUnsealed, transition, prediction, puzzleResult, doorEvent,
     hazard, revive, eliminated, chat, teamNotes, exitNotice, gameOver,
