@@ -1,11 +1,10 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, Dice, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, You,
+  Arena, Dice, Direction, NexusReport, Player, Puzzle, Role, RoundView, Snapshot, Status, Visions, WalkEvent, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
-import { characterUrl } from "./characters";
 
 export type RoundTransition = {
   id: number;
@@ -28,6 +27,7 @@ export type DoorEvent = {
   room_code?: string;
   target_code?: string;
   message?: string;
+  cost?: number;
 };
 
 export type HazardEvent = { player: string; room_code: string; penalty: number; points: number };
@@ -39,7 +39,7 @@ const EMPTY_NEXUS: NexusReport = {
 };
 const FATAL_ERRORS = new Set([
   "auth_required", "auth_invalid", "auth_timeout", "auth_unavailable",
-  "admin_required", "room_full", "server_full",
+  "admin_required", "room_full", "game_started", "server_full",
 ]);
 
 function socketUrl(room: string, name: string, pid: string) {
@@ -99,6 +99,9 @@ export function useGameSocket(room: string, name: string) {
   const [prediction, setPrediction] = useState<{ correct: boolean; score: number; message: string } | null>(null);
   const [puzzleResult, setPuzzleResult] = useState<boolean | null>(null);
   const [doorEvent, setDoorEvent] = useState<DoorEvent | null>(null);
+  const [walk, setWalk] = useState<WalkEvent>({
+    id: 0, dir: null, from: null, to: null, cost: 1, player: null,
+  });
   const [hazard, setHazard] = useState<HazardEvent | null>(null);
   const [revive, setRevive] = useState<ReviveEvent | null>(null);
   const [eliminated, setEliminated] = useState<EliminationEvent | null>(null);
@@ -107,6 +110,7 @@ export function useGameSocket(room: string, name: string) {
   const [exitNotice, setExitNotice] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<{ won: boolean; summary: any } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const youRef = useRef<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -121,6 +125,7 @@ export function useGameSocket(room: string, name: string) {
       setArena(s.arena);
       setPlayers(s.players);
       setMe(s.you);
+      if (s.you?.id) youRef.current = s.you.id;
       setStatus(s.status);
       setRound(s.round ?? 0);
       setMaxRounds(s.max_rounds ?? 15);
@@ -188,17 +193,13 @@ export function useGameSocket(room: string, name: string) {
           }
           const appCheck = await appCheckToken();
           if (ws.readyState !== WebSocket.OPEN) return;
-          const guestAvatar = guest.getAvatar();
-          const characterId = guestAvatar.character_id || null;
+          if (!idToken) guest.clearAvatar();
           ws.send(JSON.stringify({
             type: "auth",
             token: idToken,
             app_check: appCheck,
             name,
             pid: storedId || undefined,
-            avatar: characterId
-              ? { character_id: characterId, avatar_url: characterUrl(characterId) }
-              : undefined,
           }));
         })();
         heartbeatTimer = window.setInterval(() => {
@@ -225,6 +226,7 @@ export function useGameSocket(room: string, name: string) {
         }
         if (m.type === "welcome") {
           setYou(m.you);
+          youRef.current = m.you;
           try {
             sessionStorage.setItem(`axiom_pid_${room}`, m.you);
           } catch {}
@@ -259,11 +261,22 @@ export function useGameSocket(room: string, name: string) {
           if (tv.next_round_in != null) setNextAt(performance.now() + tv.next_round_in * 1000);
           if (tv.state) apply(tv.state);
         } else if (m.type === "door_result") {
+          const cost = Number(m.cost ?? 1) || 1;
           setDoorEvent({
             accepted: !!m.accepted, locked: m.locked, door: m.door, color: m.color,
             remaining: m.remaining, room_code: m.room_code, target_code: m.target_code,
-            message: m.message,
+            message: m.message, cost,
           });
+          if (m.accepted && m.player === youRef.current) {
+            setWalk((prev) => ({
+              id: prev.id + 1,
+              dir: (m.door as Direction) ?? null,
+              from: m.room_code ?? null,
+              to: m.target_code ?? null,
+              cost,
+              player: m.player ?? null,
+            }));
+          }
         } else if (m.type === "lockdown") {
           setDoorEvent({ accepted: false, locked: true, door: m.door, room_code: m.room_code, message: m.message });
         } else if (m.type === "hazard") {
@@ -331,7 +344,7 @@ export function useGameSocket(room: string, name: string) {
   return {
     connected, attempts, restored, error, you, me, arena, prevArena, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, minPlayers, nexus, pa, role, roleLabel,
-    roleHint, dice, futures, puzzle, exitUnsealed, transition, prediction, puzzleResult, doorEvent,
+    roleHint, dice, futures, puzzle, exitUnsealed, transition, prediction, puzzleResult, doorEvent, walk,
     hazard, revive, eliminated, chat, teamNotes, exitNotice, gameOver,
     sendChooseDoor, sendWait, sendUnlock, sendPredict, sendReady, sendPuzzle, sendChat, sendClue,
   };

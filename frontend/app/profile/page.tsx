@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
 import RequireAuth from "@/components/RequireAuth";
 import Avatar from "@/components/Avatar";
+import AvatarCropper from "@/components/AvatarCropper";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import {
@@ -15,6 +16,12 @@ import {
   type MeResponse,
   type PlayerStats,
 } from "@/lib/api";
+import {
+  PFP_PRESETS,
+  assertAvatarType,
+  pfpPresetFromUrl,
+  type PfpPresetId,
+} from "@/lib/avatarRules";
 import { authErrorMessage } from "@/lib/authErrors";
 import { characterUrl, loadCharacters, type Character } from "@/lib/characters";
 import { getFirebaseAuth, getGoogleProvider } from "@/lib/firebase";
@@ -55,6 +62,7 @@ function ProfilePageContent() {
   const [mfaBusy, setMfaBusy] = useState(false);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [cropSource, setCropSource] = useState<File | null>(null);
 
   const refresh = async () => {
     try {
@@ -125,6 +133,22 @@ function ProfilePageContent() {
     }
   };
 
+  const selectPfp = async (id: PfpPresetId) => {
+    if (avatarBusy || !user) return;
+    setAvatarBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.selectPfpPreset(id);
+      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      setNotice("PFP updated.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update the PFP.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   const selectCharacterAvatar = async (id: string) => {
     if (avatarBusy || !user) return;
     setAvatarBusy(true);
@@ -143,14 +167,11 @@ function ProfilePageContent() {
 
   const uploadAvatarFile = async (file: File | undefined) => {
     if (!file || avatarBusy || !user) return;
-    if (file.size > 500 * 1024) {
-      setError("Avatar images must be under 500 KB.");
-      return;
-    }
     setAvatarBusy(true);
     setError(null);
     setNotice(null);
     try {
+      assertAvatarType(file);
       const result = await api.uploadAvatar(file);
       setMe((current) => (current ? { ...current, profile: result.profile } : current));
       setNotice("Avatar uploaded.");
@@ -159,6 +180,23 @@ function ProfilePageContent() {
     } finally {
       setAvatarBusy(false);
     }
+  };
+
+  const startAvatarCrop = (file: File | undefined) => {
+    if (!file || avatarBusy || !user) return;
+    setError(null);
+    setNotice(null);
+    try {
+      assertAvatarType(file);
+      setCropSource(file);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "That image type is not supported.");
+    }
+  };
+
+  const finishAvatarCrop = async (file: File) => {
+    setCropSource(null);
+    await uploadAvatarFile(file);
   };
 
   const clearAvatarSelection = async () => {
@@ -349,6 +387,7 @@ function ProfilePageContent() {
   const stats: PlayerStats = me?.stats ?? {};
   const username = profile?.username || user.displayName || user.email?.split("@")[0] || "Player";
   const displayName = profile?.display_name || username;
+  const activePreset = pfpPresetFromUrl(profile?.avatar_url);
   const attrs = stats.attributes ?? {};
   const mfaEnabled = mfaFactors.length > 0 || !!profile?.mfa_enabled;
 
@@ -438,6 +477,32 @@ function ProfilePageContent() {
                 </p>
                 <div className="mt-4 max-w-md border-t border-bone/10 pt-4">
                   <p className="mono text-[9px] uppercase tracking-[0.2em] text-gold">
+                    Card PFPs
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {PFP_PRESETS.map((preset) => {
+                      const active = activePreset === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          disabled={avatarBusy}
+                          onClick={() => void selectPfp(preset.id)}
+                          title={preset.label}
+                          className={`border p-1 transition disabled:opacity-40 ${
+                            active ? "border-gold bg-gold/10" : "border-bone/10 hover:border-bone/30"
+                          }`}
+                        >
+                          <img
+                            src={preset.src}
+                            alt={preset.label}
+                            className="h-9 w-9 rounded-sm object-cover"
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mono mt-5 text-[9px] uppercase tracking-[0.2em] text-gold">
                     Character avatars
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -473,7 +538,7 @@ function ProfilePageContent() {
                         className="hidden"
                         disabled={avatarBusy}
                         onChange={(event) => {
-                          void uploadAvatarFile(event.target.files?.[0]);
+                          startAvatarCrop(event.target.files?.[0]);
                           event.target.value = "";
                         }}
                       />
@@ -489,7 +554,7 @@ function ProfilePageContent() {
                       </button>
                     )}
                     <span className="mono text-[9px] uppercase tracking-[0.14em] text-ash">
-                      PNG/JPEG/WEBP · 64–512px · under 500 KB
+                      PNG/JPEG/WEBP · adjustable square crop · no size limit
                     </span>
                   </div>
                 </div>
@@ -842,6 +907,13 @@ function ProfilePageContent() {
           </section>
         </div>
       </main>
+      {cropSource && (
+        <AvatarCropper
+          file={cropSource}
+          onCancel={() => setCropSource(null)}
+          onConfirm={(file) => void finishAvatarCrop(file)}
+        />
+      )}
     </PageShell>
   );
 }

@@ -1,3 +1,4 @@
+import type { PfpPresetId } from "./avatarRules";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 
 const API = "/backend";
@@ -125,6 +126,11 @@ export const api = {
     request<{ profile: Profile }>("/api/me/avatar/select", {
       method: "PUT",
       body: JSON.stringify({ character_id: characterId }),
+    }),
+  selectPfpPreset: (presetId: PfpPresetId) =>
+    request<{ profile: Profile }>("/api/me/avatar/preset", {
+      method: "PUT",
+      body: JSON.stringify({ preset_id: presetId }),
     }),
   uploadAvatar: (file: File) => {
     const form = new FormData();

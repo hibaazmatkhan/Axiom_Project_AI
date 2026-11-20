@@ -1,11 +1,11 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import GameCanvas from "./GameCanvas";
 import WristbandMap from "./WristbandMap";
 import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
-import type { Direction, Door, DoorColor, PatternType } from "@/lib/types";
+import type { DoorColor, PatternType } from "@/lib/types";
 
 const PATTERN_TYPES: PatternType[] = [
   "rotation", "reflection", "translation", "symbol", "sequential", "conditional", "compound",
@@ -17,17 +17,7 @@ const SIGIL_GLYPH: Record<string, string> = {
 const DOOR_HEX: Record<DoorColor, string> = {
   red: "#e23b3b", blue: "#3f7bd9", yellow: "#e8b53a", green: "#3f9f6b",
 };
-const DOOR_TEXT: Record<DoorColor, string> = {
-  red: "text-red", blue: "text-blue", yellow: "text-yellow", green: "text-green",
-};
-const DOOR_BORDER: Record<DoorColor, string> = {
-  red: "border-red/60", blue: "border-blue/60", yellow: "border-yellow/60", green: "border-green/60",
-};
-const KEY_DIR: Record<string, Direction> = {
-  w: "N", arrowup: "N", s: "S", arrowdown: "S",
-  a: "W", arrowleft: "W", d: "E", arrowright: "E",
-};
-const DIRS: Direction[] = ["N", "E", "S", "W"];
+const DIRS = ["N", "E", "S", "W"] as const;
 const MAX_POINTS = 15;
 
 function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -68,7 +58,9 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [secs, setSecs] = useState<number | null>(null);
   const [guessType, setGuessType] = useState<PatternType | "">("");
   const [guessSigils, setGuessSigils] = useState<string[]>([]);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "team" | "chat" | "notes">("none");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes">("none");
+  const [teamOpen, setTeamOpen] = useState(false);
+  const teamRef = useRef<HTMLDivElement>(null);
   const { sendChooseDoor, sendWait } = g;
 
   const me = g.me;
@@ -90,15 +82,14 @@ export default function GameClient({ room, name }: { room: string; name: string 
       if (k === " " || k === "spacebar") { e.preventDefault(); sendWait(); return; }
       if (k === "v") { setFirstPerson((v) => !v); return; }
       if (k === "n") { setShowNotes((s) => !s); return; }
-      const dir = KEY_DIR[k];
-      if (dir) {
+      if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         e.preventDefault();
-        if (!e.repeat) sendChooseDoor(dir);
+        return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sendChooseDoor, sendWait]);
+  }, [sendWait]);
 
   useEffect(() => {
     if (g.nextAt == null) { setSecs(null); return; }
@@ -111,11 +102,28 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const toggleSigil = (s: string) =>
     setGuessSigils((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
 
+  useEffect(() => {
+    if (!teamOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!teamRef.current?.contains(event.target as Node)) setTeamOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTeamOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [teamOpen]);
+
   const difficultyPct = Math.round(((g.nexus.difficulty ?? 0) + 1) / 2 * 100);
   const lockedAllies = g.players.filter(
     (p) => p.locked && !p.eliminated && p.id !== g.you
   );
   const alive = g.players.filter((p) => !p.eliminated);
+  const teamRoster = useMemo(() => [...g.players].sort((a, b) => a.slot - b.slot), [g.players]);
   const futureEntries = Object.entries(g.futures);
   const diceEntries = Object.entries(g.dice);
   const isLobby = g.status === "lobby";
@@ -134,12 +142,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
         exitUnsealed={g.exitUnsealed}
         transitionId={g.transition.id}
         moved={g.transition.moved}
+        walk={g.walk}
         firstPerson={firstPerson}
         onChooseDoor={sendChooseDoor}
       />
 
       {/* top bar */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 p-3 sm:p-4">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-start justify-between gap-3 p-3 sm:p-4">
         <div className="pointer-events-auto flex min-w-0 flex-wrap items-center gap-2">
           <span className="mono flex items-center gap-2 border border-red/40 bg-void/85 px-2.5 py-2 text-[9px] uppercase tracking-[0.2em] text-red backdrop-blur">
             <span className="signal-dot" />
@@ -161,6 +170,43 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </span>
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+          <div ref={teamRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setTeamOpen((open) => !open)}
+              aria-expanded={teamOpen}
+              aria-label="Toggle team roster"
+              className="flex items-center gap-2 border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-gold/50 hover:text-bone"
+            >
+              <span>Team</span>
+              <span className="mono text-[9px] text-gold">{room}</span>
+              <span className={`text-[8px] transition ${teamOpen ? "rotate-180 text-bone" : ""}`}>▼</span>
+            </button>
+            {teamOpen && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-60 rounded-xl border border-bone/15 bg-void/95 p-2 shadow-hud backdrop-blur-xl sm:w-64">
+                <div className="mono px-1 pb-2 text-[9px] uppercase tracking-[0.2em] text-dim">
+                  Room <span className="text-gold">{room}</span>
+                </div>
+                <ul className="scroll-thin max-h-[45vh] space-y-1 overflow-y-auto">
+                  {teamRoster.map((player) => (
+                    <li key={player.id} className="flex min-w-0 items-center gap-2 px-1 py-1 text-sm">
+                      <Avatar
+                        src={player.avatar_url}
+                        name={player.name}
+                        characterId={player.character_id}
+                        color={player.color}
+                        size={24}
+                        showSuit={false}
+                      />
+                      <span className={`truncate ${player.id === g.you ? "font-semibold text-bone" : ""}`}>
+                        {player.name}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
           <div className="border border-edge bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
             <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
               Next shift
@@ -229,55 +275,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </p>
         </Panel>
 
-        <Panel>
-          <span className="text-xs uppercase tracking-widest text-dim">Doors</span>
-          <div className="mt-2 grid grid-cols-3 grid-rows-3 gap-1">
-            <div />
-            <DoorButton dir="N" door={me?.doors?.N} onClick={() => sendChooseDoor("N")} />
-            <div />
-            <DoorButton dir="W" door={me?.doors?.W} onClick={() => sendChooseDoor("W")} />
-            <button
-              onClick={sendWait}
-              className="rounded-lg border border-edge bg-ink/50 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow"
-              title="Wait (−1 point)"
-            >
-              WAIT
-            </button>
-            <DoorButton dir="E" door={me?.doors?.E} onClick={() => sendChooseDoor("E")} />
-            <div />
-            <DoorButton dir="S" door={me?.doors?.S} onClick={() => sendChooseDoor("S")} />
-            <div />
-          </div>
-          <p className="mt-2 text-[10px] leading-relaxed text-dim">
-            WASD / arrows choose a door · Space waits · V camera. Crossing costs 1 point; a 0-capacity door is a lockdown.
-          </p>
-        </Panel>
-
-        <Panel>
-          <span className="text-xs uppercase tracking-widest text-dim">Team</span>
-          <ul className="mt-2 space-y-2">
-            {g.players.map((p) => (
-              <li key={p.id} className="flex items-center gap-2 text-sm">
-                <Avatar
-                  src={p.avatar_url}
-                  name={p.name}
-                  characterId={p.character_id}
-                  color={p.color}
-                  size={24}
-                  showSuit={false}
-                />
-                <span className={p.id === g.you ? "font-semibold" : ""}>{p.name}</span>
-                <span className="mono text-[10px] text-dim">{p.room_code ?? "--"}</span>
-                <span className="mono ml-auto text-xs text-dim">{p.points}</span>
-                {p.locked && <span className="text-[10px] text-red">locked</span>}
-                {p.eliminated && <span className="text-[10px] text-red">out</span>}
-                {p.escaped && <span className="text-[10px] text-green">out✓</span>}
-                {!p.connected && <span className="text-[10px] text-dim">off</span>}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-
         {lockedAllies.length > 0 && (
           <Panel className="border-red/60">
             <span className="text-xs uppercase tracking-widest text-red">Free a teammate</span>
@@ -287,7 +284,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 onClick={() => g.sendUnlock(p.id)}
                 className="mt-2 w-full rounded-lg border border-red/60 py-1.5 text-xs text-red transition hover:bg-red/10"
               >
-                Scan {p.name} ({p.room_code}) · 2 helpers, −1 each
+                Scan {p.name} free · 2 helpers, −1 each
               </button>
             ))}
           </Panel>
@@ -348,6 +345,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </span>
             ))}
           </div>
+        </Panel>
+
+        <Panel>
+          <span className="text-xs uppercase tracking-widest text-dim">Movement</span>
+          <p className="mt-2 text-[11px] leading-relaxed text-dim">
+            Click a glowing door or press E while facing it to cross. WASD moves freely; mouse looks. Drag in third person to orbit. Each crossing costs 1 point, shown above the door.
+          </p>
         </Panel>
 
         <Panel>
@@ -540,46 +544,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             )}
 
-            {mobilePanel === "team" && (
-              <div>
-                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Team</span>
-                <ul className="mt-2 space-y-2">
-                  {g.players.map((player) => (
-                    <li key={player.id} className="flex items-center gap-2 text-sm">
-                      <Avatar
-                        src={player.avatar_url}
-                        name={player.name}
-                        characterId={player.character_id}
-                        color={player.color}
-                        size={24}
-                        showSuit={false}
-                      />
-                      <span className={player.id === g.you ? "font-semibold" : ""}>{player.name}</span>
-                      <span className="mono text-[10px] text-dim">{player.room_code ?? "--"}</span>
-                      <span className="mono ml-auto text-xs text-dim">{player.points}</span>
-                      {player.locked && <span className="text-[10px] text-red">locked</span>}
-                      {player.eliminated && <span className="text-[10px] text-red">out</span>}
-                      {!player.connected && <span className="text-[10px] text-ash">off</span>}
-                    </li>
-                  ))}
-                </ul>
-                {lockedAllies.length > 0 && (
-                  <div className="mt-3 border-t border-bone/10 pt-3">
-                    {lockedAllies.map((player) => (
-                      <button
-                        key={player.id}
-                        type="button"
-                        onClick={() => g.sendUnlock(player.id)}
-                        className="mt-1 w-full border border-red/50 px-2 py-2 text-xs text-red transition hover:bg-red/10"
-                      >
-                        Scan {player.name} free
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {mobilePanel === "chat" && (
               <div>
                 <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Team chat</span>
@@ -671,25 +635,39 @@ export default function GameClient({ room, name }: { room: string; name: string 
             </span>
           </div>
 
-          <div className="grid grid-cols-5 gap-1">
-            <DoorButton dir="N" door={me?.doors?.N} onClick={() => sendChooseDoor("N")} />
-            <DoorButton dir="E" door={me?.doors?.E} onClick={() => sendChooseDoor("E")} />
-            <DoorButton dir="S" door={me?.doors?.S} onClick={() => sendChooseDoor("S")} />
-            <DoorButton dir="W" door={me?.doors?.W} onClick={() => sendChooseDoor("W")} />
+          {lockedAllies.length > 0 && (
+            <div className="mb-2 rounded-lg border border-red/50 bg-red/5 p-2">
+              <p className="mono text-[9px] uppercase tracking-[0.18em] text-red">Free a teammate</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {lockedAllies.map((player) => (
+                  <button
+                    key={player.id}
+                    type="button"
+                    onClick={() => g.sendUnlock(player.id)}
+                    className="border border-red/50 px-2 py-1 text-[10px] text-red transition hover:bg-red/10"
+                  >
+                    Scan {player.name} free
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mb-1 flex items-center gap-2">
             <button
               type="button"
               onClick={sendWait}
-              className="rounded-lg border border-edge bg-ink/50 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow"
+              className="rounded-lg border border-edge bg-ink/50 px-3 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow"
               title="Wait (−1 point)"
             >
               WAIT
             </button>
+            <span className="text-[9px] leading-tight text-dim">Tap a door in 3D to walk through it.</span>
           </div>
 
-          <div className="mt-1 grid grid-cols-4 gap-1">
+          <div className="grid grid-cols-3 gap-1">
             {([
               ["map", "Map"],
-              ["team", "Team"],
               ["chat", "Chat"],
               ["notes", "Notes"],
             ] as const).map(([key, label]) => (
@@ -725,6 +703,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
           <div className="rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
             Crossed the {g.doorEvent.color ?? g.doorEvent.door} door
             {g.doorEvent.target_code ? ` into ${g.doorEvent.target_code}` : ""}
+            <span className="mono ml-1 text-yellow">−{g.doorEvent.cost ?? 1} pts</span>
             {g.doorEvent.remaining != null ? ` · ${g.doorEvent.remaining} crossings left` : ""}
           </div>
         )}
@@ -765,7 +744,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <p className="mono text-[10px] uppercase tracking-[0.3em] text-yellow">The Last Room</p>
             <h2 className="mt-2 text-2xl font-semibold">Assembling the team</h2>
             <p className="mt-2 text-sm text-dim">
-              {g.players.filter((p) => p.connected).length} of {g.minPlayers} needed · press Ready
+              Share room <span className="mono text-gold">{room}</span> — the whole team can join before the arena starts.
+            </p>
+            <p className="mt-1 text-xs text-dim">
+              {g.players.filter((p) => p.connected).length} of {g.minPlayers} joined · press Ready. The match begins when all connected players are ready.
             </p>
             <ul className="mt-4 space-y-2 text-left">
               {g.players.map((p) => (
@@ -848,7 +830,15 @@ export default function GameClient({ room, name }: { room: string; name: string 
         <div className="absolute inset-0 z-30 grid place-items-center bg-void/90">
           <div className="broadcast-panel panel-cut px-6 py-4 text-center">
             {g.error ? (
-              <p className="text-red">{g.error}</p>
+              <div>
+                <p className="text-red">{g.error}</p>
+                <a
+                  href="/lobby"
+                  className="mt-4 inline-block rounded-lg border border-edge px-4 py-2 text-[10px] uppercase tracking-[0.16em] text-dim transition hover:border-bone hover:text-bone"
+                >
+                  Back to lobby
+                </a>
+              </div>
             ) : g.attempts > 0 ? (
               <p className="text-dim">Reconnecting to the arena… attempt {g.attempts}</p>
             ) : (
@@ -878,35 +868,4 @@ function futureTone(future?: string) {
   if (future === "sanction") return "text-red";
   if (future === "open") return "text-green";
   return "text-dim";
-}
-
-function DoorButton({
-  dir, door, onClick,
-}: {
-  dir: Direction;
-  door?: Door & { open?: boolean };
-  onClick: () => void;
-}) {
-  const open = !!door?.open && !door?.sealed;
-  const color: DoorColor = door?.color ?? "red";
-  return (
-    <button
-      onClick={onClick}
-      disabled={!open}
-      className={`relative flex flex-col items-center justify-center rounded-lg border py-2 text-[11px] transition ${
-        open ? `${DOOR_BORDER[color]} ${DOOR_TEXT[color]} hover:brightness-125` : "border-edge text-dim opacity-40"
-      }`}
-      title={
-        open
-          ? `Cross ${dir} (${color})${door?.capacity != null ? ` · ${door.capacity} crossings left` : ""}`
-          : door?.sealed ? "Sealed door" : "No doorway"
-      }
-    >
-      <span className="mono text-[10px] leading-none">{dir}</span>
-      <span className="mt-1 h-1.5 w-6 rounded-full" style={{ background: DOOR_HEX[color], opacity: open ? 1 : 0.3 }} />
-      <span className="mono mt-1 text-[9px] leading-none text-dim">
-        {door?.sealed ? "✕" : door?.capacity != null ? door.capacity : "—"}
-      </span>
-    </button>
-  );
 }

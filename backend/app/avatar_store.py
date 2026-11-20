@@ -1,21 +1,22 @@
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from typing import Any
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import config, db, supabase_store
 from .characters import character_url, is_character
 from .repositories import AvatarRepository
 
-MAX_BYTES = 500 * 1024
-MIN_DIMENSION = 64
-MAX_DIMENSION = 512
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+PFP_PRESET_IDS = ("joker", "spade", "club", "heart", "diamond")
+
+logger = logging.getLogger(__name__)
 
 
 class AvatarInvalid(ValueError):
@@ -38,23 +39,37 @@ def validate_upload(data: bytes, content_type: str) -> dict[str, Any]:
     media_type = (content_type or "").split(";", 1)[0].strip().lower()
     if media_type not in ALLOWED_TYPES:
         raise AvatarInvalid("Use a PNG, JPEG or WEBP image.")
-    if not data or len(data) > MAX_BYTES:
-        raise AvatarInvalid("Avatar images must be under 500 KB.")
     if not _magic_ok(data, media_type):
         raise AvatarInvalid("The file contents do not match its image type.")
     try:
-        with Image.open(BytesIO(data)) as image:
-            width, height = image.size
-            image_format = (image.format or "").upper()
-            image.verify()
+        with Image.open(BytesIO(data)) as probe:
+            image_format = (probe.format or "").upper()
+            probe.verify()
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise AvatarInvalid("That image could not be read.") from exc
     expected = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
     if expected.get(image_format) != media_type:
         raise AvatarInvalid("The image format does not match its type.")
-    if width != height or not MIN_DIMENSION <= width <= MAX_DIMENSION:
-        raise AvatarInvalid("Avatars must be square, between 64×64 and 512×512.")
-    return {"content_type": media_type, "width": width, "height": height, "bytes": len(data)}
+    try:
+        with Image.open(BytesIO(data)) as source:
+            with ImageOps.exif_transpose(source) as oriented:
+                width, height = oriented.size
+                side = min(width, height)
+                left = (width - side) // 2
+                top = (height - side) // 2
+                cropped = oriented.crop((left, top, left + side, top + side)).convert("RGBA")
+                output = BytesIO()
+                cropped.save(output, format="PNG", optimize=True)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise AvatarInvalid("That image could not be read.") from exc
+    normalized = output.getvalue()
+    return {
+        "data": normalized,
+        "content_type": "image/png",
+        "width": side,
+        "height": side,
+        "bytes": len(normalized),
+    }
 
 
 def moderate_avatar(uid: str, data: bytes, content_type: str, kind: str) -> bool:
@@ -64,6 +79,46 @@ def moderate_avatar(uid: str, data: bytes, content_type: str, kind: str) -> bool
 def public_url(path: str) -> str:
     base = config.SUPABASE_URL.rstrip("/")
     return f"{base}/storage/v1/object/public/{config.SUPABASE_STORAGE_BUCKET}/{quote(path, safe='/')}"
+
+
+def is_pfp_preset(value: object) -> bool:
+    return isinstance(value, str) and value in PFP_PRESET_IDS
+
+
+def pfp_url(preset_id: str) -> str:
+    return f"/avatars/pfp/{preset_id}.png"
+
+
+def storage_path_for(uid: str) -> str | None:
+    row = for_uid(uid)
+    path = row.get("storage_path") if row else None
+    if isinstance(path, str) and path.startswith(f"{uid}/") and ".." not in path:
+        return path
+    return None
+
+
+def delete_storage(path: str | None) -> None:
+    if not path or path.startswith("/") or ".." in path or not config.supabase_configured():
+        return
+    url = (
+        f"{config.SUPABASE_URL.rstrip('/')}/storage/v1/object/"
+        f"{quote(config.SUPABASE_STORAGE_BUCKET, safe='')}/{quote(path, safe='/')}"
+    )
+    headers = {
+        "apikey": config.SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    try:
+        with httpx.Client(timeout=15) as client:
+            response = client.delete(url, headers=headers)
+        if response.status_code >= 400:
+            logger.warning("avatar storage cleanup failed with status %s", response.status_code)
+    except httpx.HTTPError:
+        logger.warning("avatar storage cleanup was unavailable", exc_info=True)
+
+
+def clear_uploaded_storage(uid: str) -> None:
+    delete_storage(storage_path_for(uid))
 
 
 def upload(uid: str, data: bytes, content_type: str) -> tuple[str, str]:

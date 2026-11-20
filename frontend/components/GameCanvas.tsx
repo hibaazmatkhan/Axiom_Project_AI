@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import type { Arena, Dice, Direction, Door, DoorColor, Player, Role, Visions, You } from "@/lib/types";
+import type { Arena, Dice, Direction, Door, DoorColor, Player, Role, Visions, You, WalkEvent } from "@/lib/types";
 
 type Props = {
   arena: Arena | null;
@@ -14,6 +14,7 @@ type Props = {
   exitUnsealed: boolean;
   transitionId: number;
   moved: { from: [number, number]; to: [number, number]; code_from: string; code_to: string }[];
+  walk: WalkEvent;
   firstPerson: boolean;
   onChooseDoor: (dir: Direction) => void;
 };
@@ -23,6 +24,9 @@ const WH = 3.2;
 const DW = 1.7;
 const DH = 2.5;
 const T = 0.22;
+const ROOM_STEP = H * 2;
+const WALK_MS = 920;
+const FREE_SPEED = 2.6;
 
 const INK = 0x0b0c0e;
 const WHITE = 0xf4f1ea;
@@ -73,6 +77,13 @@ function makeLabel(text: string, color = "#f4f1ea", scale = 1.5) {
   return sprite;
 }
 
+function makeCostLabel(cost: number) {
+  const sprite = makeLabel(`-${cost}`, "#e8b53a", 0.74);
+  sprite.position.set(0, DH + 0.46, 0.18);
+  sprite.userData.cost = true;
+  return sprite;
+}
+
 function orientTo(group: THREE.Object3D, dir: Direction) {
   if (dir === "N") { group.position.set(0, 0, -H); group.rotation.y = 0; }
   else if (dir === "S") { group.position.set(0, 0, H); group.rotation.y = Math.PI; }
@@ -80,17 +91,76 @@ function orientTo(group: THREE.Object3D, dir: Direction) {
   else { group.position.set(-H, 0, 0); group.rotation.y = Math.PI / 2; }
 }
 
+function walkOffset(dir: Direction | null) {
+  if (dir === "N") return { x: 0, z: -ROOM_STEP, yaw: 0 };
+  if (dir === "S") return { x: 0, z: ROOM_STEP, yaw: Math.PI };
+  if (dir === "E") return { x: ROOM_STEP, z: 0, yaw: -Math.PI / 2 };
+  if (dir === "W") return { x: -ROOM_STEP, z: 0, yaw: Math.PI / 2 };
+  return { x: 0, z: 0, yaw: 0 };
+}
+
+function doorAnchor(dir: Direction | null) {
+  if (dir === "N") return { x: 0, z: -H, vertical: false };
+  if (dir === "S") return { x: 0, z: H, vertical: false };
+  if (dir === "E") return { x: H, z: 0, vertical: true };
+  if (dir === "W") return { x: -H, z: 0, vertical: true };
+  return { x: 0, z: 0, vertical: false };
+}
+
+function isEdgeDirection(room: [number, number] | null, size: number, dir: Direction) {
+  if (!room) return false;
+  const [bx, by] = room;
+  if (dir === "N") return by <= 0;
+  if (dir === "S") return by >= size - 1;
+  if (dir === "E") return bx >= size - 1;
+  return bx <= 0;
+}
+
+function easeInOut(p: number) {
+  return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+}
+
+function roomYouFrom(base: You, room: Arena["rooms"][number]): You {
+  return {
+    ...base,
+    room_id: room.id,
+    room_code: room.code,
+    room: [room.bx, room.by],
+    doors: Object.fromEntries(
+      DIRS.map((dir) => [dir, { ...room.doors[dir], open: !room.doors[dir].sealed }])
+    ) as You["doors"],
+    locked: false,
+    eliminated: false,
+    escaped: false,
+  };
+}
+
+type WalkAnimation = {
+  startedAt: number;
+  to: string;
+  toYou: You;
+  start: THREE.Vector3;
+  gate: THREE.Vector3;
+  end: THREE.Vector3;
+  yaw: number;
+};
+
 export default function GameCanvas(props: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
-  const apiRef = useRef<{ rebuild: () => void; pulse: () => void } | null>(null);
+  const apiRef = useRef<{
+    rebuild: () => void;
+    pulse: () => void;
+    walk: (event: WalkEvent) => void;
+  } | null>(null);
+  const lastWalkId = useRef(0);
 
   useEffect(() => {
     const mount = mountRef.current!;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(INK);
-    scene.fog = new THREE.Fog(INK, 8, 26);
+    scene.fog = new THREE.Fog(INK, 8, 28);
 
     const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 120);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -119,7 +189,20 @@ export default function GameCanvas(props: Props) {
 
     const pickMeshes: THREE.Mesh[] = [];
     const diceGems: { mesh: THREE.Mesh; base: number; phase: number }[] = [];
+    const popups: { sprite: THREE.Sprite; born: number; baseY: number }[] = [];
+    const flashes: { mesh: THREE.Mesh; born: number }[] = [];
     let glitch = 0;
+    let renderedCode = "";
+    let walkAnim: WalkAnimation | null = null;
+    let nextGroup: THREE.Group | null = null;
+    let freePos = { x: 0, z: 0 };
+    let yaw = 0;
+    let pitch = 0;
+    let orbitYaw = 0;
+    let orbitPitch = 0.34;
+    let orbitDist = 6.2;
+    let dragging = false;
+    const keys: Record<string, boolean> = {};
 
     const wallMat = new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.92, metalness: 0.02 });
     const floorMat = new THREE.MeshStandardMaterial({ color: 0xe7e3da, roughness: 0.95 });
@@ -139,8 +222,18 @@ export default function GameCanvas(props: Props) {
       return mesh;
     };
 
-    const buildWall = (dir: Direction, door?: Door & { open?: boolean }) => {
+    const buildWall = (
+      parent: THREE.Object3D,
+      dir: Direction, door: Door & { open?: boolean } | undefined,
+      roomCode: string, interactive: boolean, edge: boolean,
+    ) => {
       const group = new THREE.Group();
+      if (edge) {
+        addBox(group, H * 2, WH, T, 0, WH / 2, 0, wallMat);
+        orientTo(group, dir);
+        parent.add(group);
+        return;
+      }
       const side = H - DW / 2;
       const sideC = (H + DW / 2) / 2;
       addBox(group, side, WH, T, -sideC, WH / 2, 0, wallMat);
@@ -178,7 +271,7 @@ export default function GameCanvas(props: Props) {
         group.add(beyond);
       }
 
-      const future = propsRef.current.futures?.[propsRef.current.you?.room_code ?? ""]?.doors?.[dir]?.future;
+      const future = propsRef.current.futures?.[roomCode]?.doors?.[dir]?.future;
       if (future) {
         const fh = FUTURE_HEX[future] ?? FUTURE_HEX.unknown;
         const strip = new THREE.Mesh(
@@ -190,51 +283,62 @@ export default function GameCanvas(props: Props) {
         group.add(strip);
       }
 
-      const pick = new THREE.Mesh(
-        new THREE.PlaneGeometry(DW, DH),
-        new THREE.MeshBasicMaterial({ visible: false })
-      );
-      pick.position.set(0, DH / 2, 0.08);
-      pick.userData.dir = dir;
-      pick.userData.door = true;
-      group.add(pick);
-      pickMeshes.push(pick);
+      group.add(makeCostLabel(1));
+
+      if (interactive) {
+        const pick = new THREE.Mesh(
+          new THREE.PlaneGeometry(DW, DH),
+          new THREE.MeshBasicMaterial({ visible: false })
+        );
+        pick.position.set(0, DH / 2, 0.08);
+        pick.userData.dir = dir;
+        pick.userData.door = true;
+        group.add(pick);
+        pickMeshes.push(pick);
+      }
 
       orientTo(group, dir);
-      roomGroup.add(group);
+      parent.add(group);
     };
 
-    const buildRoom = () => {
-      const { you, arena, players, role, dice, exitUnsealed, firstPerson, youId } = propsRef.current;
-      roomGroup.children.slice().forEach((c) => { roomGroup.remove(c); disposeGroup(c); });
-      pickMeshes.length = 0;
-      diceGems.length = 0;
-      if (!you) return;
+    const buildRoomInto = (
+      parent: THREE.Group, roomYou: You, offsetX: number, offsetZ: number, interactive: boolean,
+    ) => {
+      parent.children.slice().forEach((c) => { parent.remove(c); disposeGroup(c); });
+      parent.position.set(offsetX, 0, offsetZ);
+      const { arena, players, role, dice, exitUnsealed, youId } = propsRef.current;
+      if (!roomYou) return;
+      const gemSink = interactive ? diceGems : [];
 
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(H * 2, H * 2), floorMat);
       floor.rotation.x = -Math.PI / 2;
       floor.receiveShadow = true;
-      roomGroup.add(floor);
+      parent.add(floor);
 
       const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(H * 2, H * 2), ceilMat);
       ceiling.rotation.x = Math.PI / 2;
       ceiling.position.y = WH;
-      roomGroup.add(ceiling);
+      parent.add(ceiling);
 
-      for (const dir of DIRS) buildWall(dir, you.doors?.[dir]);
+      const arenaSize = arena?.size ?? 5;
+      for (const dir of DIRS) {
+        buildWall(
+          parent, dir, roomYou.doors?.[dir], roomYou.room_code ?? "", interactive,
+          isEdgeDirection(roomYou.room, arenaSize, dir),
+        );
+      }
 
-      // Pedestal with four coloured d10 gems.
       const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x1a1c20, roughness: 0.5, metalness: 0.5 });
       const base = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, 0.42, 28), pedestalMat);
       base.position.y = 0.21;
       base.castShadow = true;
       base.receiveShadow = true;
-      roomGroup.add(base);
+      parent.add(base);
       const top = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.08, 28), pedestalMat);
       top.position.y = 0.46;
-      roomGroup.add(top);
+      parent.add(top);
 
-      const rolls = dice?.[you.room_code ?? ""]?.doors ?? {};
+      const rolls = dice?.[roomYou.room_code ?? ""]?.doors ?? {};
       DIRS.forEach((dir, i) => {
         const d = rolls[dir];
         const color = (d?.color ?? DIRS[i]) as DoorColor;
@@ -246,8 +350,8 @@ export default function GameCanvas(props: Props) {
         const angle = (i / 4) * Math.PI * 2;
         gem.position.set(Math.cos(angle) * 0.28, 0.62, Math.sin(angle) * 0.28);
         gem.castShadow = true;
-        roomGroup.add(gem);
-        diceGems.push({ mesh: gem, base: 0.62, phase: i * 1.3 });
+        parent.add(gem);
+        gemSink.push({ mesh: gem, base: 0.62, phase: i * 1.3 });
       });
 
       if (role === "timekeeper") {
@@ -257,19 +361,18 @@ export default function GameCanvas(props: Props) {
         });
         const label = makeLabel(parts.join("  "), "#e8b53a", 2.0);
         label.position.set(0, 1.45, 0);
-        roomGroup.add(label);
+        parent.add(label);
       }
 
-      const room = arena?.rooms.find((r) => r.code === you.room_code);
+      const room = arena?.rooms.find((r) => r.code === roomYou.room_code);
       if (room?.sigil && (role === "oracle" || role === "archivist")) {
         const glyph = makeLabel(SIGIL_GLYPH[room.sigil] ?? room.sigil, "#f4f1ea", 0.9);
         glyph.position.set(0, 1.1, 0);
-        roomGroup.add(glyph);
+        parent.add(glyph);
       }
 
-      // Exit beacon.
       const exitCode = arena ? `${String.fromCharCode(65 + arena.exit_room[0])}${arena.exit_room[1] + 1}` : "A5";
-      if (you.room_code === exitCode) {
+      if (roomYou.room_code === exitCode) {
         const hex = exitUnsealed ? 0x3f9f6b : 0xe8b53a;
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(0.9, 1.15, 40),
@@ -278,17 +381,16 @@ export default function GameCanvas(props: Props) {
         ring.rotation.x = -Math.PI / 2;
         ring.position.y = 0.02;
         ring.userData.beacon = true;
-        roomGroup.add(ring);
+        parent.add(ring);
         const pillar = new THREE.Mesh(
           new THREE.CylinderGeometry(0.7, 0.7, WH, 32, 1, true),
           new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: exitUnsealed ? 0.16 : 0.09, side: THREE.DoubleSide })
         );
         pillar.position.y = WH / 2;
         pillar.userData.beacon = true;
-        roomGroup.add(pillar);
+        parent.add(pillar);
       }
 
-      // Sanction floor.
       if (room && room.revealed && (room.sanction ?? 0) > 0) {
         const danger = new THREE.Mesh(
           new THREE.PlaneGeometry(H * 1.6, H * 1.6),
@@ -297,12 +399,12 @@ export default function GameCanvas(props: Props) {
         danger.rotation.x = -Math.PI / 2;
         danger.position.y = 0.015;
         danger.userData.sanction = true;
-        roomGroup.add(danger);
+        parent.add(danger);
       }
 
-      // Teammates in this room.
+      const hideSelf = propsRef.current.firstPerson || walkAnim !== null;
       const mates = players.filter(
-        (p) => p.room_code === you.room_code && !p.eliminated && (firstPerson ? p.id !== youId : true)
+        (p) => p.room_code === roomYou.room_code && !p.eliminated && (hideSelf ? p.id !== youId : true)
       );
       mates.forEach((p, i) => {
         const g = new THREE.Group();
@@ -331,10 +433,9 @@ export default function GameCanvas(props: Props) {
         const label = makeLabel(p.name || "?", p.locked ? "#e23b3b" : "#f4f1ea", 1.1);
         label.position.y = 1.6;
         g.add(label);
-        roomGroup.add(g);
+        parent.add(g);
       });
 
-      // Ceiling LED ring.
       const ringGeo = new THREE.TorusGeometry(1.5, 0.03, 8, 48);
       const ringMesh = new THREE.Mesh(
         ringGeo,
@@ -343,11 +444,98 @@ export default function GameCanvas(props: Props) {
       ringMesh.rotation.x = Math.PI / 2;
       ringMesh.position.y = WH - 0.05;
       ringMesh.userData.led = true;
-      roomGroup.add(ringMesh);
+      parent.add(ringMesh);
     };
 
-    apiRef.current = { rebuild: buildRoom, pulse: () => { glitch = 1; } };
-    buildRoom();
+    const clearNextGroup = () => {
+      if (!nextGroup) return;
+      scene.remove(nextGroup);
+      disposeGroup(nextGroup);
+      nextGroup = null;
+    };
+
+    const rebuild = () => {
+      const you = propsRef.current.you;
+      if (!you || walkAnim) return;
+      pickMeshes.length = 0;
+      diceGems.length = 0;
+      popups.length = 0;
+      flashes.length = 0;
+      clearNextGroup();
+      buildRoomInto(roomGroup, you, 0, 0, true);
+      renderedCode = you.room_code ?? "";
+    };
+
+    const finishWalk = (anim: WalkAnimation) => {
+      clearNextGroup();
+      pickMeshes.length = 0;
+      diceGems.length = 0;
+      popups.length = 0;
+      flashes.length = 0;
+      freePos = { x: 0, z: 0 };
+      buildRoomInto(roomGroup, anim.toYou, 0, 0, true);
+      renderedCode = anim.to;
+      walkAnim = null;
+    };
+
+    const startWalk = (event: WalkEvent) => {
+      const { arena, you } = propsRef.current;
+      if (!arena || !you || !event.dir || !event.to) return;
+      if (walkAnim) finishWalk(walkAnim);
+      popups.length = 0;
+      flashes.length = 0;
+      const fromCode = renderedCode || event.from || you.room_code || "";
+      const fromRoom = arena.rooms.find((r) => r.code === fromCode)
+        ?? arena.rooms.find((r) => r.code === event.from)
+        ?? arena.rooms.find((r) => r.code === you.room_code);
+      const toRoom = arena.rooms.find((r) => r.code === event.to);
+      if (!fromRoom || !toRoom) return;
+
+      clearNextGroup();
+      pickMeshes.length = 0;
+      diceGems.length = 0;
+
+      const fromYou = roomYouFrom(you, fromRoom);
+      const toYou = roomYouFrom(you, toRoom);
+      const offset = walkOffset(event.dir);
+      const anchor = doorAnchor(event.dir);
+
+      buildRoomInto(roomGroup, fromYou, 0, 0, false);
+      renderedCode = fromRoom.code;
+
+      nextGroup = new THREE.Group();
+      nextGroup.position.set(offset.x, 0, offset.z);
+      scene.add(nextGroup);
+      buildRoomInto(nextGroup, toYou, offset.x, offset.z, false);
+
+      const popup = makeLabel(`-${event.cost}`, "#e8b53a", 1.05);
+      const popupY = DH + 0.82;
+      popup.position.set(anchor.x, popupY, anchor.z);
+      roomGroup.add(popup);
+      popups.push({ sprite: popup, born: performance.now(), baseY: popupY });
+
+      const flash = new THREE.Mesh(
+        new THREE.RingGeometry(DW * 0.38, DW * 0.5, 36),
+        new THREE.MeshBasicMaterial({ color: 0xe8b53a, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false })
+      );
+      flash.position.set(anchor.x, DH / 2, anchor.z);
+      if (anchor.vertical) flash.rotation.y = Math.PI / 2;
+      roomGroup.add(flash);
+      flashes.push({ mesh: flash, born: performance.now() });
+
+      walkAnim = {
+        startedAt: performance.now(),
+        to: toRoom.code,
+        toYou,
+        start: new THREE.Vector3(freePos.x, 1.62, freePos.z),
+        gate: new THREE.Vector3(anchor.x, 1.62, anchor.z),
+        end: new THREE.Vector3(offset.x, 1.62, offset.z),
+        yaw: offset.yaw,
+      };
+    };
+
+    apiRef.current = { rebuild, pulse: () => { glitch = 1; }, walk: startWalk };
+    rebuild();
 
     const resize = () => {
       const w = mount.clientWidth || 1;
@@ -360,9 +548,6 @@ export default function GameCanvas(props: Props) {
     ro.observe(mount);
     resize();
 
-    // Pointer look + door picking.
-    const yawRef = { current: 0 };
-    const pitchRef = { current: 0 };
     const ndc = new THREE.Vector2(0, 0);
     const raycaster = new THREE.Raycaster();
 
@@ -385,54 +570,129 @@ export default function GameCanvas(props: Props) {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      if (document.pointerLockElement === renderer.domElement) {
-        yawRef.current -= e.movementX * 0.0024;
-        pitchRef.current = Math.max(-1.2, Math.min(1.2, pitchRef.current - e.movementY * 0.0024));
+      if (document.pointerLockElement === renderer.domElement && propsRef.current.firstPerson) {
+        yaw -= e.movementX * 0.0024;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch - e.movementY * 0.0024));
+      } else if (dragging && !propsRef.current.firstPerson) {
+        orbitYaw -= e.movementX * 0.005;
+        orbitPitch = Math.max(0.08, Math.min(1.12, orbitPitch - e.movementY * 0.004));
       }
     };
+
     const canLockPointer =
       typeof renderer.domElement.requestPointerLock === "function" &&
       window.matchMedia("(pointer: fine)").matches;
+
     const onPointerDown = () => {
-      if (
-        canLockPointer &&
-        propsRef.current.firstPerson &&
-        document.pointerLockElement !== renderer.domElement
-      ) {
+      if (!propsRef.current.firstPerson) {
+        dragging = true;
+        return;
+      }
+      if (canLockPointer && document.pointerLockElement !== renderer.domElement) {
         try {
           const result = renderer.domElement.requestPointerLock();
           if (result instanceof Promise) result.catch(() => pick());
         } catch {
           pick();
-          return;
         }
         return;
       }
       pick();
     };
 
+    const onPointerUp = () => { dragging = false; };
+    const onWheel = (e: WheelEvent) => {
+      if (propsRef.current.firstPerson) return;
+      e.preventDefault();
+      orbitDist = Math.max(3.2, Math.min(11, orbitDist + Math.sign(e.deltaY) * 0.6));
+    };
+
+    const movementKeys = new Set(["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(target?.tagName ?? "")) return;
+      const k = e.key.toLowerCase();
+      if (k === "e" || k === "enter") {
+        e.preventDefault();
+        if (!walkAnim) propsRef.current.onChooseDoor(viewDirection());
+        return;
+      }
+      if (movementKeys.has(k)) {
+        e.preventDefault();
+        keys[k] = true;
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (movementKeys.has(k)) keys[k] = false;
+    };
+
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
 
     const clock = new THREE.Clock();
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const dt = Math.min(clock.getDelta(), 0.1);
-      const { firstPerson } = propsRef.current;
-      if (firstPerson) {
-        camera.position.set(0, 1.62, 0);
-        camera.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
-      } else {
-        camera.position.set(0, WH + 2.6, H + 3.4);
-        camera.lookAt(0, 1.0, 0);
-      }
       const t = performance.now();
+      const { firstPerson } = propsRef.current;
+
+      if (walkAnim) {
+        const p = Math.max(0, Math.min(1, (t - walkAnim.startedAt) / WALK_MS));
+        const eased = easeInOut(p);
+        const pos = eased < 0.45
+          ? walkAnim.start.clone().lerp(walkAnim.gate, eased / 0.45)
+          : walkAnim.gate.clone().lerp(walkAnim.end, (eased - 0.45) / 0.55);
+        const bob = Math.sin(eased * Math.PI * 8) * 0.035;
+        pos.y = 1.62 + bob;
+        camera.position.copy(pos);
+        camera.rotation.set(Math.sin(eased * Math.PI * 8) * 0.012, walkAnim.yaw, 0, "YXZ");
+        if (p >= 1) finishWalk(walkAnim);
+      } else if (firstPerson) {
+        let localX = 0;
+        let localZ = 0;
+        if (keys.w || keys.arrowup) localZ -= 1;
+        if (keys.s || keys.arrowdown) localZ += 1;
+        if (keys.a || keys.arrowleft) localX -= 1;
+        if (keys.d || keys.arrowright) localX += 1;
+        const moving = localX !== 0 || localZ !== 0;
+        if (moving) {
+          const length = Math.hypot(localX, localZ) || 1;
+          localX /= length;
+          localZ /= length;
+          const sin = Math.sin(yaw);
+          const cos = Math.cos(yaw);
+          freePos.x += (localX * cos + localZ * sin) * FREE_SPEED * dt;
+          freePos.z += (-localX * sin + localZ * cos) * FREE_SPEED * dt;
+          const bound = H - 0.55;
+          freePos.x = Math.max(-bound, Math.min(bound, freePos.x));
+          freePos.z = Math.max(-bound, Math.min(bound, freePos.z));
+        }
+        const bob = moving ? Math.sin(t / 105) * 0.022 : Math.sin(t / 900) * 0.004;
+        camera.position.set(freePos.x, 1.62 + bob, freePos.z);
+        camera.rotation.set(pitch, yaw, 0, "YXZ");
+      } else {
+        const target = new THREE.Vector3(freePos.x, 0.95, freePos.z);
+        const horizontal = Math.cos(orbitPitch) * orbitDist;
+        camera.position.set(
+          target.x + Math.sin(orbitYaw) * horizontal,
+          target.y + Math.sin(orbitPitch) * orbitDist,
+          target.z + Math.cos(orbitYaw) * horizontal,
+        );
+        camera.lookAt(target);
+      }
+
       for (const gem of diceGems) {
         gem.mesh.position.y = gem.base + Math.sin(t / 600 + gem.phase) * 0.03;
         gem.mesh.rotation.y += dt * 0.8;
       }
-      roomGroup.traverse((c) => {
+
+      scene.traverse((c) => {
         if (c.userData.beacon) {
           const mesh = c as THREE.Mesh;
           if (mesh.geometry instanceof THREE.RingGeometry) mesh.scale.setScalar(1 + Math.sin(t / 700) * 0.05);
@@ -443,7 +703,43 @@ export default function GameCanvas(props: Props) {
           if ("emissiveIntensity" in mat) mat.emissiveIntensity = 1.1 + Math.sin(t / 500) * 0.35;
           else mat.opacity = 0.4 + Math.sin(t / 500) * 0.15;
         }
+        if (c.userData.cost) {
+          const sprite = c as THREE.Sprite;
+          const pulse = 0.74 * (1 + Math.sin(t / 420) * 0.07);
+          sprite.scale.set(pulse, pulse * 0.375, 1);
+        }
       });
+
+      for (let i = popups.length - 1; i >= 0; i -= 1) {
+        const popup = popups[i];
+        const age = (t - popup.born) / 1100;
+        if (age >= 1) {
+          roomGroup.remove(popup.sprite);
+          popup.sprite.material.map?.dispose();
+          popup.sprite.material.dispose();
+          popups.splice(i, 1);
+          continue;
+        }
+        popup.sprite.position.y = popup.baseY + age * 0.9;
+        const scale = 1.05 + Math.sin(age * Math.PI) * 0.3;
+        popup.sprite.scale.set(scale, scale * 0.375, 1);
+        popup.sprite.material.opacity = 1 - age;
+      }
+
+      for (let i = flashes.length - 1; i >= 0; i -= 1) {
+        const flash = flashes[i];
+        const age = (t - flash.born) / 620;
+        if (age >= 1) {
+          roomGroup.remove(flash.mesh);
+          flash.mesh.geometry.dispose();
+          (flash.mesh.material as THREE.Material).dispose();
+          flashes.splice(i, 1);
+          continue;
+        }
+        flash.mesh.scale.setScalar(1 + age * 0.9);
+        (flash.mesh.material as THREE.MeshBasicMaterial).opacity = 0.9 * (1 - age);
+      }
+
       glitch = Math.max(0, glitch - dt * 1.8);
       wallMat.emissive.setHex(0xffffff);
       wallMat.emissiveIntensity = glitch * 0.35;
@@ -457,6 +753,10 @@ export default function GameCanvas(props: Props) {
       ro.disconnect();
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("wheel", onWheel);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       apiRef.current = null;
@@ -464,12 +764,25 @@ export default function GameCanvas(props: Props) {
   }, []);
 
   useEffect(() => {
+    if (!props.firstPerson && typeof document !== "undefined" && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }, [props.firstPerson]);
+
+  useEffect(() => {
     apiRef.current?.rebuild();
-  }, [props.arena, props.you?.room_code, props.dice, props.futures, props.role, props.firstPerson, props.exitUnsealed, props.players]);
+  }, [props.arena, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.dice, props.futures, props.role, props.firstPerson, props.exitUnsealed, props.players]);
 
   useEffect(() => {
     if (props.transitionId > 0) apiRef.current?.pulse();
   }, [props.transitionId]);
+
+  useEffect(() => {
+    if (props.walk.id > 0 && props.walk.id !== lastWalkId.current) {
+      lastWalkId.current = props.walk.id;
+      apiRef.current?.walk(props.walk);
+    }
+  }, [props.walk]);
 
   return <div ref={mountRef} className="absolute inset-0 cursor-crosshair" />;
 }

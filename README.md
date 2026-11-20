@@ -41,6 +41,7 @@ players adapt again.
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
+| Profile avatars: card PFP presets, adjustable crop, any-size uploads and storage cleanup | Done |
 | Full 3D client: first-person cube room, coloured doors, LED futures, d10 gems, wristband map | Done |
 | Security: Firebase ID tokens, first-frame WebSocket auth, server-only Supabase service key, input validation, rate limiting, anti-cheat | Done |
 | Tests, Docker, architecture + protocol docs | Done |
@@ -85,6 +86,7 @@ Run the Supabase migrations once in the Supabase SQL editor:
 ```text
 backend/migrations/001_profiles.sql
 backend/migrations/002_matches.sql
+backend/migrations/003_phase4_avatar.sql
 ```
 
 Or, with a working `SUPABASE_DB_URL` in `backend/.env`:
@@ -100,7 +102,7 @@ python scripts/apply_migrations.py
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-python -m pytest -q         # 79 tests
+python -m pytest -q         # 94 tests
 ```
 
 ### Frontend (Node 20+)
@@ -145,16 +147,18 @@ Before going live, authorize the Vercel domain in Firebase Auth, add its credent
 
 | Input | Action |
 |---|---|
-| `W A S D` / arrow keys | choose the north / west / south / east door |
-| Click / tap a door in the room | cross that door |
+| `W A S D` / arrow keys | move freely inside the current room |
+| Click / tap a door in the room | walk through that door |
+| `E` / `Enter` while facing a door | walk through it |
 | `Space` | wait (spends 1 point) |
-| Door buttons (N/E/S/W) | cross a named door |
 | `V` | toggle first-person / overhead camera |
+| Drag + mouse wheel in overhead view | orbit and zoom the camera |
 | `N` | toggle team notes |
 | Chat + team notes | coordinate the four roles |
 
 A doorway is passable only when both rooms have that side open. Clicking the
-canvas in first person captures the mouse; `Esc` releases it.
+canvas in first person captures the mouse; `Esc` releases it. Crossing costs
+are shown above each door and burst upward when you pass through.
 
 ---
 
@@ -173,16 +177,24 @@ axiom/
 │   │   ├── stages.py       # seven-stage progression
 │   │   ├── roles.py        # four roles + asymmetric information filtering
 │   │   ├── game.py         # rooms, round loop, points, locks, revives, reconnect
+│   │   ├── auth.py         # Firebase ID token, App Check and admin guards
+│   │   ├── audit.py        # audit log and room inventory persistence
+│   │   ├── avatar_store.py # avatar validation, storage upload and cleanup
+│   │   ├── characters.py   # character avatar allowlist
+│   │   ├── supabase_store.py # profiles, avatars, export and deletion
+│   │   ├── repositories.py # storage abstraction protocols
 │   │   ├── db.py           # match store selection (Supabase / SQLite fallback)
 │   │   └── main.py         # FastAPI HTTP API + WebSocket endpoint
-│   ├── tests/              # 79 pytest tests + live-server smoke scripts
+│   ├── tests/              # 94 pytest tests + live-server smoke scripts
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
 │   ├── app/                # landing, lobby, login, profile, game
 │   ├── components/         # GameCanvas (Three.js), GameClient (HUD), WristbandMap
-│   ├── lib/                # socket hook, types, api client
+│   ├── lib/                # socket hook, types, api client, avatar rules
+│   ├── public/avatars/pfp/ # card PFP presets
 │   └── Dockerfile
+├── avatar-pack/            # standalone avatar assets, backend API and preview
 ├── docs/
 │   ├── ARCHITECTURE.md     # system design + module map + theme mapping
 │   ├── PROTOCOL.md         # WebSocket + HTTP contracts
@@ -263,9 +275,9 @@ blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
 
 `cd backend && python -m pytest -q` covers the arena engine, all seven pattern
 types, solvability, The Dealer model and adaptation, the cipher solver across
-1,000 seeds, Supabase migration contracts, WebSocket first-frame auth, and the
-server (movement, anti-cheat, prediction, asymmetric information,
-locks/revives, reconnect, rate limiting).
+1,000 seeds, Supabase migration contracts, WebSocket first-frame auth, profile
+avatar presets/uploads/cleanup, and the server (movement, anti-cheat,
+prediction, asymmetric information, locks/revives, reconnect, rate limiting).
 
 Live-server smoke scripts (start the backend first, then run from `backend/`):
 

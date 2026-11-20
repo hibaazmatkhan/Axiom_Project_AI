@@ -39,6 +39,11 @@ from . import fate, db
 
 logger = logging.getLogger(__name__)
 
+
+class GameAlreadyStarted(Exception):
+    pass
+
+
 MAX_PLAYERS = 4
 COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"]
 INTENT_BUCKET = 0.5
@@ -352,6 +357,8 @@ class Room:
                 await self.broadcast_state()
                 return p
             player_id = None
+        if self.status != "lobby":
+            raise GameAlreadyStarted()
         if len(self.players) >= MAX_PLAYERS:
             return None
         used = {p.slot for p in self.players.values()}
@@ -501,7 +508,7 @@ class Room:
         await self.broadcast({
             "type": "door_result", "accepted": True, "player": player.id,
             "door": door, "color": room.doors[door].color, "remaining": remaining,
-            "room_code": room.code, "target_code": target.code,
+            "room_code": room.code, "target_code": target.code, "cost": DOOR_COST,
         })
 
         if player.points <= 0:

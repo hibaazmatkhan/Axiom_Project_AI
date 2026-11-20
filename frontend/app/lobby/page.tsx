@@ -8,7 +8,7 @@ import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import { api } from "@/lib/api";
-import { characterUrl, loadCharacters, type Character } from "@/lib/characters";
+import { characterUrl } from "@/lib/characters";
 import { guest } from "@/lib/guest";
 
 const randomCode = () => Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -34,18 +34,15 @@ export default function LobbyPage() {
   const [code, setCode] = useState("");
   const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharacter, setSelectedCharacter] = useState<string | null>(null);
   const [previewRole, setPreviewRole] = useState("Navigator");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [avatarBusy, setAvatarBusy] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   useEffect(() => {
     if (loading) return;
     if (!user) {
       setName(guest.get());
-      setSelectedCharacter(guest.getAvatar().character_id ?? null);
+      setSelectedCharacter(null);
       setAvatarUrl(null);
       return;
     }
@@ -62,10 +59,6 @@ export default function LobbyPage() {
   }, [user, loading]);
 
   useEffect(() => {
-    void loadCharacters().then(setCharacters);
-  }, []);
-
-  useEffect(() => {
     setHealthLoading(true);
     api
       .health()
@@ -80,46 +73,6 @@ export default function LobbyPage() {
     const timer = setInterval(() => api.health().then(setHealth), 5000);
     return () => clearInterval(timer);
   }, []);
-
-  const chooseCharacter = async (id: string) => {
-    if (avatarBusy) return;
-    setAvatarError(null);
-    if (!user) {
-      guest.setAvatar({ character_id: id, avatar_url: characterUrl(id) });
-      setSelectedCharacter(id);
-      setAvatarUrl(null);
-      return;
-    }
-    setAvatarBusy(true);
-    try {
-      const result = await api.selectAvatar(id);
-      setSelectedCharacter(result.profile.character_id ?? id);
-      setAvatarUrl(result.profile.avatar_url ?? characterUrl(id));
-    } catch (cause) {
-      setAvatarError(cause instanceof Error ? cause.message : "Could not save that avatar.");
-    } finally {
-      setAvatarBusy(false);
-    }
-  };
-
-  const uploadPfp = async (file: File | undefined) => {
-    if (!file || !user || avatarBusy) return;
-    if (file.size > 500 * 1024) {
-      setAvatarError("Avatar images must be under 500 KB.");
-      return;
-    }
-    setAvatarBusy(true);
-    setAvatarError(null);
-    try {
-      const result = await api.uploadAvatar(file);
-      setAvatarUrl(result.profile.avatar_url ?? null);
-      setSelectedCharacter(result.profile.character_id ?? null);
-    } catch (cause) {
-      setAvatarError(cause instanceof Error ? cause.message : "Could not upload that avatar.");
-    } finally {
-      setAvatarBusy(false);
-    }
-  };
 
   const go = (room: string) => {
     if (!name.trim() || !room.trim()) return;
@@ -208,63 +161,30 @@ export default function LobbyPage() {
                     Broadcast face
                   </p>
                   <p className="mt-1 text-xs text-dim">
-                    {selectedCharacter ? "Character avatar selected." : "Using initials until you choose."}
+                    {avatarUrl || selectedCharacter
+                      ? "Your current profile image travels with you into the arena."
+                      : "Using initials until you set a PFP."}
                   </p>
                 </div>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {characters.map((character) => (
-                  <button
-                    key={character.id}
-                    type="button"
-                    disabled={avatarBusy}
-                    onClick={() => chooseCharacter(character.id)}
-                    title={character.name}
-                    aria-label={`Choose ${character.name} avatar`}
-                    className={`border p-1 transition disabled:opacity-40 ${
-                      selectedCharacter === character.id
-                        ? "border-gold bg-gold/10"
-                        : "border-bone/10 hover:border-bone/30"
-                    }`}
-                  >
-                    <Avatar
-                      src={characterUrl(character.id)}
-                      name={character.name}
-                      characterId={character.id}
-                      size={34}
-                      showSuit={false}
-                    />
-                  </button>
-                ))}
-              </div>
-              {user ? (
-                <label className="mt-3 inline-block cursor-pointer border border-bone/20 px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-bone transition hover:border-gold/60 hover:text-gold">
-                  {avatarBusy ? "Saving…" : "Upload PFP"}
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="hidden"
-                    disabled={avatarBusy}
-                    onChange={(event) => {
-                      void uploadPfp(event.target.files?.[0]);
-                      event.target.value = "";
-                    }}
-                  />
-                </label>
-              ) : (
-                <p className="mt-3 text-[11px] leading-relaxed text-yellow">
-                  Guests can choose a face for this session.{" "}
-                  <Link href="/login?next=/lobby" className="underline underline-offset-2 hover:text-bone">
-                    Sign in
-                  </Link>{" "}
-                  to keep it on your profile.
-                </p>
-              )}
-              {avatarError && (
-                <p aria-live="polite" className="mt-2 text-[11px] text-red">
-                  {avatarError}
-                </p>
-              )}
+              <p className="mt-3 text-[11px] leading-relaxed text-dim">
+                {user ? (
+                  <>
+                    Profile images are managed in account settings.{" "}
+                    <Link href="/profile" className="text-gold underline underline-offset-2 hover:text-bone">
+                      Change PFP →
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    Guests play with a temporary identity.{" "}
+                    <Link href="/login?next=/lobby" className="text-gold underline underline-offset-2 hover:text-bone">
+                      Sign in
+                    </Link>{" "}
+                    to set a profile image.
+                  </>
+                )}
+              </p>
             </div>
 
             <button

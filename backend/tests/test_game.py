@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.arena import DIRECTIONS, STEP
 from app.game import Player, Room
-from app.main import app
+from app.main import app, rooms
 from app.roles import ROLES, filter_round, role_for_slot
 
 
@@ -92,8 +92,9 @@ def test_join_welcome_and_move():
         ws.send_json({"type": "choose_door", "door": door})
         for _ in range(20):
             m = ws.receive_json()
-            if m["type"] == "door_result":
+            if m["type"] == "door_result" and m.get("accepted"):
                 assert m["door"] == door
+                assert m["cost"] == 1
                 break
         else:
             raise AssertionError("no door_result received")
@@ -131,6 +132,29 @@ def test_room_full_after_four():
                 client.websocket_connect(f"/ws/FULLTEST?name=p{i}")).receive_json()
         with client.websocket_connect("/ws/FULLTEST?name=late") as ws:
             assert ws.receive_json()["code"] == "room_full"
+
+
+def test_late_join_rejected_after_match_starts():
+    client = TestClient(app)
+    with client.websocket_connect("/ws/STARTED?name=first") as first:
+        assert first.receive_json()["type"] == "welcome"
+        rooms["STARTED"].status = "running"
+        with client.websocket_connect("/ws/STARTED?name=late") as late:
+            error = late.receive_json()
+            assert error["code"] == "game_started"
+            assert "already started" in error["message"].lower()
+
+
+def test_existing_player_can_reconnect_after_match_starts():
+    client = TestClient(app)
+    with client.websocket_connect("/ws/RJOIN?name=first") as first:
+        pid = first.receive_json()["you"]
+        rooms["RJOIN"].status = "running"
+        with client.websocket_connect(f"/ws/RJOIN?name=first&pid={pid}&auth=1") as rejoined:
+            rejoined.send_json({"type": "auth", "name": "first", "pid": pid})
+            welcome = rejoined.receive_json()
+            assert welcome["type"] == "welcome"
+            assert welcome["you"] == pid
 
 
 def test_puzzle_solution_never_leaks_to_clients():

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import config  # loads backend/.env before the constants below
 from . import audit, avatar_store, db, supabase_store
+from .avatar_store import is_pfp_preset, pfp_url
 from .characters import character_url, is_character
 from .auth import (
     AppCheckTokenError,
@@ -31,7 +32,7 @@ from .auth import (
     verify_app_check,
     verify_token,
 )
-from .game import Room
+from .game import GameAlreadyStarted, Room
 from .store_errors import MatchStoreUnavailable
 
 ROUND_SECONDS = os.getenv("ROUND_SECONDS")
@@ -79,6 +80,10 @@ class MfaUpdate(BaseModel):
 
 class AvatarSelect(BaseModel):
     character_id: str = Field(min_length=1, max_length=32)
+
+
+class AvatarPresetSelect(BaseModel):
+    preset_id: str = Field(min_length=1, max_length=32)
 
 
 def _user_public(user: AuthUser) -> dict:
@@ -162,22 +167,42 @@ def select_avatar(payload: AvatarSelect, user: AuthUser = Depends(get_current_us
     if not is_character(payload.character_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown character avatar.")
     url = character_url(payload.character_id)
+    old_path = avatar_store.storage_path_for(user.uid)
     try:
         avatar_store.persist(user.uid, payload.character_id, url)
+        avatar_store.delete_storage(old_path)
     except avatar_store.AvatarUnavailable as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     audit.log(user.uid, "avatar_select", {"character_id": payload.character_id})
     return {"profile": supabase_store.profile_public(_ensure_profile(user))}
 
 
+@app.put("/api/me/avatar/preset")
+def select_pfp_preset(payload: AvatarPresetSelect, user: AuthUser = Depends(get_current_user)):
+    if not is_pfp_preset(payload.preset_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown PFP preset.")
+    old_path = avatar_store.storage_path_for(user.uid)
+    url = pfp_url(payload.preset_id)
+    try:
+        avatar_store.persist(user.uid, None, url)
+        avatar_store.delete_storage(old_path)
+    except avatar_store.AvatarUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    audit.log(user.uid, "avatar_preset_select", {"preset_id": payload.preset_id})
+    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+
+
 @app.post("/api/me/avatar/upload")
 async def upload_avatar(file: UploadFile = File(...), user: AuthUser = Depends(get_current_user)):
+    old_path = avatar_store.storage_path_for(user.uid)
     try:
-        data = await file.read(avatar_store.MAX_BYTES + 1)
+        data = await file.read()
         meta = avatar_store.validate_upload(data, file.content_type or "")
-        path, url = avatar_store.upload(user.uid, data, meta["content_type"])
+        path, url = avatar_store.upload(user.uid, meta["data"], meta["content_type"])
         meta["storage_path"] = path
         avatar_store.persist(user.uid, None, url, meta)
+        if old_path != path:
+            avatar_store.delete_storage(old_path)
     except avatar_store.AvatarInvalid as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except avatar_store.AvatarUnavailable as exc:
@@ -188,8 +213,10 @@ async def upload_avatar(file: UploadFile = File(...), user: AuthUser = Depends(g
 
 @app.delete("/api/me/avatar")
 def delete_avatar(user: AuthUser = Depends(get_current_user)):
+    old_path = avatar_store.storage_path_for(user.uid)
     try:
         avatar_store.clear(user.uid)
+        avatar_store.delete_storage(old_path)
     except avatar_store.AvatarUnavailable as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     audit.log(user.uid, "avatar_clear", {})
@@ -206,11 +233,13 @@ def export_me(user: AuthUser = Depends(get_verified_user)):
 
 @app.delete("/api/me")
 def delete_me(user: AuthUser = Depends(get_verified_user)):
+    old_path = avatar_store.storage_path_for(user.uid)
     if config.supabase_configured():
         supabase_store.delete_user(user.uid)
     else:
         db.store.delete_user(user.uid)
-    audit.log(None, "data_delete", {})
+    avatar_store.delete_storage(old_path)
+    audit.log(user.uid, "data_delete", {})
     return {"ok": True}
 
 
@@ -421,11 +450,19 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
     identity = await _ws_identity(ws, name, pid, bool(auth))
     if identity is None:
         return
-    player = await room.join(
-        ws, identity.name, identity.pid,
-        uid=identity.uid, verified=identity.verified,
-        avatar_url=identity.avatar_url, character_id=identity.character_id,
-    )
+    try:
+        player = await room.join(
+            ws, identity.name, identity.pid,
+            uid=identity.uid, verified=identity.verified,
+            avatar_url=identity.avatar_url, character_id=identity.character_id,
+        )
+    except GameAlreadyStarted:
+        await ws.send_json({
+            "type": "error", "code": "game_started",
+            "message": "This match has already started. Joining is closed.",
+        })
+        await ws.close(code=1008)
+        return
     if player is None:
         await ws.send_json({"type": "error", "code": "room_full", "message": "Room is full (4 players max)."})
         await ws.close(code=1008)

@@ -43,10 +43,11 @@ strips on the walls previewing possible futures.
               └────────────┬───────────────┘
                            │
                ┌────────────────────────────────┐
-               │ Persistence (WP7, Supabase)     │
-               │ profiles · matches · stats      │
-               │ Dealer player models · RPCs     │
-               └────────────────────────────────┘
+                │ Persistence (WP7, Supabase)     │
+                │ profiles · matches · stats      │
+                │ avatars · audit · RPCs          │
+                │ Dealer player models            │
+                └────────────────────────────────┘
 ```
 
 ## Deployment
@@ -129,15 +130,22 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `backend/app/stages.py` | Seven stage definitions and per-stage rules |
 | `backend/app/roles.py` | Navigator/Oracle/Timekeeper/Archivist + per-role filtering |
 | `backend/app/game.py` | Rooms, round state machine, points, locks, revives, reconnect |
+| `backend/app/auth.py` | Firebase ID token, App Check and admin dependency guards |
+| `backend/app/audit.py` | Audit log and live room inventory persistence |
+| `backend/app/avatar_store.py` | Avatar validation, Supabase Storage upload and cleanup |
+| `backend/app/characters.py` | Character avatar allowlist and URLs |
+| `backend/app/supabase_store.py` | Profiles, avatars, export and account deletion |
+| `backend/app/repositories.py` | Storage abstraction protocols |
 | `backend/app/db.py` | Match store selection: Supabase production store with SQLite fallback |
 | `backend/app/main.py` | FastAPI HTTP API + WebSocket endpoint |
 | `frontend/app/page.tsx` | Landing page |
-| `frontend/app/lobby/page.tsx` | Lobby / room create & join |
+| `frontend/app/lobby/page.tsx` | Lobby / room create & join with read-only avatar preview |
 | `frontend/app/login/page.tsx` | Accounts |
-| `frontend/app/profile/page.tsx` | Profile, history, leaderboard |
+| `frontend/app/profile/page.tsx` | Profile, avatars, history, leaderboard |
 | `frontend/components/GameCanvas.tsx` | Three.js first-person cube room, doors, pedestal, teammates |
 | `frontend/components/GameClient.tsx` | HUD: points, doors, futures, locks, cipher, chat |
 | `frontend/components/WristbandMap.tsx` | 5×5 wristband map with door-colour edges |
+| `frontend/lib/avatarRules.ts` | Client-side PFP preset and upload validation |
 | `frontend/lib/useGameSocket.ts` | WebSocket state machine |
 | `frontend/lib/types.ts` | Shared v3 message and entity types |
 

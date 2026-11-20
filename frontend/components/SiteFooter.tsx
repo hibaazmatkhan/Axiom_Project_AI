@@ -17,8 +17,8 @@ export default function SiteFooter() {
           </p>
           <p className="mt-4 max-w-xl text-xs leading-relaxed text-ash">
             Unofficial fan project. Not affiliated with Netflix or the original rights holders.
-            Character likenesses are supplied by the project owner. Game systems, code and original
-            audio are built for the AXIOM academic project.
+            Character likenesses are supplied by the project owner. Game systems and code are built
+            for the AXIOM academic project.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-dim">

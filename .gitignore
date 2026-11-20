@@ -11,6 +11,7 @@ venv/
 .env.production
 .env.development
 .vercel/
+.vite/
 .pytest_cache/
 *.db
 *.sqlite3

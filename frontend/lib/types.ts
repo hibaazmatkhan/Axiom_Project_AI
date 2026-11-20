@@ -7,6 +7,15 @@ export type PatternType =
   | "symbol" | "sequential" | "conditional" | "compound";
 export type Status = "lobby" | "running" | "won" | "over";
 
+export type WalkEvent = {
+  id: number;
+  dir: Direction | null;
+  from: string | null;
+  to: string | null;
+  cost: number;
+  player: string | null;
+};
+
 export type Door = {
   color: DoorColor;
   sealed: boolean;

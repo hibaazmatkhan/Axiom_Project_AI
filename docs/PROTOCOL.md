@@ -18,7 +18,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 
 | type | fields | notes |
 |---|---|---|
-| `auth` | `token` (nullable), `name`, `pid` | required first frame when `auth=1`; no token creates a guest identity |
+| `auth` | `token` (nullable), `name`, `pid`, `app_check` (optional) | required first frame when `auth=1`; no token creates a guest identity; `app_check` accepts the Firebase App Check token when enforcement is enabled |
 | `choose_door` | `door` (`N`/`E`/`S`/`W`) or `color` | cross a coloured doorway; costs 1 point; a 0-capacity door triggers a lockdown |
 | `choose_gate` | `door` | alias of `choose_door` |
 | `move` | `door`, or `dx`,`dy`, or `color` | legacy alias; `dx/dy` is mapped to the matching direction |
@@ -39,7 +39,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `state` | `state` | join/leave, lobby change, move/wait/unlock, prediction, puzzle |
 | `players` | `status`, `players[]` | after every accepted move / wait / unlock |
 | `round` | role-filtered shift + `arena`, `players`, `next_round_in`, `state`, `dice`, `futures`, `puzzle`, `pa` | the grid shifted and new d10s were rolled |
-| `door_result` | `accepted`, `locked`, `door`, `color`, `remaining`, `room_code`, `target_code`, `message` | result of a door crossing |
+| `door_result` | `accepted`, `locked`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `message` | result of a door crossing |
 | `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a 0-capacity door and is locked |
 | `hazard` | `player`, `room_code`, `penalty`, `points` | a Sanction room drained points |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
@@ -193,9 +193,16 @@ marked public omit auth.
 | GET | `/health` | public liveness + live room/player counts |
 | GET | `/api/me` | create/read the caller's Supabase profile and stats |
 | PUT | `/api/me/profile` | update username and display name |
+| PUT | `/api/me/avatar/select` | select an allowlisted character avatar |
+| PUT | `/api/me/avatar/preset` | select a card PFP preset (`joker`, `spade`, `club`, `heart`, `diamond`) |
+| POST | `/api/me/avatar/upload` | upload a PNG/JPEG/WEBP avatar of any size; server crops it to a square PNG |
+| DELETE | `/api/me/avatar` | clear the avatar and remove uploaded storage |
 | POST | `/api/me/mfa` | update optional MFA flag |
 | GET | `/api/me/history?limit=` | verified caller's match history |
+| GET | `/api/me/export` | verified caller's account data export |
+| DELETE | `/api/me` | verified caller's account deletion |
 | GET | `/api/leaderboard?limit=` | public top players |
 | GET | `/api/stages` | public stage definitions |
 | GET | `/api/nexus/tune?team_skill=&cycles=` | public simulated-team tuning |
 | GET | `/api/admin/rooms` | administrator-only room inventory |
+| POST | `/api/admin/revoke/{uid}` | administrator-only token revocation |
