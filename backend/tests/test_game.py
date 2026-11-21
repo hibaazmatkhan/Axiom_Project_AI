@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 
 from app.arena import DIRECTIONS, OPPOSITE, STEP
 from app import puzzles
-from app.game import DELAY_CONFIG, PATHFINDER_REVEAL_COOLDOWN, Player, Room, TemporaryDoor
+from app.game import (
+    DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_SECONDS,
+    KING_ROOMS_PER_APPEARANCE, PATHFINDER_REVEAL_COOLDOWN,
+    Player, Room, TemporaryDoor,
+)
 from app.main import app, rooms
 from app.nexus import CLUE_TIERS
 from app.roles import ROLES, filter_round, role_for_slot
@@ -914,3 +918,85 @@ def test_delay_successes_stack_at_half_rate_and_cap_total():
     assert round(solve(1)) == 1
     assert room.shift_delay_applied == DELAY_CONFIG["max_shift_delay_s"]
     assert round(solve(1)) == 0
+
+
+def test_match_defaults_to_five_king_appearances_and_no_round_cap():
+    room = Room("KINGCFG", seed=3)
+    assert room.match_seconds == 900.0
+    assert room.max_rounds == 0
+    p = _player(room)
+    p.ready = True
+    room.players[p.id] = p
+
+    asyncio.run(room.maybe_start())
+
+    assert len(room.king_spawn_at) == KING_APPEARANCES
+    assert [
+        round(at - room.started_at, 3) for at in room.king_spawn_at
+    ] == [i * KING_APPEARANCE_SECONDS for i in range(KING_APPEARANCES)]
+
+
+def test_king_runs_five_sequential_three_minute_appearances():
+    room = Room("KINGSEQ", seed=4)
+    room.status = "running"
+    room.started_at = time.time()
+    room.match_deadline = room.started_at + 900
+    room.king_spawn_at = [
+        room.started_at + i * KING_APPEARANCE_SECONDS
+        for i in range(KING_APPEARANCES)
+    ]
+
+    async def scenario():
+        for appearance in range(1, KING_APPEARANCES + 1):
+            await room._update_king(room.king_spawn_at[appearance - 1])
+            assert room.king is not None
+            assert room.king["appearance"] == appearance
+            assert round(room.king["ends_at"] - room.king_spawn_at[appearance - 1], 3) == 180
+            assert len(room.king["room_ids"]) == KING_ROOMS_PER_APPEARANCE
+            await room._update_king(room.king["ends_at"])
+            if appearance < KING_APPEARANCES:
+                assert room.king is not None
+                assert room.king["appearance"] == appearance + 1
+            else:
+                assert room.king is None
+        await room._update_king(room.match_deadline + 1)
+        assert room.king_appearance == KING_APPEARANCES
+
+    asyncio.run(scenario())
+
+
+def test_king_teleports_through_five_rooms_and_kills_occupants():
+    room = Room("KINGKILL", seed=17)
+    p1 = _player(room, "a", 0)
+    p2 = _player(room, "b", 1)
+    p3 = _player(room, "c", 2)
+    for player in (p1, p2, p3):
+        player.ready = True
+        room.players[player.id] = player
+
+    async def scenario():
+        await room.maybe_start()
+        safe = next(r.rid for r in room.arena.rooms if r.rid != p1.room_id)
+        for player in (p1, p2, p3):
+            player.room_id = safe
+
+        await room._update_king(room.started_at)
+        assert room.king is not None
+        assert len(set(room.king["room_ids"])) == KING_ROOMS_PER_APPEARANCE
+        assert not any(p.eliminated for p in (p1, p2, p3))
+
+        p1.room_id = room.king["room_id"]
+        await room._king_strike()
+        assert p1.eliminated
+        assert not p2.eliminated
+        assert not p3.eliminated
+
+        await room._update_king(room.king["next_teleport_at"])
+        assert room.king is not None
+        assert room.king["teleport_index"] == 1
+        p2.room_id = room.king["room_id"]
+        await room._king_strike()
+        assert p2.eliminated
+        assert not p3.eliminated
+
+    asyncio.run(scenario())

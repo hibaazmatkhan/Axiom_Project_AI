@@ -34,12 +34,13 @@ players adapt again.
 | Four coloured d10 rolls per room, with bounded seal relief | Done |
 | Data-driven pattern engine, **7 transformation types** as data | Done |
 | D10 door seals, two-sealed-click lockdowns and two-helper scans | Done |
-| Points economy, Sanction rooms, 15-round limit, eliminations | Done |
+| Points economy, Sanction rooms, 900-second timer with no round cap, eliminations | Done |
 | Hidden edge exit discovery and team escape win condition | Done |
 | Asymmetric information across 4 roles (Pathfinder / Oracle / Timekeeper / Decoder) | Done |
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
 | Cooperative CSP role-mark puzzle with per-role private clues | Done |
 | Cooperative delay puzzle shared by the Timekeeper and Decoder | Done |
+| Non-player KING OF SPADES: five 180s appearances, five rooms each, kills occupants | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
@@ -62,8 +63,11 @@ Convergence → The Last Room`.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
 - Scan a locked teammate free: **−1** per helper (two helpers in or beside the
   room are required).
-- Points at zero eliminate you. The match ends after **15 rounds** or when the
-  match timer expires.
+- Points at zero eliminate you. The match ends when the **15-minute** match timer
+  expires, or early if the team escapes or everyone is eliminated.
+- KING OF SPADES is not a player role: five 180-second appearances begin at
+  0:00, 3:00, 6:00, 9:00 and 12:00. Each visits five rooms and eliminates anyone
+  inside the room it occupies.
 
 ---
 

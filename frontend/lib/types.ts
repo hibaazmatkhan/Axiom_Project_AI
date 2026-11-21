@@ -63,6 +63,31 @@ export type DelayResultView = {
   message?: string;
 };
 
+export type KingView = {
+  id: string;
+  appearance: number;
+  room_id: string;
+  room_code: string | null;
+  room: [number, number] | null;
+  started_at: number;
+  ends_at: number;
+  next_teleport_at: number;
+  teleport_index: number;
+  teleport_total: number;
+  kill_count: number;
+};
+
+export type KingEvent = {
+  id: number;
+  type: "spawn" | "teleport" | "despawn" | "kill";
+  king?: KingView | null;
+  room_code?: string | null;
+  room?: [number, number] | null;
+  victim?: string;
+  victim_name?: string;
+  reason?: string;
+};
+
 export type CrossEvent = {
   id: number;
   door: Direction | null;
@@ -195,6 +220,7 @@ export type Snapshot = {
   role: Role;
   role_label: string;
   role_hint: string;
+  king?: KingView | null;
   puzzle?: PuzzleSnapshot;
   delay_status?: DelayStatusView;
 };

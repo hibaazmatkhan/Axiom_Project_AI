@@ -15,7 +15,7 @@ from .arena import DOOR_COLORS, DIRECTIONS, Arena, Room
 
 START_VITALITY = 15
 START_POINTS = START_VITALITY
-MAX_ROUNDS = 15
+MAX_ROUNDS = 0
 DOOR_COST = 1
 MOVE_COST = DOOR_COST  # backwards-compatible alias
 WAIT_COST = 1

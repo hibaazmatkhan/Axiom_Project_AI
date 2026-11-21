@@ -50,7 +50,11 @@ MAX_PLAYERS = 4
 COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"]
 INTENT_BUCKET = 0.5
 INTENT_MAX = 14
-DEFAULT_MATCH_SECONDS = 300.0
+DEFAULT_MATCH_SECONDS = 900.0
+KING_APPEARANCES = 5
+KING_APPEARANCE_SECONDS = 180.0
+KING_ROOMS_PER_APPEARANCE = 5
+KING_TELEPORT_SECONDS = KING_APPEARANCE_SECONDS / KING_ROOMS_PER_APPEARANCE
 
 START_POINTS = fate.START_POINTS
 MAX_ROUNDS = fate.MAX_ROUNDS
@@ -209,6 +213,10 @@ class Room:
         # the unfiltered arena, dice, visions and event timeline.
         self.spectators: list[WebSocket] = []
         self._admin_push_at = 0.0
+        self.king: dict | None = None
+        self.king_appearance = 0
+        self.king_spawn_at: list[float] = []
+        self._king_rng = random.Random(self.seed ^ 0x4B494E47)
 
     # ---- stage / rules ---------------------------------------------------
     def _load_stage(self) -> None:
@@ -446,6 +454,7 @@ class Room:
             "min_players": self.min_players, "rule_count": len(self.engines),
             "sanction_total": self.sanction_total, "sanction_found": self.sanction_found,
             "nexus": self._nexus_report(), "pa": self.pa,
+            "king": self.king_public(),
             "dice": {}, "futures": filter_visions(self.visions, role),
             "dice_relief_rounds": self.dice_relief_rounds,
             "puzzle": {
@@ -534,6 +543,7 @@ class Room:
             "sanction_found": self.sanction_found,
             "nexus": self._nexus_report(),
             "pa": self.pa,
+            "king": self.king_public(),
             "puzzle": {
                 "public": self.puzzle.public() if self.puzzle else {},
                 "solution": dict(self.puzzle.solution) if self.puzzle else {},
@@ -1059,6 +1069,10 @@ class Room:
         player.room_id = target.rid
         player.last_move = time.monotonic()
         self.log(player.id, "cross", {"room": target.code, "from": room.code, "door": door})
+        if self.king is not None:
+            await self._king_strike()
+            if player.eliminated:
+                return
 
         await self._refresh_exit_visibility(player)
 
@@ -1149,6 +1163,130 @@ class Room:
                 await self._eliminate(h, "Points spent to free a teammate")
         await self.broadcast(self.players_message())
         await self.broadcast_state()
+
+    def king_public(self) -> dict | None:
+        king = self.king
+        if king is None:
+            return None
+        room = self.arena.room_by_id(king["room_id"])
+        return {
+            "id": king["id"],
+            "appearance": king["appearance"],
+            "room_id": king["room_id"],
+            "room_code": room.code if room else None,
+            "room": [room.bx, room.by] if room else None,
+            "started_at": king["started_at"],
+            "ends_at": king["ends_at"],
+            "next_teleport_at": king["next_teleport_at"],
+            "teleport_index": king["teleport_index"],
+            "teleport_total": max(0, len(king["room_ids"]) - 1),
+            "kill_count": king["kill_count"],
+        }
+
+    async def _king_spawn(self, now: float) -> None:
+        room_ids = [room.rid for room in self.arena.rooms]
+        selected = self._king_rng.sample(
+            room_ids, min(KING_ROOMS_PER_APPEARANCE, len(room_ids))
+        )
+        appearance = self.king_appearance + 1
+        self.king_appearance = appearance
+        self.king = {
+            "id": f"king-{appearance}",
+            "appearance": appearance,
+            "room_ids": selected,
+            "room_id": selected[0],
+            "teleport_index": 0,
+            "started_at": now,
+            "ends_at": now + KING_APPEARANCE_SECONDS,
+            "next_teleport_at": now + KING_TELEPORT_SECONDS,
+            "kill_count": 0,
+        }
+        view = self.king_public()
+        self.log(None, "king_spawn", {"appearance": appearance, "king": view})
+        await self.broadcast({"type": "king_spawn", "king": view})
+
+    async def _king_teleport(self, now: float) -> bool:
+        king = self.king
+        if king is None:
+            return False
+        next_index = king["teleport_index"] + 1
+        if next_index >= len(king["room_ids"]):
+            return False
+        king["teleport_index"] = next_index
+        king["room_id"] = king["room_ids"][next_index]
+        king["next_teleport_at"] = now + KING_TELEPORT_SECONDS
+        view = self.king_public()
+        self.log(None, "king_teleport", {"appearance": king["appearance"], "king": view})
+        await self.broadcast({"type": "king_teleport", "king": view})
+        return True
+
+    async def _king_despawn(self) -> None:
+        king = self.king
+        if king is None:
+            return
+        view = self.king_public()
+        self.king = None
+        self.log(None, "king_despawn", {"appearance": king["appearance"]})
+        await self.broadcast({
+            "type": "king_despawn",
+            "id": king["id"],
+            "appearance": king["appearance"],
+            "king": view,
+        })
+
+    async def _king_strike(self) -> bool:
+        king = self.king
+        if king is None or self.status != "running":
+            return False
+        victims = [
+            p for p in self.players.values()
+            if p.connected and not p.eliminated and not p.escaped
+            and p.room_id == king["room_id"]
+        ]
+        if not victims:
+            return False
+        room = self.arena.room_by_id(king["room_id"])
+        room_code = room.code if room else None
+        room_pos = [room.bx, room.by] if room else None
+        for player in victims:
+            king["kill_count"] += 1
+            self.log(player.id, "king_kill", {
+                "appearance": king["appearance"], "room_code": room_code,
+            })
+            await self.broadcast({
+                "type": "king_kill",
+                "id": king["id"],
+                "appearance": king["appearance"],
+                "victim": player.id,
+                "victim_name": player.name,
+                "room_code": room_code,
+                "room": room_pos,
+                "reason": "KING OF SPADES found you.",
+            })
+            await self._eliminate(player, "Killed by KING OF SPADES")
+        return True
+
+    async def _update_king(self, now: float) -> None:
+        if self.status != "running":
+            return
+        changed = False
+        if self.king is not None and now >= self.king["ends_at"]:
+            await self._king_despawn()
+            changed = True
+        while (self.king_appearance < KING_APPEARANCES
+               and self.king_appearance < len(self.king_spawn_at)
+               and now >= self.king_spawn_at[self.king_appearance]):
+            await self._king_spawn(now)
+            changed = True
+        if self.king is None:
+            if changed:
+                await self.broadcast_state()
+            return
+        if now >= self.king["next_teleport_at"]:
+            changed = await self._king_teleport(now) or changed
+        changed = await self._king_strike() or changed
+        if changed:
+            await self.broadcast_state()
 
     async def _eliminate(self, player: Player, reason: str) -> None:
         if player.eliminated:
@@ -1255,6 +1393,12 @@ class Room:
             self._audit_room()
             self.started_at = time.time()
             self.match_deadline = self.started_at + self.match_seconds
+            self.king = None
+            self.king_appearance = 0
+            self.king_spawn_at = [
+                self.started_at + i * KING_APPEARANCE_SECONDS
+                for i in range(KING_APPEARANCES)
+            ]
             self.round = 0
             self.dice = fate.roll_round(self.arena, self.rng)
             self.visions = fate.build_visions(self.arena, self.rng, 0)
@@ -1332,7 +1476,7 @@ class Room:
             self.pa = f"ROUND {self.round}. THE GRID MOVES."
         else:
             self.pa = f"ROUND {self.round}. THE ROOMS HOLD."
-        if self.round >= self.max_rounds:
+        if self.max_rounds and self.round >= self.max_rounds:
             self._pending_finish = True
 
         return {
@@ -1475,6 +1619,8 @@ class Room:
         self.status = "won" if won else "over"
         self._audit_room()
         self.next_round_at = None
+        if self.king is not None:
+            await self._king_despawn()
         if won:
             for p in self.alive():
                 p.escaped = True
@@ -1530,6 +1676,9 @@ class Room:
                         and self.delay_deadline is not None
                         and time.time() >= self.delay_deadline):
                     await self._finish_delay(False)
+                if self.status != "running":
+                    continue
+                await self._update_king(time.time())
                 if self.status != "running":
                     continue
                 if (self.status == "running" and self.next_round_at is not None

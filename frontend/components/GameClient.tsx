@@ -202,6 +202,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [puzzleMark, setPuzzleMark] = useState("");
+  const [kingStrikeAt, setKingStrikeAt] = useState(0);
   const teamRef = useRef<HTMLDivElement>(null);
   const { sendOpenDoor, sendCrossDoor, sendWait, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch } = g;
 
@@ -251,6 +252,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
   }, [g.puzzle?.you?.role, g.puzzle?.you?.domain.join("|")]);
 
   useEffect(() => {
+    if (g.kingEvent?.type !== "kill") return;
+    setKingStrikeAt(performance.now());
+    const timer = window.setTimeout(() => setKingStrikeAt(0), 1500);
+    return () => window.clearTimeout(timer);
+  }, [g.kingEvent?.id, g.kingEvent?.type]);
+
+  useEffect(() => {
     if (!teamOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!teamRef.current?.contains(event.target as Node)) setTeamOpen(false);
@@ -288,9 +296,22 @@ export default function GameClient({ room, name }: { room: string; name: string 
         moved={g.transition.moved}
         cross={g.cross}
         doorEvent={g.doorEvent}
+        king={g.king}
+        kingEvent={g.kingEvent}
         onOpenDoor={sendOpenDoor}
         onCrossDoor={sendCrossDoor}
       />
+
+      {kingStrikeAt > 0 && (
+        <div
+          className="pointer-events-none absolute inset-0 z-[70] flex items-center justify-center"
+          style={{ background: "radial-gradient(circle, rgba(90,0,0,0.08) 10%, rgba(145,0,8,0.82) 100%)" }}
+        >
+          <span className="mono text-2xl uppercase tracking-[0.4em] text-red drop-shadow-[0_0_18px_rgba(255,0,0,0.9)]">
+            King of Spades
+          </span>
+        </div>
+      )}
 
       {g.status === "running" && (
         <div className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 xl:bottom-24">

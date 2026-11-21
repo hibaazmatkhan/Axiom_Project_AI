@@ -60,6 +60,10 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `delay_result` | `ok`, `message`, `delta_s` (Timekeeper only) | result of a delay answer or timeout; no countdown or delta for other roles |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
 | `elimination` | `player`, `reason` | points reached zero |
+| `king_spawn` | `king` | non-player KING OF SPADES appeared for a 180s window |
+| `king_teleport` | `king` | KING OF SPADES moved to the next of five rooms |
+| `king_despawn` | `id`, `appearance`, `king` | KING OF SPADES window ended or match finished |
+| `king_kill` | `id`, `appearance`, `victim`, `victim_name`, `room_code`, `room`, `reason` | KING OF SPADES eliminated a player |
 | `prediction_result` | `correct`, `score`, `points`, `message` | after a prediction |
 | `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
@@ -71,7 +75,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 ```jsonc
 {
   "room": "ABCD", "status": "running",
-  "round": 3, "max_rounds": 15,
+  "round": 3, "max_rounds": 0,
   "stage": 2, "stage_name": "First Shift", "max_stage": 7,
   "arena": { ... }, "wristband": { ... }, "players": [ ... ],
   "you": {
@@ -84,10 +88,11 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     "points": 15, "role": "decoder"
   },
   "next_round_in": null, "round_seconds": 22,
-  "match_time_left": 184.2, "match_seconds": 300,
+  "match_time_left": 784.2, "match_seconds": 900,
   "min_players": 1, "rule_count": 1,
   "sanction_total": 7, "sanction_found": 0,
   "nexus": { ... }, "pa": "ROUND 3. THE GRID MOVES.",
+  "king": null,
   "futures": { ... },
   "delay_status": { "state": "idle", "cooldown_s": 0, "attempts_left": 2 },
   "dice_relief_rounds": 0,
@@ -100,6 +105,11 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 ```
 
 `status` is `lobby`, `running`, `won` or `over`.
+`max_rounds: 0` means the match ends on its 900-second timer rather than a round
+cap. `state.king` is the currently active KING OF SPADES appearance, or `null`
+between appearances. The KING is not a player role and is never assigned to a
+player; five 180-second appearances begin at 0/180/360/540/720 seconds and each
+visits five rooms before the next appearance.
 `next_round_in` is populated only for the Timekeeper; every other role receives
 `null`. `delay_status` is sent only to the Timekeeper and Decoder. No player
 snapshot contains dice data.
@@ -247,7 +257,11 @@ No client ever receives another role's hidden data, and the hidden rule itself
 | `DOOR_COST` | 1 |
 | `WAIT_COST` | 1 |
 | `REVIVE_COST` | 1 per helper |
-| `MAX_ROUNDS` | 15 |
+| `DEFAULT_MATCH_SECONDS` | 900 |
+| `MAX_ROUNDS` | 0 (no round cap) |
+| `KING_APPEARANCES` | 5 |
+| `KING_APPEARANCE_SECONDS` | 180 |
+| `KING_ROOMS_PER_APPEARANCE` | 5 |
 
 ## HTTP API
 

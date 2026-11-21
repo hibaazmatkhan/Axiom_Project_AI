@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Visions, Wristband, You,
+  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Visions, Wristband, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -81,7 +81,7 @@ export function useGameSocket(room: string, name: string) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [status, setStatus] = useState<Status>("lobby");
   const [round, setRound] = useState(0);
-  const [maxRounds, setMaxRounds] = useState(15);
+  const [maxRounds, setMaxRounds] = useState(0);
   const [stage, setStage] = useState(1);
   const [stageName, setStageName] = useState("Induction");
   const [maxStage, setMaxStage] = useState(7);
@@ -89,7 +89,7 @@ export function useGameSocket(room: string, name: string) {
   const [nextAt, setNextAt] = useState<number | null>(null);
   const [roundSeconds, setRoundSeconds] = useState(20);
   const [matchAt, setMatchAt] = useState<number | null>(null);
-  const [matchSeconds, setMatchSeconds] = useState(300);
+  const [matchSeconds, setMatchSeconds] = useState(900);
   const [minPlayers, setMinPlayers] = useState(1);
   const [nexus, setNexus] = useState<NexusReport>(EMPTY_NEXUS);
   const [pa, setPa] = useState("The Last Room is open. Find the hidden exit.");
@@ -114,6 +114,8 @@ export function useGameSocket(room: string, name: string) {
   const [hazard, setHazard] = useState<HazardEvent | null>(null);
   const [revive, setRevive] = useState<ReviveEvent | null>(null);
   const [eliminated, setEliminated] = useState<EliminationEvent | null>(null);
+  const [king, setKing] = useState<KingView | null>(null);
+  const [kingEvent, setKingEvent] = useState<KingEvent | null>(null);
   const [chat, setChat] = useState<ChatLine[]>([]);
   const [exitNotice, setExitNotice] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<{ won: boolean; summary: any } | null>(null);
@@ -177,7 +179,7 @@ export function useGameSocket(room: string, name: string) {
       if (s.you?.id) youRef.current = s.you.id;
       setStatus(s.status);
       setRound(s.round ?? 0);
-      setMaxRounds(s.max_rounds ?? 15);
+      setMaxRounds(s.max_rounds ?? 0);
       setStage(s.stage);
       setStageName(s.stage_name);
       setMaxStage(s.max_stage);
@@ -186,7 +188,7 @@ export function useGameSocket(room: string, name: string) {
       setSanctionFound(s.sanction_found ?? 0);
       setMinPlayers(s.min_players);
       setRoundSeconds(s.round_seconds ?? 20);
-      setMatchSeconds(s.match_seconds ?? 300);
+      setMatchSeconds(s.match_seconds ?? 900);
       setMatchAt(s.match_time_left != null ? performance.now() + s.match_time_left * 1000 : null);
       setNexus(s.nexus ?? EMPTY_NEXUS);
       setPa(s.pa ?? "");
@@ -194,6 +196,7 @@ export function useGameSocket(room: string, name: string) {
       setRoleLabel(s.role_label);
       setRoleHint(s.role_hint);
       setDelayStatus(s.delay_status ?? null);
+      setKing(s.king ?? null);
       setFutures(s.futures ?? {});
       setPuzzle(s.puzzle ?? null);
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
@@ -391,6 +394,37 @@ export function useGameSocket(room: string, name: string) {
           setRevive({ player: m.player, by: m.by, points: m.points });
         } else if (m.type === "elimination") {
           setEliminated({ player: m.player, reason: m.reason });
+        } else if (m.type === "king_spawn") {
+          const view = m.king as KingView | null;
+          setKing(view);
+          setKingEvent((prev) => ({
+            id: (prev?.id ?? 0) + 1, type: "spawn", king: view,
+            room_code: view?.room_code ?? null,
+          }));
+          setNotice("THE KING OF SPADES HAS ENTERED THE BUILDING.");
+        } else if (m.type === "king_teleport") {
+          const view = m.king as KingView | null;
+          setKing(view);
+          setKingEvent((prev) => ({
+            id: (prev?.id ?? 0) + 1, type: "teleport", king: view,
+            room_code: view?.room_code ?? null,
+          }));
+        } else if (m.type === "king_despawn") {
+          setKing(null);
+          setKingEvent((prev) => ({
+            id: (prev?.id ?? 0) + 1, type: "despawn",
+            king: (m.king as KingView | null) ?? null,
+            room_code: (m.king as KingView | null)?.room_code ?? null,
+          }));
+        } else if (m.type === "king_kill") {
+          setKingEvent((prev) => ({
+            id: (prev?.id ?? 0) + 1, type: "kill",
+            room_code: m.room_code ?? null, room: m.room ?? null,
+            victim: m.victim, victim_name: m.victim_name, reason: m.reason,
+          }));
+          setNotice(m.victim === youRef.current
+            ? "THE KING OF SPADES TOOK YOU."
+            : "THE KING OF SPADES TOOK A PLAYER.");
         } else if (m.type === "prediction_result") {
           setPrediction({ correct: m.correct, score: m.score, message: m.message });
         } else if (m.type === "exit_found") {
@@ -483,7 +517,7 @@ export function useGameSocket(room: string, name: string) {
     connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
     roleHint, futures, transition, prediction, doorEvent, cross,
-    hazard, revive, eliminated, chat, exitNotice, gameOver,
+    hazard, revive, eliminated, king, kingEvent, chat, exitNotice, gameOver,
     dealerClue, dealerNudge, puzzle, puzzleResult, sanctionTotal, sanctionFound,
     delayPuzzle, delayKey, delayStatus, delayResult, delayDeadlineAt,
     sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat,

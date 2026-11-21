@@ -100,8 +100,10 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 
 
  7. **Check endings.** Points at zero eliminate a player. The team wins when
-    every living player is in the hidden exit room. The match ends after 15
-    rounds, when the match timer expires, or when nobody is left.
+    every living player is in the hidden exit room. The match ends when the
+    900-second timer expires, or when nobody is left; there is no round cap.
+    KING OF SPADES is a non-player hazard with five 180-second appearances,
+    each teleporting through five rooms and eliminating occupants.
 
 ## Door semantics
 
@@ -146,7 +148,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `backend/app/stages.py` | Seven stage definitions and per-stage rules |
 | `backend/app/roles.py` | Pathfinder/Oracle/Timekeeper/Decoder + per-role filtering |
 | `backend/app/puzzles.py` | Seeded delay puzzles, solver checks and public/key views |
-| `backend/app/game.py` | Rooms, round state machine, points, locks, revives, delay puzzles, reconnect |
+| `backend/app/game.py` | Rooms, round state machine, points, locks, revives, delay puzzles, KING OF SPADES spawner, reconnect |
 | `backend/app/auth.py` | Firebase ID token, App Check and admin dependency guards |
 | `backend/app/audit.py` | Audit log and live room inventory persistence |
 | `backend/app/avatar_store.py` | Default symbol PFPs, legacy normalization, avatar validation, Supabase Storage upload and cleanup |

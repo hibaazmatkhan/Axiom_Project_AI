@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import type { Arena, CrossEvent, Direction, Door, DoorColor, Player, You } from "@/lib/types";
+import type { Arena, CrossEvent, Direction, Door, DoorColor, KingEvent, KingView, Player, You } from "@/lib/types";
 
 type DoorEventView = {
   id: number;
@@ -22,6 +22,8 @@ type Props = {
   moved: { from: [number, number]; to: [number, number]; code_from: string; code_to: string }[];
   cross: CrossEvent;
   doorEvent: DoorEventView | null;
+  king: KingView | null;
+  kingEvent: KingEvent | null;
   onOpenDoor: (dir: Direction) => void;
   onCrossDoor: (dir: Direction) => void;
 };
@@ -39,6 +41,13 @@ type CrossAnimation = {
   velocity: THREE.Vector3;
   yawFrom: number;
   yawTo: number;
+};
+
+type BloodParticle = {
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
+  born: number;
+  life: number;
 };
 
 const H = 3;
@@ -234,12 +243,17 @@ export default function GameCanvas(props: Props) {
     pulse: () => void;
     entered: (event: CrossEvent) => void;
     doorEvent: (event: DoorEventView) => void;
+    kingEvent: (event: KingEvent) => void;
   } | null>(null);
   const lastCrossId = useRef(0);
   const lastDoorEventId = useRef(0);
+  const lastKingEventId = useRef(0);
   const arenaSig = arenaSignature(props.arena);
   const doorSig = doorSignature(props.you?.doors);
   const playerSig = playerSignature(props.players);
+  const kingSig = props.king
+    ? `${props.king.id}:${props.king.room_code}:${props.king.teleport_index}:${props.king.kill_count}`
+    : "";
 
   useEffect(() => {
     const mount = mountRef.current!;
@@ -308,6 +322,10 @@ export default function GameCanvas(props: Props) {
     let lastCrossSent = 0;
     let nextGroup: THREE.Group | null = null;
     let crossAnim: CrossAnimation | null = null;
+    let kingGroup: THREE.Group | null = null;
+    let kingEyes: THREE.Mesh[] = [];
+    let kingLight: THREE.PointLight | null = null;
+    const blood: BloodParticle[] = [];
     const keys: Record<string, boolean> = {};
 
     const wallMat = new THREE.MeshStandardMaterial({ color: WHITE, roughness: 0.92, metalness: 0.02 });
@@ -413,11 +431,105 @@ export default function GameCanvas(props: Props) {
       parent.add(group);
     };
 
+    const buildKing = (parent: THREE.Group) => {
+      kingGroup = new THREE.Group();
+      const cloakMat = new THREE.MeshStandardMaterial({
+        color: 0x050405, emissive: 0x140005, emissiveIntensity: 0.6,
+        roughness: 0.82, metalness: 0.18,
+      });
+      const boneMat = new THREE.MeshStandardMaterial({
+        color: 0xb9b1a4, emissive: 0x2c0002, emissiveIntensity: 0.25,
+        roughness: 0.9,
+      });
+      const eyeMat = new THREE.MeshStandardMaterial({
+        color: 0xff0018, emissive: 0xff0018, emissiveIntensity: 3.2,
+        roughness: 0.2,
+      });
+      const robe = new THREE.Mesh(new THREE.ConeGeometry(0.52, 1.5, 10), cloakMat);
+      robe.position.y = 0.75;
+      robe.castShadow = true;
+      const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.42, 6, 12), cloakMat);
+      torso.position.y = 1.02;
+      torso.castShadow = true;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), boneMat);
+      head.position.y = 1.42;
+      head.castShadow = true;
+      const crown = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.58, 8), cloakMat);
+      crown.position.y = 1.78;
+      crown.castShadow = true;
+      const eyeLeft = new THREE.Mesh(new THREE.SphereGeometry(0.048, 10, 10), eyeMat);
+      eyeLeft.position.set(-0.09, 1.46, 0.19);
+      const eyeRight = eyeLeft.clone();
+      eyeRight.position.x = 0.09;
+      kingEyes = [eyeLeft, eyeRight];
+      const claws = new THREE.Group();
+      for (const side of [-1, 1]) {
+        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.02, 0.7, 6), boneMat);
+        arm.position.set(side * 0.3, 1.0, 0.08);
+        arm.rotation.z = side * 0.28;
+        claws.add(arm);
+      }
+      const mark = makeLabel("\u2660", "#ff1f2d", 0.7);
+      mark.position.set(0, 1.28, 0.24);
+      kingGroup.add(robe, torso, head, crown, eyeLeft, eyeRight, claws, mark);
+      kingLight = new THREE.PointLight(0xff0018, 12, 5, 2);
+      kingLight.position.set(0, 1.5, 0.35);
+      kingGroup.add(kingLight);
+      kingGroup.position.set(0, 0, -2.15);
+      kingGroup.userData.king = true;
+      parent.add(kingGroup);
+    };
+
+    const spawnBlood = (roomCode: string | null) => {
+      const currentRoom = propsRef.current.you?.room_code ?? null;
+      if (roomCode && roomCode !== currentRoom) return;
+      const origin = new THREE.Vector3(0, 1.25, -1.6);
+      for (let i = 0; i < 44; i += 1) {
+        const material = new THREE.MeshStandardMaterial({
+          color: i % 3 === 0 ? 0x7a0008 : 0xd20417,
+          emissive: 0x8b0008,
+          emissiveIntensity: 1.1,
+          transparent: true,
+          opacity: 0.96,
+          roughness: 0.35,
+        });
+        const mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.018 + Math.random() * 0.045, 6, 6), material,
+        );
+        mesh.position.copy(origin);
+        roomGroup.add(mesh);
+        blood.push({
+          mesh,
+          velocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 3.6,
+            1.2 + Math.random() * 3.2,
+            (Math.random() - 0.5) * 3.6,
+          ),
+          born: performance.now(),
+          life: 850 + Math.random() * 700,
+        });
+      }
+    };
+
+    const kingEvent = (event: KingEvent) => {
+      const currentRoom = propsRef.current.you?.room_code ?? null;
+      const here = !event.room_code || event.room_code === currentRoom;
+      if (event.type === "kill") {
+        glitch = 1;
+        spawnBlood(event.room_code ?? currentRoom);
+        return;
+      }
+      if (here) glitch = Math.max(glitch, event.type === "spawn" ? 0.95 : 0.55);
+    };
+
     const buildRoomInto = (
       parent: THREE.Group, roomYou: You, offsetX: number, offsetZ: number,
       interactive: boolean, skipDir: Direction | null = null,
     ) => {
       parent.children.slice().forEach((c) => { parent.remove(c); disposeGroup(c); });
+      kingGroup = null;
+      kingEyes = [];
+      kingLight = null;
       parent.position.set(offsetX, 0, offsetZ);
       const { arena, players, youId } = propsRef.current;
       if (!roomYou) return;
@@ -523,6 +635,8 @@ export default function GameCanvas(props: Props) {
         g.add(label);
         parent.add(g);
       });
+
+      if (propsRef.current.king?.room_code === roomYou.room_code) buildKing(parent);
 
       const ringGeo = new THREE.TorusGeometry(1.5, 0.03, 8, 48);
       const ringMesh = new THREE.Mesh(
@@ -685,7 +799,7 @@ export default function GameCanvas(props: Props) {
       glitch = Math.max(glitch, 0.3);
     };
 
-    apiRef.current = { rebuild, pulse: () => { glitch = 1; }, entered, doorEvent };
+    apiRef.current = { rebuild, pulse: () => { glitch = 1; }, entered, doorEvent, kingEvent };
     rebuild();
 
     const resize = () => {
@@ -1011,6 +1125,32 @@ export default function GameCanvas(props: Props) {
         }
       });
 
+      if (kingGroup) {
+        kingGroup.position.y = Math.sin(t / 420) * 0.045;
+        kingGroup.rotation.y = Math.sin(t / 1300) * 0.11;
+        for (const eye of kingEyes) {
+          const mat = eye.material as THREE.MeshStandardMaterial;
+          mat.emissiveIntensity = 2.6 + Math.sin(t / 130) * 0.9;
+        }
+        if (kingLight) kingLight.intensity = 10 + Math.sin(t / 180) * 4;
+      }
+
+      for (let i = blood.length - 1; i >= 0; i -= 1) {
+        const particle = blood[i];
+        const age = (t - particle.born) / particle.life;
+        if (age >= 1) {
+          roomGroup.remove(particle.mesh);
+          particle.mesh.geometry.dispose();
+          (particle.mesh.material as THREE.Material).dispose();
+          blood.splice(i, 1);
+          continue;
+        }
+        particle.mesh.position.addScaledVector(particle.velocity, dt);
+        particle.velocity.y -= 6.2 * dt;
+        particle.mesh.scale.setScalar(1 - age * 0.55);
+        (particle.mesh.material as THREE.MeshStandardMaterial).opacity = 0.96 * (1 - age);
+      }
+
       for (let i = popups.length - 1; i >= 0; i -= 1) {
         const popup = popups[i];
         const age = (t - popup.born) / 1100;
@@ -1079,6 +1219,11 @@ export default function GameCanvas(props: Props) {
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      for (const particle of blood) {
+        roomGroup.remove(particle.mesh);
+        particle.mesh.geometry.dispose();
+        (particle.mesh.material as THREE.Material).dispose();
+      }
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
       apiRef.current = null;
@@ -1100,8 +1245,15 @@ export default function GameCanvas(props: Props) {
   }, [props.doorEvent]);
 
   useEffect(() => {
+    if (props.kingEvent && props.kingEvent.id !== lastKingEventId.current) {
+      lastKingEventId.current = props.kingEvent.id;
+      apiRef.current?.kingEvent(props.kingEvent);
+    }
+  }, [props.kingEvent]);
+
+  useEffect(() => {
     apiRef.current?.rebuild();
-  }, [arenaSig, doorSig, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.you?.exit_found, props.you?.exit_code, playerSig]);
+  }, [arenaSig, doorSig, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.you?.exit_found, props.you?.exit_code, playerSig, kingSig]);
 
   useEffect(() => {
     if (props.transitionId > 0) apiRef.current?.pulse();
