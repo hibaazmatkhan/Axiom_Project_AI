@@ -17,7 +17,7 @@ export type Profile = {
   username: string;
   display_name: string;
   avatar_url: string | null;
-  character_id?: string | null;
+  has_custom_avatar: boolean;
   email_verified: boolean;
   mfa_enabled: boolean;
   created_at: string | null;
@@ -48,8 +48,21 @@ export type Leader = {
   matches: number;
   pattern?: number;
   avatar_url?: string | null;
-  character_id?: string | null;
   [key: string]: unknown;
+};
+
+export type RoomInfo = {
+  room_id: string;
+  code: string;
+  status: string;
+  players: unknown[];
+  connected: number;
+};
+
+export type QuickMatchStatus = {
+  status: "queued" | "matched";
+  position?: number;
+  code?: string;
 };
 
 export type MeResponse = {
@@ -68,10 +81,10 @@ export class ApiError extends Error {
   }
 }
 
-async function token(): Promise<string | null> {
+async function token(forceRefresh = false): Promise<string | null> {
   if (typeof window === "undefined") return null;
   try {
-    return (await getFirebaseAuth().currentUser?.getIdToken(true)) ?? null;
+    return (await getFirebaseAuth().currentUser?.getIdToken(forceRefresh)) ?? null;
   } catch {
     return null;
   }
@@ -93,9 +106,20 @@ async function request<T>(
     if (appCheck) headers.set("X-Firebase-AppCheck", appCheck);
   }
 
+  const send = (requestHeaders: Headers): Promise<Response> =>
+    fetch(`${API}${path}`, { ...init, headers: requestHeaders, cache: "no-store" });
+
   let response: Response;
   try {
-    response = await fetch(`${API}${path}`, { ...init, headers, cache: "no-store" });
+    response = await send(headers);
+    if (response.status === 401 && authenticated) {
+      const refreshed = await token(true);
+      if (refreshed && refreshed !== idToken) {
+        const retryHeaders = new Headers(headers);
+        retryHeaders.set("Authorization", `Bearer ${refreshed}`);
+        response = await send(retryHeaders);
+      }
+    }
   } catch {
     throw new ApiError("Cannot reach the broadcast server.", 0);
   }
@@ -121,11 +145,6 @@ export const api = {
     request<{ profile: Profile; stats: PlayerStats }>("/api/me/profile", {
       method: "PUT",
       body: JSON.stringify(payload),
-    }),
-  selectAvatar: (characterId: string) =>
-    request<{ profile: Profile }>("/api/me/avatar/select", {
-      method: "PUT",
-      body: JSON.stringify({ character_id: characterId }),
     }),
   selectPfpPreset: (presetId: PfpPresetId) =>
     request<{ profile: Profile }>("/api/me/avatar/preset", {
@@ -160,6 +179,22 @@ export const api = {
       false
     ),
   stages: () => request<{ stages: unknown[]; max: number }>("/api/stages", {}, false),
+  createRoom: (minPlayers?: number) =>
+    request<{ room_id: string; code: string }>("/api/rooms", {
+      method: "POST",
+      body: JSON.stringify(minPlayers === undefined ? {} : { min_players: minPlayers }),
+    }),
+  getRoom: (code: string) =>
+    request<RoomInfo>(`/api/rooms/${encodeURIComponent(code.trim().toUpperCase())}`),
+  quickMatch: (clientKey: string) =>
+    request<QuickMatchStatus>("/api/rooms/quick-match", {
+      method: "POST",
+      body: JSON.stringify({ client_key: clientKey }),
+    }),
+  quickMatchStatus: (clientKey: string) =>
+    request<QuickMatchStatus>(
+      `/api/rooms/quick-match/${encodeURIComponent(clientKey)}`
+    ),
   health: async (): Promise<{ ok: boolean; rooms: number; players: number } | null> => {
     try {
       return await request<{ ok: boolean; rooms: number; players: number }>(

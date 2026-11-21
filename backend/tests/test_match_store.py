@@ -66,6 +66,9 @@ def test_sqlite_store_persists_only_verified_players(tmp_path):
 
     leaders = store.leaderboard()
     assert [entry["username"] for entry in leaders] == ["A"]
+    with store.conn() as c:
+        row = c.execute("SELECT rounds, eliminated FROM matches WHERE id=?", (match_id,)).fetchone()
+    assert row["rounds"] == 3 and row["eliminated"] == 0
 
 
 def test_sqlite_store_keeps_display_name_separate_from_uid(tmp_path):
@@ -91,7 +94,10 @@ def test_supabase_store_contract(monkeypatch):
             "record_match": 9,
             "match_history": [{"id": 9}],
             "player_stats": {"matches": 1},
-            "leaderboard": [{"username": "A", "matches": 1}],
+            "leaderboard": [{
+                "username": "A", "matches": 1,
+                "avatar_url": "/avatars/characters/arisu.png", "character_id": "arisu",
+            }],
         }[name]
 
     monkeypatch.setattr(supabase_match_store, "_rpc", fake_rpc)
@@ -100,7 +106,11 @@ def test_supabase_store_contract(monkeypatch):
     assert store.record_match({"room": "T"}) == 9
     assert store.match_history_for_uid("verified-uid", 12) == [{"id": 9}]
     assert store.player_stats_for_uid("verified-uid", "A") == {"matches": 1}
-    assert store.leaderboard(5) == [{"username": "A", "matches": 1}]
+    leaders = store.leaderboard(5)
+    assert leaders == [{
+        "username": "A", "matches": 1,
+        "avatar_url": "/avatars/pfp/spade.png", "character_id": None,
+    }]
 
     assert [name for name, _ in calls] == [
         "record_match", "match_history", "player_stats", "leaderboard"

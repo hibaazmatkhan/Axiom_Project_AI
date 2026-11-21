@@ -9,3 +9,5 @@ python-dotenv>=1.0
 psycopg[binary]>=3.2
 pillow>=10.0
 python-multipart>=0.0.9
+matplotlib>=3.7
+scikit-learn>=1.4

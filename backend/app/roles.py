@@ -6,7 +6,7 @@ data.
 
   navigator   - sees the grid and exactly which rooms shifted
   oracle      - sees sigils, door colours and the cleanest possible futures
-  timekeeper  - sees d10 results, remaining door capacity and timing
+  timekeeper  - sees timing
   archivist   - sees the previous grid configuration
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ ROLE_LABELS = {
 ROLE_HINTS = {
     "navigator": "You see the grid and which rooms shifted. Call the route.",
     "oracle": "You see sigils and the clearest possible futures. Find the exit.",
-    "timekeeper": "You see d10 results and remaining door capacity. Call the timing.",
+    "timekeeper": "You see the timing. Call the countdown.",
     "archivist": "You see the previous grid. Compare it with the living one.",
 }
 
@@ -47,16 +47,13 @@ def _futures_for(payload: dict, role: str) -> dict:
         elif role == "timekeeper":
             out[code] = {
                 "rid": room.get("rid"),
-                "doors": {
-                    d: {"capacity": g.get("capacity")}
-                    for d, g in doors.items()
-                },
+                "doors": {d: {} for d in doors},
             }
         elif role == "navigator":
             out[code] = {
                 "rid": room.get("rid"),
                 "doors": {
-                    d: {"future": g.get("future") if g.get("future") in ("exit", "void") else "unknown"}
+                    d: {"future": g.get("future") if g.get("future") == "void" else "unknown"}
                     for d, g in doors.items()
                 },
             }
@@ -78,7 +75,6 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
         "pattern_type": payload.get("pattern_type"),
         "active": payload.get("active", True),
         "pa": payload.get("pa", ""),
-        "exit_unsealed": payload.get("exit_unsealed", False),
         "futures": _futures_for(payload, role),
     }
     if role == "navigator":
@@ -119,11 +115,7 @@ def filter_arena(arena: dict, role: str, current_code: str | None = None) -> dic
         r = dict(room)
         doors = {}
         for d, door in r.get("doors", {}).items():
-            dd = dict(door)
-            if role != "timekeeper":
-                dd["capacity"] = None
-                dd["roll"] = None
-            doors[d] = dd
+            doors[d] = dict(door)
         r["doors"] = doors
         if role not in ("oracle", "archivist"):
             r["sigil"] = None
@@ -140,6 +132,8 @@ def filter_arena(arena: dict, role: str, current_code: str | None = None) -> dic
 def filter_snapshot(snapshot: dict, role: str) -> dict:
     """Snapshots are mostly shared; role-specific extras are appended."""
     snap = dict(snapshot)
+    snap["sanction_total"] = snapshot.get("sanction_total", 0)
+    snap["sanction_found"] = snapshot.get("sanction_found", 0)
     current = (snap.get("you") or {}).get("room_code")
     if "arena" in snap:
         snap["arena"] = filter_arena(snap["arena"], role, current)

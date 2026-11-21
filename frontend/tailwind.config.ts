@@ -85,6 +85,12 @@ const config: Config = {
           "0%": { backgroundPosition: "-200% 0" },
           "100%": { backgroundPosition: "200% 0" },
         },
+        "toast-in": {
+          "0%": { opacity: "0", transform: "translateY(10px) scale(0.98)" },
+          "12%": { opacity: "1", transform: "translateY(0) scale(1)" },
+          "82%": { opacity: "1", transform: "translateY(0) scale(1)" },
+          "100%": { opacity: "0", transform: "translateY(-6px) scale(0.99)" },
+        },
       },
       animation: {
         rise: "rise 0.65s cubic-bezier(0.2,0.8,0.2,1) both",
@@ -94,6 +100,7 @@ const config: Config = {
         "pulse-ring": "pulse-ring 2.4s ease-out infinite",
         float: "float-slow 8s ease-in-out infinite",
         shimmer: "shimmer 3.4s linear infinite",
+        "toast-in": "toast-in 3.2s cubic-bezier(0.2,0.8,0.2,1) both",
       },
     },
   },

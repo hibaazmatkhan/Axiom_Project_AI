@@ -16,6 +16,22 @@ export const PFP_PRESETS: PfpPreset[] = [
   { id: "diamond", label: "Diamond", src: "/avatars/pfp/diamond.png" },
 ];
 
+export const PFP_SUITS: Record<PfpPresetId, string> = {
+  joker: "★",
+  spade: "♠",
+  club: "♣",
+  heart: "♥",
+  diamond: "♦",
+};
+
+export const PFP_TONES: Record<PfpPresetId, string> = {
+  joker: "#e0af68",
+  spade: "#7aa2f7",
+  club: "#9ece6a",
+  heart: "#f7768e",
+  diamond: "#7dcfff",
+};
+
 export const ALLOWED_AVATAR_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 
 export function isPfpPresetId(value: unknown): value is PfpPresetId {

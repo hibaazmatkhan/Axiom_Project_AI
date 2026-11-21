@@ -2,30 +2,40 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PageShell from "@/components/PageShell";
 import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
-import { api } from "@/lib/api";
-import { characterUrl } from "@/lib/characters";
+import { ApiError, api } from "@/lib/api";
+import { pfpPresetUrl } from "@/lib/avatarRules";
 import { guest } from "@/lib/guest";
 
-const randomCode = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+const QUICK_MATCH_KEY = "axiom.quickMatchClientKey";
 
 const ROLES = [
   ["\u2660", "Navigator", "Grid + shift", "text-blue"],
   ["\u2665", "Oracle", "Sigils + futures", "text-red"],
-  ["\u2666", "Timekeeper", "Dice + capacity", "text-yellow"],
+  ["\u2666", "Timekeeper", "Countdown", "text-yellow"],
   ["\u2663", "Archivist", "Previous arena", "text-green"],
 ];
 
 const ROLE_PREVIEWS: Record<string, string> = {
-  Navigator: "Live grid access: you see every room shift and call the route to A5.",
+  Navigator: "Live grid access: you see every room shift and call the route.",
   Oracle: "Future sight: you read sigils and predicted doors before the round resolves.",
-  Timekeeper: "Door math: you track dice rolls, capacity and countdown pressure.",
+  Timekeeper: "Clock control: you track the countdown and call the next shift.",
   Archivist: "Memory access: you keep the previous arena and compare what changed.",
 };
+
+function clientKey(): string {
+  const stored = window.sessionStorage.getItem(QUICK_MATCH_KEY);
+  if (stored) return stored;
+  const next =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  window.sessionStorage.setItem(QUICK_MATCH_KEY, next);
+  return next;
+}
 
 export default function LobbyPage() {
   const router = useRouter();
@@ -34,16 +44,21 @@ export default function LobbyPage() {
   const [code, setCode] = useState("");
   const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [selectedCharacter, setSelectedCharacter] = useState<string | null>(null);
   const [previewRole, setPreviewRole] = useState("Navigator");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [quickPosition, setQuickPosition] = useState<number | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quickMatchActive = useRef(false);
 
   useEffect(() => {
     if (loading) return;
     if (!user) {
       setName(guest.get());
-      setSelectedCharacter(null);
       setAvatarUrl(null);
+      setProfileName("");
       return;
     }
     const fallback = user.displayName || user.email?.split("@")[0] || "";
@@ -51,8 +66,9 @@ export default function LobbyPage() {
     api
       .me()
       .then((result) => {
-        setName(result.profile.username || fallback);
-        setSelectedCharacter(result.profile.character_id ?? null);
+        const nextName = result.profile.display_name || result.profile.username || fallback;
+        setName(nextName);
+        setProfileName(nextName);
         setAvatarUrl(result.profile.avatar_url ?? null);
       })
       .catch(() => undefined);
@@ -74,6 +90,22 @@ export default function LobbyPage() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(
+    () => () => {
+      quickMatchActive.current = false;
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    },
+    []
+  );
+
+  const stopPolling = () => {
+    quickMatchActive.current = false;
+    if (pollTimer.current) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  };
+
   const go = (room: string) => {
     if (!name.trim() || !room.trim()) return;
     if (!user) guest.set(name.trim());
@@ -82,7 +114,88 @@ export default function LobbyPage() {
     );
   };
 
-  const displayName = user?.displayName || user?.email?.split("@")[0] || "player";
+  const errorMessage = (cause: unknown, fallback: string) =>
+    cause instanceof Error ? cause.message : fallback;
+
+  const createRoom = async () => {
+    if (!name.trim() || busy) return;
+    setError(null);
+    stopPolling();
+    setBusy(true);
+    try {
+      const room = await api.createRoom();
+      go(room.code);
+    } catch (cause) {
+      setError(errorMessage(cause, "Could not create a room."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const joinRoom = async () => {
+    const target = code.trim().toUpperCase();
+    if (!name.trim() || !target || busy) return;
+    setError(null);
+    stopPolling();
+    setBusy(true);
+    try {
+      await api.getRoom(target);
+      go(target);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 404) {
+        setError(`Room ${target} was not found. Check the code and try again.`);
+      } else {
+        setError(errorMessage(cause, "Could not check that room."));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pollQuickMatch = async (key: string) => {
+    if (!quickMatchActive.current) return;
+    try {
+      const result = await api.quickMatchStatus(key);
+      if (!quickMatchActive.current) return;
+      if (result.status === "matched" && result.code) {
+        quickMatchActive.current = false;
+        setBusy(false);
+        go(result.code);
+        return;
+      }
+      setQuickPosition(result.position ?? null);
+      pollTimer.current = setTimeout(() => void pollQuickMatch(key), 1200);
+    } catch (cause) {
+      quickMatchActive.current = false;
+      setBusy(false);
+      setError(errorMessage(cause, "Quick match is unavailable."));
+    }
+  };
+
+  const startQuickMatch = async () => {
+    if (!name.trim() || busy) return;
+    setError(null);
+    setQuickPosition(null);
+    stopPolling();
+    setBusy(true);
+    try {
+      const key = clientKey();
+      const result = await api.quickMatch(key);
+      if (result.status === "matched" && result.code) {
+        setBusy(false);
+        go(result.code);
+        return;
+      }
+      setQuickPosition(result.position ?? null);
+      quickMatchActive.current = true;
+      pollTimer.current = setTimeout(() => void pollQuickMatch(key), 1200);
+    } catch (cause) {
+      setBusy(false);
+      setError(errorMessage(cause, "Quick match is unavailable."));
+    }
+  };
+
+  const displayName = profileName || user?.displayName || user?.email?.split("@")[0] || "player";
 
   return (
     <PageShell>
@@ -97,7 +210,7 @@ export default function LobbyPage() {
               Choose your room.
             </h1>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-dim">
-              Open a new arena or enter a friend's code. Four players, four roles. The match begins
+              Open a new arena, queue for the next match or enter a friend's code. The match begins
               when everyone is ready.
             </p>
           </div>
@@ -151,9 +264,8 @@ export default function LobbyPage() {
             <div className="mt-5 border-t border-bone/10 pt-5">
               <div className="flex items-center gap-3">
                 <Avatar
-                  src={avatarUrl ?? (selectedCharacter ? characterUrl(selectedCharacter) : null)}
+                  src={avatarUrl ?? pfpPresetUrl("joker")}
                   name={name || displayName}
-                  characterId={selectedCharacter}
                   size={48}
                 />
                 <div>
@@ -161,9 +273,7 @@ export default function LobbyPage() {
                     Broadcast face
                   </p>
                   <p className="mt-1 text-xs text-dim">
-                    {avatarUrl || selectedCharacter
-                      ? "Your current profile image travels with you into the arena."
-                      : "Using initials until you set a PFP."}
+                    "Your current profile symbol travels with you into the arena."
                   </p>
                 </div>
               </div>
@@ -189,8 +299,8 @@ export default function LobbyPage() {
 
             <button
               type="button"
-              onClick={() => go(randomCode())}
-              disabled={!name.trim()}
+              onClick={() => void createRoom()}
+              disabled={!name.trim() || busy}
               className="mt-4 flex w-full items-center justify-between gap-4 border border-gold bg-gold px-5 py-4 text-left text-void transition hover:border-bone hover:bg-bone disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span>
@@ -198,11 +308,38 @@ export default function LobbyPage() {
                   Open a new room
                 </span>
                 <span className="mono mt-1 block text-[9px] uppercase tracking-[0.16em] text-void/60">
-                  Create a 4-player broadcast
+                  Create a broadcast
                 </span>
               </span>
               <span className="font-display text-3xl leading-none">→</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => void startQuickMatch()}
+              disabled={!name.trim() || busy}
+              className="mt-2 flex w-full items-center justify-between gap-4 border border-neon/45 bg-neon/[0.06] px-5 py-4 text-left text-bone transition hover:border-neon hover:bg-neon/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span>
+                <span className="block text-sm font-bold uppercase tracking-[0.16em]">
+                  {quickPosition !== null
+                    ? `In queue · position ${quickPosition}`
+                    : "Quick match"}
+                </span>
+                <span className="mono mt-1 block text-[9px] uppercase tracking-[0.16em] text-dim">
+                  {quickPosition !== null
+                    ? "Waiting for the next player"
+                    : "Join the next available room"}
+                </span>
+              </span>
+              <span className="font-display text-3xl leading-none">→</span>
+            </button>
+
+            {error && (
+              <p className="mt-3 border border-red/35 bg-red/[0.06] p-3 text-xs leading-relaxed text-red">
+                {error}
+              </p>
+            )}
 
             <div className="my-7 flex items-center gap-3">
               <span className="h-px flex-1 bg-bone/10" />
@@ -222,15 +359,15 @@ export default function LobbyPage() {
                 maxLength={8}
                 onChange={(event) => setCode(event.target.value.toUpperCase())}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") go(code);
+                  if (event.key === "Enter") void joinRoom();
                 }}
                 placeholder="ABCD"
                 className="mono w-full border border-bone/15 bg-void/70 px-4 py-3 text-sm tracking-[0.35em] text-bone outline-none transition placeholder:text-ash focus:border-neon/70"
               />
               <button
                 type="button"
-                onClick={() => go(code)}
-                disabled={!name.trim() || !code.trim()}
+                onClick={() => void joinRoom()}
+                disabled={!name.trim() || !code.trim() || busy}
                 className="shrink-0 border border-bone/25 px-6 text-xs font-semibold uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Join
@@ -275,7 +412,7 @@ export default function LobbyPage() {
                 <p className="mono text-[10px] uppercase tracking-[0.28em] text-gold">
                   Role assignment
                 </p>
-                <span className="mono text-[9px] uppercase tracking-[0.16em] text-ash">
+                <span className="mono text-[9px] uppercase tracking-[0.14em] text-ash">
                   1 per player
                 </span>
               </div>
@@ -319,7 +456,7 @@ export default function LobbyPage() {
               <ul className="mt-4 space-y-3 text-xs leading-relaxed text-dim">
                 <li className="flex gap-3">
                   <span className="mono text-gold">01</span>
-                  <span>Spawn in C3. The exit is fixed at A5.</span>
+                  <span>Spawn in C3. The exit is hidden in an edge room.</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">02</span>
@@ -331,7 +468,7 @@ export default function LobbyPage() {
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">04</span>
-                  <span>Reach A5 with every living player and solve the cooperative cipher.</span>
+                  <span>Find the hidden exit and bring every living player into it.</span>
                 </li>
               </ul>
             </section>

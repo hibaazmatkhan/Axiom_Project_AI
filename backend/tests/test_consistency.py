@@ -6,7 +6,7 @@ Proposal targets:
 """
 import random
 
-from app.arena import EXIT_ROOM, START_ROOM, reachable_after_changes
+from app.arena import START_ROOM, reachable_after_changes
 from app.game import Player, Room
 from app.patterns import PatternEngine, Rule
 from app.roles import ROLES, filter_round, role_for_slot
@@ -31,6 +31,8 @@ def test_four_clients_see_identical_state_across_100_changes():
         layouts = {tuple((r["code"], r["id"]) for r in s["arena"]["rooms"]) for s in snaps}
         assert len(layouts) == 1, "clients diverged on the arena layout"
         assert len({s["round"] for s in snaps}) == 1
+        assert all("exit_room" not in s["arena"] for s in snaps)
+        assert all(s["you"]["exit_code"] is None for s in snaps)
         fingerprints.append(payload["round"])
     assert len(fingerprints) == 100
     assert room.round == 100
@@ -49,7 +51,7 @@ def test_arena_remains_solvable_across_the_change_cycle():
     for _ in range(60):
         room.step_round()
         assert reachable_after_changes(room.arena, room.engines, START_ROOM,
-                                       EXIT_ROOM, horizon=3), "arena became unsolvable"
+                                       None, horizon=3), "arena became unsolvable"
 
 
 def test_each_role_receives_a_distinct_information_slice():
@@ -58,9 +60,9 @@ def test_each_role_receives_a_distinct_information_slice():
         "moved": [{"from": [1, 1], "to": [1, 2], "code_from": "B2",
                    "code_to": "B3", "sigil": "spade"}],
         "visions": {"B2": {"rid": "r6", "sigil": "spade", "doors": {
-            "N": {"future": "open", "truth": "open", "color": "red", "capacity": 2}}}},
+            "N": {"future": "open", "truth": "open", "color": "red"}}}},
         "dice": {"B2": {"room": "B2", "rid": "r6", "doors": {
-            "N": {"color": "red", "roll": 2, "capacity": 2}}}},
+            "N": {"color": "red"}}}},
     }
     views = {r: filter_round(payload, r, {"old": True}) for r in ROLES}
     assert "sigil" not in views["navigator"]["moved"][0]
@@ -77,7 +79,7 @@ def test_reachability_check_does_not_advance_the_live_pattern_sequence():
     room = _make_room()
     engine = room.engines[0]
     before = engine.cycle
-    reachable_after_changes(room.arena, room.engines, START_ROOM, EXIT_ROOM, horizon=4)
+    reachable_after_changes(room.arena, room.engines, START_ROOM, None, horizon=4)
     assert engine.cycle == before, "simulation leaked into the live engine"
 
 

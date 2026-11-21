@@ -3,10 +3,12 @@ import json
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
 
 from app import audit, avatar_store, config, db, main as main_module
+from app.avatar_store import PFP_PRESET_IDS
 from app.auth import AuthUser
 from app.game import Room
 from app.main import app, get_current_user, get_verified_user
@@ -68,6 +70,28 @@ def test_validate_upload_normalizes_any_size_to_square_png():
             assert image.format == "PNG"
 
 
+def test_validate_upload_enforces_5mb_cap():
+    assert avatar_store.MAX_UPLOAD_BYTES == 5 * 1024 * 1024
+    with pytest.raises(avatar_store.AvatarInvalid):
+        avatar_store.validate_upload(b"x" * (avatar_store.MAX_UPLOAD_BYTES + 1), "image/png")
+
+
+def test_upload_endpoint_bounds_the_read(monkeypatch):
+    uid = "phase4-upload-cap"
+    monkeypatch.setattr(avatar_store, "MAX_UPLOAD_BYTES", 64)
+    monkeypatch.setattr(config, "supabase_configured", lambda: False)
+    app.dependency_overrides[get_current_user] = lambda: _auth_user(uid)
+    try:
+        response = TestClient(app).post(
+            "/api/me/avatar/upload",
+            files={"file": ("big.png", _png(128), "image/png")},
+        )
+        assert response.status_code == 413
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        db.store.clear_avatar(uid)
+
+
 def test_validate_upload_rejects_bad_inputs():
     for data, content_type in [
         (b"not an image", "image/png"),
@@ -109,11 +133,23 @@ def test_upload_endpoint_accepts_wide_image(monkeypatch):
         db.store.clear_avatar(uid)
 
 
-def test_guest_avatar_is_allowlisted():
-    character_id, url = avatar_store.guest_avatar({"character_id": "arisu"})
-    assert character_id == "arisu"
-    assert url == "/avatars/characters/arisu.png"
-    assert avatar_store.guest_avatar({"character_id": "unknown"}) == (None, None)
+def test_guest_avatar_uses_default_symbol():
+    url, _ = avatar_store.guest_avatar({}, "guest-1")
+    assert url in {f"/avatars/pfp/{preset}.png" for preset in PFP_PRESET_IDS}
+    assert avatar_store.guest_avatar({}, "") == ("/avatars/pfp/joker.png", None)
+
+
+def test_avatar_normalization_maps_legacy_symbols_and_preserves_uploads():
+    assert avatar_store.normalize_avatar("/avatars/characters/arisu.png", None, "u1") == (
+        "/avatars/pfp/spade.png", None,
+    )
+    assert avatar_store.normalize_avatar(None, "usagi", "u1") == (
+        "/avatars/pfp/heart.png", None,
+    )
+    custom = "https://example.test/u1/avatar.png"
+    assert avatar_store.normalize_avatar(custom, None, "u1") == (custom, None)
+    default, _ = avatar_store.normalize_avatar(None, None, "u1")
+    assert default in {f"/avatars/pfp/{preset}.png" for preset in PFP_PRESET_IDS}
 
 
 def test_pfp_preset_endpoint_updates_profile_and_cleans_storage(monkeypatch):
@@ -154,7 +190,7 @@ def test_delete_avatar_endpoint_cleans_storage(monkeypatch):
     try:
         response = TestClient(app).delete("/api/me/avatar")
         assert response.status_code == 200
-        assert response.json()["profile"]["avatar_url"] is None
+        assert response.json()["profile"]["avatar_url"].startswith("/avatars/pfp/")
         assert deleted == [old_path]
     finally:
         app.dependency_overrides.pop(get_current_user, None)
@@ -180,8 +216,8 @@ def test_join_carries_avatar_into_public_player():
 
     player = asyncio.run(scenario())
     public = player.public()
-    assert public["avatar_url"] == "/avatars/characters/arisu.png"
-    assert public["character_id"] == "arisu"
+    assert public["avatar_url"] == "/avatars/pfp/spade.png"
+    assert public["character_id"] is None
 
 
 def test_ready_change_broadcasts_state():
@@ -218,7 +254,7 @@ def test_export_and_delete_endpoints(monkeypatch):
     uid = "phase4-export-delete"
     match_id = _seed_user(uid)
     monkeypatch.setattr(config, "supabase_configured", lambda: False)
-    app.dependency_overrides[get_verified_user] = lambda: _auth_user(uid)
+    app.dependency_overrides[get_current_user] = lambda: _auth_user(uid)
     try:
         client = TestClient(app)
         exported = client.get("/api/me/export")
@@ -240,7 +276,7 @@ def test_export_and_delete_endpoints(monkeypatch):
         assert all(p.get("uid") != uid for p in json.loads(summary["summary"])["players"])
         assert delete_log["firebase_uid"] == uid
     finally:
-        app.dependency_overrides.pop(get_verified_user, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_rooms_and_audit_runtime_persist(monkeypatch, tmp_path):

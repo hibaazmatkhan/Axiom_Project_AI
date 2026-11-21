@@ -2,7 +2,7 @@
 
 Each room is a 6x6m cube with four coloured doors (red, blue, yellow, green)
 and a central pedestal holding four coloured d10s. The grid is labelled
-A1-E5; the team spawns in C3 and the exit is fixed at A5.
+A1-E5; the team spawns in C3 and a hidden exit is chosen from an edge room.
 
 The grid itself moves: hidden pattern rules slide rows, rotate sub-grids,
 reflect lines or swap rooms carrying the same sigil. Players ride their room,
@@ -61,18 +61,14 @@ def code_to_pos(code: str) -> tuple[int, int] | None:
 class Door:
     color: str
     sealed: bool = False
-    capacity: int = 0
-    last_roll: int = 0
+    rolled_sealed: bool = False
 
     def clone(self) -> "Door":
-        return Door(self.color, self.sealed, self.capacity, self.last_roll)
+        return Door(self.color, self.sealed, self.rolled_sealed)
 
     def public(self) -> dict:
         return {
             "color": self.color,
-            "sealed": self.sealed,
-            "capacity": self.capacity,
-            "roll": self.last_roll,
         }
 
 
@@ -94,10 +90,6 @@ class Room:
     def code(self) -> str:
         return room_code(self.bx, self.by)
 
-    @property
-    def is_exit(self) -> bool:
-        return (self.bx, self.by) == EXIT_ROOM
-
     def open_directions(self) -> list[str]:
         return [d for d in DIRECTIONS if not self.doors[d].sealed]
 
@@ -114,8 +106,9 @@ class Room:
             dict(self.last_move),
         )
 
-    def public(self) -> dict:
-        return {
+    def public(self, exit_at: tuple[int, int] | None = None,
+               include_exit: bool = False) -> dict:
+        pub = {
             "id": self.rid,
             "code": self.code,
             "bx": self.bx,
@@ -124,9 +117,11 @@ class Room:
             "doors": {d: self.doors[d].public() for d in DIRECTIONS},
             "sanction": self.sanction if self.revealed else None,
             "revealed": self.revealed,
-            "is_exit": self.is_exit,
             "future": self.future,
         }
+        if include_exit:
+            pub["is_exit"] = (self.bx, self.by) == exit_at
+        return pub
 
     def signature(self) -> tuple:
         return (self.rid, self.bx, self.by,
@@ -152,11 +147,12 @@ class Shift:
 
 
 class Arena:
-    def __init__(self, size: int, grid: list[list[Room]], seed: int):
+    def __init__(self, size: int, grid: list[list[Room]], seed: int,
+                 exit_at: tuple[int, int] | None = None):
         self.size = size
         self.grid = grid
         self.seed = seed
-        self.exit_unsealed = False
+        self.exit_at = exit_at or EXIT_ROOM
         self.shift_history: list[dict] = []
 
     # ---- accessors -------------------------------------------------------
@@ -180,7 +176,25 @@ class Arena:
         return self.room_at(*START_ROOM)
 
     def exit_room(self) -> Room:
-        return self.room_at(*EXIT_ROOM)
+        return self.room_at(*self.exit_at)
+
+    def is_exit(self, room: Room) -> bool:
+        return (room.bx, room.by) == self.exit_at
+
+    def recolor_doors(self) -> None:
+        """Give every room four unique colours and keep shared edges matched.
+
+        The grid is bipartite: alternating parity gets complementary horizontal
+        and vertical pairs, so every vertex sees all four colours exactly once.
+        Recolouring after a shift keeps the visible door colour tied to the wall,
+        not to the room that happens to be standing there.
+        """
+        for room in self.rooms:
+            even = (room.bx + room.by) % 2 == 0
+            room.doors[E].color = DOOR_COLORS[0 if even else 2]
+            room.doors[W].color = DOOR_COLORS[2 if even else 0]
+            room.doors[S].color = DOOR_COLORS[1 if even else 3]
+            room.doors[N].color = DOOR_COLORS[3 if even else 1]
 
     # ---- doorway / connectivity -----------------------------------------
     def door_open(self, room: Room, d: str) -> bool:
@@ -207,15 +221,22 @@ class Arena:
                 out.append((d, nb))
         return out
 
-    def consume(self, room: Room, d: str) -> tuple[bool, int]:
-        """Spend one crossing of a door. Returns (accepted, remaining)."""
-        if not self.door_open(room, d):
-            return False, 0
-        door = room.doors[d]
-        if door.capacity <= 0:
-            return False, 0
-        door.capacity -= 1
-        return True, door.capacity
+    def door_distance(self, start: Room, goal: Room) -> int | None:
+        if start is None or goal is None:
+            return None
+        if start.rid == goal.rid:
+            return 0
+        seen = {start.rid}
+        queue = deque([(start, 0)])
+        while queue:
+            room, distance = queue.popleft()
+            for _, nb in self.neighbours(room):
+                if nb.rid == goal.rid:
+                    return distance + 1
+                if nb.rid not in seen:
+                    seen.add(nb.rid)
+                    queue.append((nb, distance + 1))
+        return None
 
     # ---- search ----------------------------------------------------------
     def path_positions(self, start: tuple[int, int],
@@ -288,6 +309,7 @@ class Arena:
         elif op.kind == "swap_sigil":
             self._swap_sigil(op.a, op.b)
 
+        self.recolor_doors()
         moved = []
         for room in self.rooms:
             old = before.get(room.rid)
@@ -358,25 +380,25 @@ class Arena:
             rb.bx, rb.by = pa
 
     # ---- serialization ---------------------------------------------------
-    def to_public(self) -> dict:
+    def to_public(self, include_exit: bool = False) -> dict:
         rooms = []
         for room in self.rooms:
-            pub = room.public()
+            pub = room.public(self.exit_at, include_exit)
             pub["open"] = {d: self.door_open(room, d) for d in DIRECTIONS}
             rooms.append(pub)
-        return {
+        data = {
             "size": self.size,
             "start_room": list(START_ROOM),
-            "exit_room": list(EXIT_ROOM),
-            "exit_unsealed": self.exit_unsealed,
             "rooms": rooms,
         }
+        if include_exit:
+            data["exit_room"] = list(self.exit_at)
+            data["exit_rid"] = self.exit_room().rid
+        return data
 
     def clone(self) -> "Arena":
         grid = [[room.clone() for room in row] for row in self.grid]
-        clone = Arena(self.size, grid, self.seed)
-        clone.exit_unsealed = self.exit_unsealed
-        return clone
+        return Arena(self.size, grid, self.seed, self.exit_at)
 
     # ---- generation ------------------------------------------------------
     @classmethod
@@ -422,9 +444,7 @@ class Arena:
         for y in range(size):
             row: list[Room] = []
             for x in range(size):
-                colors = list(DOOR_COLORS)
-                rng.shuffle(colors)
-                doors = {d: Door(color=colors[i]) for i, d in enumerate(DIRECTIONS)}
+                doors = {d: Door(color=DOOR_COLORS[0]) for d in DIRECTIONS}
                 for d, (dx, dy) in STEP.items():
                     nx, ny = x + dx, y + dy
                     if not (0 <= nx < size and 0 <= ny < size):
@@ -440,7 +460,14 @@ class Arena:
             room.sigil = sigils[i]
 
         # Hidden Sanction rooms: never the start, the exit, or their neighbours.
-        protected = {START_ROOM, EXIT_ROOM}
+        edges = [
+            (x, y)
+            for y in range(size)
+            for x in range(size)
+            if x in (0, size - 1) or y in (0, size - 1)
+        ]
+        exit_at = rng.choice(edges)
+        protected = {START_ROOM, exit_at}
         for px, py in list(protected):
             for dx, dy in STEP.values():
                 protected.add((px + dx, py + dy))
@@ -454,7 +481,8 @@ class Arena:
         for i, (x, y) in enumerate(candidates[:7]):
             rooms[y][x].sanction = rng.choice([1, 1, 2, 3]) if i < 5 else rng.choice([4, 5, 6, 8])
 
-        arena = cls(size, rooms, seed)
+        arena = cls(size, rooms, seed, exit_at)
+        arena.recolor_doors()
         arena.ensure_connected()
         return arena
 
@@ -497,7 +525,7 @@ def astar(arena: Arena, start: tuple[int, int],
 
 
 def reachable_after_changes(arena: Arena, engine, start: tuple[int, int],
-                            goal: tuple[int, int], horizon: int) -> bool:
+                            goal: tuple[int, int] | None, horizon: int) -> bool:
     """Time-expanded reachability across grid shifts.
 
     The arena and engines are copied first: the simulation must not advance the
@@ -509,8 +537,9 @@ def reachable_after_changes(arena: Arena, engine, start: tuple[int, int],
     engines = engine if isinstance(engine, (list, tuple)) else [engine]
     sims = [copy.deepcopy(e) for e in engines]
     for _ in range(horizon + 1):
-        if sim.path_positions(start, goal) is not None:
+        target = goal or sim.exit_at
+        if sim.path_positions(start, target) is not None:
             return True
         for e in sims:
             e.apply(sim, announce=False)
-    return sim.path_positions(start, goal) is not None
+    return sim.path_positions(start, goal or sim.exit_at) is not None

@@ -1,4 +1,4 @@
-"""Full match simulation: 4 players, ready up, best-effort route to A5, terminal state.
+"""Full match simulation: 4 players, ready up, best-effort route to an edge, terminal state.
 
 This exercises the complete loop against a live server:
   connect -> ready -> choose_door along a BFS route -> game_over -> stored
@@ -26,16 +26,15 @@ DIRS = {"N": (0, -1), "E": (1, 0), "S": (0, 1), "W": (-1, 0)}
 
 
 def solve_route(arena):
-    """BFS over the room graph from the start room to the exit room."""
+    """BFS over the room graph from the start room to any reachable edge room."""
     size = arena["size"]
     start = tuple(arena["start_room"])
-    goal = tuple(arena["exit_room"])
     by_pos = {(r["bx"], r["by"]): r for r in arena["rooms"]}
     q = deque([(start, [])])
     seen = {start}
     while q:
         pos, route = q.popleft()
-        if pos == goal:
+        if pos != start and (pos[0] in (0, size - 1) or pos[1] in (0, size - 1)):
             return route
         room = by_pos.get(pos)
         if room is None:
@@ -96,7 +95,9 @@ async def main():
 
     for door in route:
         try:
-            await solo.send(json.dumps({"type": "choose_door", "door": door}))
+            await solo.send(json.dumps({"type": "open_door", "door": door}))
+            await asyncio.sleep(0.1)
+            await solo.send(json.dumps({"type": "cross_door", "door": door}))
         except Exception:
             break
         await asyncio.sleep(0.1)

@@ -1,5 +1,5 @@
 "use client";
-import type { Arena, Direction } from "@/lib/types";
+import type { Arena, Direction, Wristband } from "@/lib/types";
 
 const DOOR_HEX: Record<string, string> = {
   red: "#e23b3b",
@@ -17,16 +17,19 @@ const DIRS: Direction[] = ["N", "E", "S", "W"];
 
 export default function WristbandMap({
   arena,
+  wristband = null,
   youCode,
+  exitCode = null,
   className = "",
 }: {
   arena: Arena | null;
+  wristband?: Wristband | null;
   youCode: string | null;
+  exitCode?: string | null;
   className?: string;
 }) {
   if (!arena) return null;
   const size = arena.size;
-  const exitCode = `${String.fromCharCode(65 + arena.exit_room[0])}${arena.exit_room[1] + 1}`;
   const grid: (typeof arena.rooms[number] | null)[][] = Array.from(
     { length: size },
     () => Array.from({ length: size }, () => null)
@@ -54,7 +57,8 @@ export default function WristbandMap({
               const door = room.doors[d];
               const open = room.open?.[d];
               const color = DOOR_HEX[door.color] ?? "#6f7680";
-              const style: React.CSSProperties = { background: color, opacity: door.sealed ? 0.18 : open ? 1 : 0.5 };
+              const sealed = wristband ? !!wristband[room.code]?.[d] : !open;
+              const style: React.CSSProperties = { background: color, opacity: sealed ? 0.18 : 1 };
               const pos =
                 d === "N" ? "left-1 right-1 top-0 h-[3px]"
                 : d === "S" ? "left-1 right-1 bottom-0 h-[3px]"

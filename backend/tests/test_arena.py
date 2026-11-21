@@ -4,7 +4,7 @@ import random
 from app.arena import (
     DIRECTIONS,
     DOOR_COLORS,
-    EXIT_ROOM,
+    OPPOSITE,
     PATTERN_TYPES,
     SIGILS,
     START_ROOM,
@@ -38,7 +38,15 @@ def test_grid_is_five_by_five_with_expected_codes():
     assert len(a.rooms) == 25
     assert {r.code for r in a.rooms} == {room_code(x, y) for y in range(5) for x in range(5)}
     assert a.start_room().code == "C3"
-    assert a.exit_room().code == "A5"
+    ex, ey = a.exit_at
+    assert ex in (0, 4) or ey in (0, 4)
+    assert a.exit_room().code == room_code(ex, ey)
+
+
+def test_exit_is_randomly_placed_on_an_edge():
+    exits = {Arena.generate(5, seed=seed).exit_at for seed in range(40)}
+    assert len(exits) > 1
+    assert all(x in (0, 4) or y in (0, 4) for x, y in exits)
 
 
 def test_room_has_four_coloured_doors_and_a_sigil():
@@ -47,6 +55,24 @@ def test_room_has_four_coloured_doors_and_a_sigil():
         assert set(room.doors) == set(DIRECTIONS)
         assert {room.doors[d].color for d in DIRECTIONS} == set(DOOR_COLORS)
         assert room.sigil in SIGILS
+
+
+def test_shared_door_colors_stay_matched_after_shifts():
+    a = Arena.generate(5, seed=7)
+
+    def assert_edges():
+        for room in a.rooms:
+            assert {room.doors[d].color for d in DIRECTIONS} == set(DOOR_COLORS)
+            for d, (dx, dy) in STEP.items():
+                nb = a.room_at(room.bx + dx, room.by + dy)
+                if nb is not None:
+                    assert room.doors[d].color == nb.doors[OPPOSITE[d]].color
+
+    assert_edges()
+    a.apply_shift(Shift("row", index=1, direction=1))
+    assert_edges()
+    a.apply_shift(Shift("rotate", cx=1, cy=1, size=3, direction=-1))
+    assert_edges()
 
 
 def test_four_rotations_restore_the_block():
@@ -112,13 +138,13 @@ def test_conditional_rule_inactive_on_off_cycles():
 def test_reachability_after_changes():
     arena = Arena.generate(5, seed=11)
     engine = PatternEngine(Rule.generate(random.Random(11), "rotation"), 5)
-    assert reachable_after_changes(arena, engine, START_ROOM, EXIT_ROOM, horizon=5) is True
+    assert reachable_after_changes(arena, engine, START_ROOM, None, horizon=5) is True
 
 
 def test_astar_path_is_connected():
     arena = Arena.generate(5, seed=9)
     path = arena.path(arena.start_room(), arena.exit_room())
-    assert path and path[0] == START_ROOM and path[-1] == EXIT_ROOM
+    assert path and path[0] == START_ROOM and path[-1] == arena.exit_at
     for cur, nxt in zip(path, path[1:]):
         dx, dy = nxt[0] - cur[0], nxt[1] - cur[1]
         assert abs(dx) + abs(dy) == 1
@@ -127,11 +153,18 @@ def test_astar_path_is_connected():
 
 
 def test_public_shape():
-    pub = Arena.generate(5, seed=1).to_public()
+    arena = Arena.generate(5, seed=1)
+    pub = arena.to_public()
     assert pub["size"] == 5 and len(pub["rooms"]) == 25
     room = pub["rooms"][0]
     assert "doors" in room and "sigil" in room and "code" in room and "open" in room
-    assert pub["start_room"] == list(START_ROOM) and pub["exit_room"] == list(EXIT_ROOM)
+    assert pub["start_room"] == list(START_ROOM)
+    assert "exit_room" not in pub and "exit_rid" not in pub
+    assert all("is_exit" not in r for r in pub["rooms"])
+
+    admin = arena.to_public(include_exit=True)
+    assert admin["exit_room"] == list(arena.exit_at)
+    assert any(r.get("is_exit") for r in admin["rooms"])
 
 
 def test_room_code_roundtrip():
@@ -145,3 +178,19 @@ def test_stage_rules_are_valid():
     for stage in range(1, MAX_STAGE + 1):
         rules = rules_for_stage(stage, seed=2)
         assert len(rules) == stage_config(stage)["rules"]
+
+
+def test_door_distance_uses_open_doorways_and_ignores_fate_seals():
+    arena = Arena.generate(5, seed=5)
+    start = arena.start_room()
+    direction = next(d for d in DIRECTIONS if arena.door_open(start, d))
+    neighbour = arena.door_target(start, direction)
+    path = arena.path(start, arena.exit_room())
+
+    assert arena.door_distance(start, start) == 0
+    assert arena.door_distance(start, neighbour) == 1
+    assert arena.door_distance(start, arena.exit_room()) == len(path) - 1
+
+    for d in DIRECTIONS:
+        start.doors[d].rolled_sealed = True
+    assert arena.door_distance(start, neighbour) == 1

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { onAuthStateChanged, type User } from "firebase/auth";
+import { onIdTokenChanged, type User } from "firebase/auth";
 import { firebaseConfigured, getFirebaseAuth } from "@/lib/firebase";
 
 type AuthContextValue = {
@@ -26,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     const auth = getFirebaseAuth();
-    return onAuthStateChanged(auth, (nextUser) => {
+    return onIdTokenChanged(auth, (nextUser) => {
       setUser(nextUser);
       setLoading(false);
     });

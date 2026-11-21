@@ -1,0 +1,10 @@
+director,team_level,matches,changes_needed_mean,changes_needed_std,completion_time_mean,completion_time_std,difficulty_fit_error_mean,difficulty_fit_error_std,stuck_time_mean,stuck_time_std,solvability_violations_mean,solvability_violations_std
+nexus,average,100,5.83,2.3793,46.64,19.0345,0.0004,0.0024,3.9095,0.1488,0.0,0.0
+nexus,expert,100,4.35,1.1522,34.8,9.2174,0.001,0.0037,1.4235,0.0443,0.0,0.0
+nexus,novice,100,10.19,4.2348,81.52,33.8787,0.003,0.0073,7.1425,0.2345,0.0,0.0
+random,average,100,5.39,1.9945,43.12,15.9557,0.744,0.4541,3.6239,0.2322,0.0,0.0
+random,expert,100,4.14,0.566,33.12,4.5283,0.819,0.4589,1.2426,0.0725,0.0,0.0
+random,novice,100,9.19,4.1658,73.52,33.3264,0.5761,0.3962,7.1742,0.3905,0.0,0.0
+static,average,100,5.55,2.0218,44.4,16.1741,0.2591,0.0441,3.5137,0.1147,0.0,0.0
+static,expert,100,4.19,0.7835,33.52,6.2681,0.3771,0.018,1.2054,0.0318,0.0,0.0
+static,novice,100,10.04,4.1591,80.32,33.2731,0.0614,0.0488,6.9637,0.1865,0.0,0.0

@@ -25,6 +25,13 @@ class AppCheckTokenError(ValueError):
     pass
 
 
+APP_CHECK_CONFIG_DETAIL = (
+    "App Check enforcement is enabled but Firebase Admin credentials are missing. "
+    "Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY, or "
+    "disable APP_CHECK_ENFORCE."
+)
+
+
 @dataclass(frozen=True)
 class AuthUser:
     uid: str
@@ -102,16 +109,21 @@ def verify_app_check(token: str | None) -> dict[str, Any]:
         raise AppCheckTokenError("App Check token could not be verified.") from exc
 
 
+def app_check_config_error() -> str | None:
+    """Return a startup/config explanation when enforcement cannot work."""
+    if config.APP_CHECK_ENFORCE and not config.firebase_configured():
+        return APP_CHECK_CONFIG_DETAIL
+    return None
+
+
 def enforce_app_check(
     x_firebase_app_check: str | None = Header(default=None, alias="X-Firebase-AppCheck"),
 ) -> None:
     if not config.APP_CHECK_ENFORCE:
         return
-    if not config.firebase_configured():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="App Check is not configured.",
-        )
+    detail = app_check_config_error()
+    if detail:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
     try:
         verify_app_check(x_firebase_app_check)
     except AppCheckTokenError as exc:
@@ -119,7 +131,7 @@ def enforce_app_check(
     except AuthConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="App Check is not configured.",
+            detail=APP_CHECK_CONFIG_DETAIL,
         ) from exc
 
 
@@ -169,10 +181,26 @@ def get_verified_user(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     return user
 
 
+def is_admin(user: AuthUser) -> bool:
+    return user.uid in config.ADMIN_UIDS or bool(user.claims.get("admin"))
+
+
 def require_admin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
-    if user.uid not in config.ADMIN_UIDS and not user.claims.get("admin"):
+    if not is_admin(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access is required.",
         )
     return user
+
+
+def mfa_enabled_from_profile(profile: dict[str, Any] | None, fallback: bool = False) -> bool:
+    """DB profiles.mfa_enabled is authoritative; the token claim is a fallback."""
+    if not profile or "mfa_enabled" not in profile or profile.get("mfa_enabled") is None:
+        return bool(fallback)
+    value = profile["mfa_enabled"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

@@ -23,8 +23,7 @@ import {
   type PfpPresetId,
 } from "@/lib/avatarRules";
 import { authErrorMessage } from "@/lib/authErrors";
-import { characterUrl, loadCharacters, type Character } from "@/lib/characters";
-import { getFirebaseAuth, getGoogleProvider } from "@/lib/firebase";
+import { emailActionCodeSettings, getFirebaseAuth, getGoogleProvider } from "@/lib/firebase";
 import {
   EmailAuthProvider,
   TotpMultiFactorGenerator,
@@ -42,7 +41,7 @@ const ATTR_LABELS: Record<string, string> = {
   risk: "Risk",
   cooperation: "Cooperation",
   pattern: "Pattern skill",
-  puzzle: "Puzzle skill",
+  puzzle: "Reasoning",
   leadership: "Leadership",
 };
 
@@ -60,7 +59,6 @@ function ProfilePageContent() {
   const [mfaSecret, setMfaSecret] = useState<TotpSecret | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaBusy, setMfaBusy] = useState(false);
-  const [characters, setCharacters] = useState<Character[]>([]);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [cropSource, setCropSource] = useState<File | null>(null);
 
@@ -77,10 +75,6 @@ function ProfilePageContent() {
       setError(message);
     }
   };
-
-  useEffect(() => {
-    void loadCharacters().then(setCharacters);
-  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -149,22 +143,6 @@ function ProfilePageContent() {
     }
   };
 
-  const selectCharacterAvatar = async (id: string) => {
-    if (avatarBusy || !user) return;
-    setAvatarBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await api.selectAvatar(id);
-      setMe((current) => (current ? { ...current, profile: result.profile } : current));
-      setNotice("Character avatar assigned.");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update the avatar.");
-    } finally {
-      setAvatarBusy(false);
-    }
-  };
-
   const uploadAvatarFile = async (file: File | undefined) => {
     if (!file || avatarBusy || !user) return;
     setAvatarBusy(true);
@@ -207,7 +185,7 @@ function ProfilePageContent() {
     try {
       const result = await api.deleteAvatar();
       setMe((current) => (current ? { ...current, profile: result.profile } : current));
-      setNotice("Avatar reset to initials.");
+      setNotice("Avatar reset to default symbol.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not reset the avatar.");
     } finally {
@@ -260,8 +238,26 @@ function ProfilePageContent() {
     setError(null);
     setNotice(null);
     try {
-      await sendEmailVerification(user);
+      await sendEmailVerification(user, emailActionCodeSettings("/verify-email"));
       setNotice("Verification email sent. Check your inbox.");
+    } catch (cause) {
+      setError(authErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkVerification = async () => {
+    if (!user || busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await user.reload();
+      await refresh();
+      setNotice(
+        user.emailVerified ? "Email verified. Dossier refreshed." : "Email is still unverified."
+      );
     } catch (cause) {
       setError(authErrorMessage(cause));
     } finally {
@@ -275,6 +271,7 @@ function ProfilePageContent() {
     setError(null);
     setNotice(null);
     try {
+      await ensureRecentAuth();
       const session = await multiFactor(user).getSession();
       const secret = await TotpMultiFactorGenerator.generateSecret(session);
       setMfaSecret(secret);
@@ -460,13 +457,12 @@ function ProfilePageContent() {
         <section className="mt-8 grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
           <div className="broadcast-panel panel-cut relative overflow-hidden p-6 sm:p-8">
             <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-              <Avatar
-                src={profile?.avatar_url}
-                name={displayName}
-                characterId={profile?.character_id}
-                size={112}
-                className="h-28 w-28 border-gold/40"
-              />
+                <Avatar
+                  src={profile?.avatar_url}
+                  name={displayName}
+                  size={112}
+                  className="h-28 w-28 border-gold/40"
+                />
               <div className="min-w-0">
                 <p className="mono text-[9px] uppercase tracking-[0.24em] text-ash">
                   Broadcast identity
@@ -477,7 +473,7 @@ function ProfilePageContent() {
                 </p>
                 <div className="mt-4 max-w-md border-t border-bone/10 pt-4">
                   <p className="mono text-[9px] uppercase tracking-[0.2em] text-gold">
-                    Card PFPs
+                    Default PFPs
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {PFP_PRESETS.map((preset) => {
@@ -502,33 +498,6 @@ function ProfilePageContent() {
                       );
                     })}
                   </div>
-                  <p className="mono mt-5 text-[9px] uppercase tracking-[0.2em] text-gold">
-                    Character avatars
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {characters.map((character) => (
-                      <button
-                        key={character.id}
-                        type="button"
-                        disabled={avatarBusy}
-                        onClick={() => selectCharacterAvatar(character.id)}
-                        title={character.name}
-                        className={`border p-1 transition disabled:opacity-40 ${
-                          profile?.character_id === character.id
-                            ? "border-gold bg-gold/10"
-                            : "border-bone/10 hover:border-bone/30"
-                        }`}
-                      >
-                        <Avatar
-                          src={characterUrl(character.id)}
-                          name={character.name}
-                          characterId={character.id}
-                          size={36}
-                          showSuit={false}
-                        />
-                      </button>
-                    ))}
-                  </div>
                   <div className="mt-4 flex flex-wrap items-center gap-3">
                     <label className="cursor-pointer border border-bone/20 px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-bone transition hover:border-gold/60 hover:text-gold">
                       {avatarBusy ? "Uploading…" : "Upload PFP"}
@@ -543,7 +512,7 @@ function ProfilePageContent() {
                         }}
                       />
                     </label>
-                    {(profile?.avatar_url || profile?.character_id) && (
+                    {profile?.has_custom_avatar && (
                       <button
                         type="button"
                         disabled={avatarBusy}
@@ -554,7 +523,7 @@ function ProfilePageContent() {
                       </button>
                     )}
                     <span className="mono text-[9px] uppercase tracking-[0.14em] text-ash">
-                      PNG/JPEG/WEBP · adjustable square crop · no size limit
+                      PNG/JPEG/WEBP · adjustable square crop · max 5 MB
                     </span>
                   </div>
                 </div>
@@ -708,6 +677,14 @@ function ProfilePageContent() {
                   {busy ? "Sending…" : "Resend verification email"}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => void checkVerification()}
+                disabled={busy}
+                className="mt-2 w-full border border-bone/20 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon disabled:opacity-40"
+              >
+                {busy ? "Checking…" : "Check verification status"}
+              </button>
             </section>
 
             <section className="border border-bone/10 bg-bone/[0.025] p-5">
@@ -890,7 +867,6 @@ function ProfilePageContent() {
                   <Avatar
                     src={leader.avatar_url}
                     name={leader.username}
-                    characterId={leader.character_id}
                     size={28}
                     showSuit={false}
                   />

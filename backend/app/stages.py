@@ -25,7 +25,7 @@ STAGES = [
     },
     {
         "stage": 3, "name": "Split",
-        "what": "Door capacity forces the team apart; communication is essential.",
+        "what": "Sealed doors split the team; communication is essential.",
         "rules": 1, "types": ["translation", "reflection", "rotation"],
         "round_seconds": 20.0, "adapt": 0.4,
     },
@@ -48,7 +48,7 @@ STAGES = [
     },
     {
         "stage": 7, "name": "The Last Room",
-        "what": "Reach A5 with every living player and open the final door.",
+        "what": "Bring every living player into the hidden exit room.",
         "rules": 3, "types": list(PATTERN_TYPES), "round_seconds": 14.0, "adapt": 1.0,
     },
 ]
@@ -59,11 +59,15 @@ def stage_config(stage: int) -> dict:
     return dict(STAGES[max(0, min(stage - 1, MAX_STAGE - 1))])
 
 
-def rules_for_stage(stage: int, seed: int) -> list[Rule]:
+def rules_for_stage(stage: int, seed: int, complexity: int = 1) -> list[Rule]:
+    """Rules for a stage, scaled by the Dealer's bounded rule complexity."""
     cfg = stage_config(stage)
-    rng = random.Random(seed * 31 + stage)
+    level = max(1, min(3, int(complexity or 1)))
+    count = max(1, min(4, int(cfg["rules"]) + level - 1))
+    types = list(PATTERN_TYPES) if level >= 3 else list(cfg["types"])
+    rng = random.Random(seed * 31 + stage + level * 104729)
     rules = []
-    for _ in range(cfg["rules"]):
-        pt = rng.choice(cfg["types"])
+    for _ in range(count):
+        pt = rng.choice(types)
         rules.append(Rule.generate(rng, pt, size=SIZE))
     return rules

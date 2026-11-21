@@ -105,10 +105,10 @@ create policy avatars_service_role_all on storage.objects
     using (bucket_id = 'avatars')
     with check (bucket_id = 'avatars');
 
+-- The bucket is public, so object URLs are readable without a SELECT policy.
+-- Granting anon/authenticated SELECT here would also allow listing every path.
+-- If the bucket is made private later, issue short-lived signed URLs instead.
 drop policy if exists avatars_public_read on storage.objects;
-create policy avatars_public_read on storage.objects
-    for select to anon, authenticated
-    using (bucket_id = 'avatars');
 
 create or replace function public.leaderboard(p_limit integer default 10)
 returns jsonb
@@ -122,8 +122,7 @@ as $$
             m.username,
             m.matches,
             m.attributes,
-            p.avatar_url,
-            p.character_id
+            p.avatar_url
         from public.player_models m
         left join public.profiles p on p.id = m.auth_uid
         order by m.matches desc, m.username asc
@@ -135,8 +134,7 @@ as $$
                 'username', username,
                 'matches', matches,
                 'pattern', coalesce((attributes->>'pattern')::numeric, 0),
-                'avatar_url', avatar_url,
-                'character_id', character_id
+                'avatar_url', avatar_url
             )
             order by matches desc, username asc
         ),

@@ -10,7 +10,7 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "noEmit": true,
-    "baseUrl": ".",
+  //  "baseUrl": ".",
     "typeRoots": ["../frontend/node_modules/@types"],
     "paths": {
       "react": ["../frontend/node_modules/@types/react"],

@@ -6,18 +6,18 @@
 
 THE LAST ROOM is a browser-based, four-player 3D fan game set in an *Alice in
 Borderland* broadcast theme. Four players wake inside a **5×5 matrix of white cube rooms**,
-each with four coloured doors and a pedestal of four coloured d10s. Every round
+each with four fully coloured doors. Every round
 the grid rearranges itself by hidden, discoverable rules; an AI director called
 **The Dealer** (NEXUS) models each player and adapts the arena to the team in
 real time.
 
 Players see the world in first person from inside their own room. LED strips on
 the walls preview possible futures. The team must cross doors, manage points,
-predict the next shift, free locked teammates and unseal the final door at **A5**.
+predict the next shift, free locked teammates, find the hidden edge exit and bring every living player into it.
 
 The game keeps the academic AI deliverables of the original AXIOM proposal:
-A*/BFS search, constraint-satisfaction puzzles, seven pattern types, four
-asymmetric roles, k-means player modelling and utility-based adaptation.
+A*/BFS search, seven pattern types, four asymmetric roles, k-means player
+modelling and utility-based adaptation.
 
 Players learn the arena → The Dealer learns the players → the arena evolves →
 players adapt again.
@@ -29,20 +29,21 @@ players adapt again.
 | Area | Status |
 |---|---|
 | Real-time, server-authoritative 4-player multiplayer (WebSockets) | Done |
-| 5×5 matrix of moving white cube rooms, `A1`–`E5`, spawn C3 / exit A5 | Done |
+| 5×5 matrix of moving white cube rooms, `A1`–`E5`, spawn C3 / hidden edge exit | Done |
 | Four coloured doors (red / blue / yellow / green) with two-sided passability | Done |
-| Four coloured d10 pedestals per room, capacity capped at 4 | Done |
+| Four coloured d10 rolls per room, with bounded seal relief | Done |
 | Data-driven pattern engine, **7 transformation types** as data | Done |
-| Door capacity, 0-capacity lockdowns and two-helper scans | Done |
+| D10 door seals, two-sealed-click lockdowns and two-helper scans | Done |
 | Points economy, Sanction rooms, 15-round limit, eliminations | Done |
-| Cooperative CSP cipher that unseals the final door | Done |
+| Hidden edge exit discovery and team escape win condition | Done |
 | Asymmetric information across 4 roles (Navigator / Oracle / Timekeeper / Archivist) | Done |
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
+| Cooperative CSP role-mark puzzle with per-role private clues | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
-| Profile avatars: card PFP presets, adjustable crop, any-size uploads and storage cleanup | Done |
-| Full 3D client: first-person cube room, coloured doors, LED futures, d10 gems, wristband map | Done |
+| Profile avatars: five card PFP presets, adjustable crop, 5 MB uploads and storage cleanup | Done |
+| Full 3D client: first-person cube room, coloured doors, LED futures, wristband map | Done |
 | Security: Firebase ID tokens, first-frame WebSocket auth, server-only Supabase service key, input validation, rate limiting, anti-cheat | Done |
 | Tests, Docker, architecture + protocol docs | Done |
 
@@ -55,12 +56,13 @@ Convergence → The Last Room`.
 ### Economy
 
 - Start with **15 points**.
-- Cross a door: **−1**. Wait: **−1**. Sanction room: **−1…−3**.
+- Open a door: **−1**. Cross through an active doorway: **free**.
+- Wait: **−1**. Sanction room: **−1…−8** depending on the room.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
-- Solve the cooperative cipher: **+2** to each player.
 - Scan a locked teammate free: **−1** per helper (two helpers in or beside the
   room are required).
-- Points at zero eliminate you. The match ends after **15 rounds**.
+- Points at zero eliminate you. The match ends after **15 rounds** or when the
+  match timer expires.
 
 ---
 
@@ -120,8 +122,10 @@ only verified accounts persist ranked match data. Open the game URL in up to
 auto-assigned a role.
 
 > For a real match set the backend env `MIN_PLAYERS=4`. For quick demos set
-> `ROUND_SECONDS=8`. Players press **Ready up**; the match starts when all
-> connected players are ready.
+> `ROUND_SECONDS=8` and optionally `MATCH_SECONDS=120`. The match timer starts
+> when the round begins; the whole living team must reach the exit before it
+> expires or everyone left alive is eliminated. Players press **Ready up**;
+> the match starts when all connected players are ready.
 >
 > Firebase Auth needs Email/Password and Google enabled, with `localhost`
 > authorized. TOTP MFA is optional and may require Identity Platform.
@@ -148,17 +152,19 @@ Before going live, authorize the Vercel domain in Firebase Auth, add its credent
 | Input | Action |
 |---|---|
 | `W A S D` / arrow keys | move freely inside the current room |
-| Click / tap a door in the room | walk through that door |
-| `E` / `Enter` while facing a door | walk through it |
+| Click / tap a door in the room | open it for 10 seconds (−1 point) |
+| `W A S D` toward an open doorway | cross into the next room (free) |
+| `E` / `Enter` while facing a door | open it for 10 seconds (−1 point) |
 | `Space` | wait (spends 1 point) |
-| `V` | toggle first-person / overhead camera |
-| Drag + mouse wheel in overhead view | orbit and zoom the camera |
-| `N` | toggle team notes |
-| Chat + team notes | coordinate the four roles |
+| Click into the arena, then move the mouse | look around in first person |
+| `Esc` | stop mouse look |
+| Drag on touch screens | look around in first person |
+| Chat | coordinate the four roles |
 
-A doorway is passable only when both rooms have that side open. Clicking the
-canvas in first person captures the mouse; `Esc` releases it. Crossing costs
-are shown above each door and burst upward when you pass through.
+A doorway is passable only when both rooms have that side open. Clicking a
+door opens it for 10 seconds and shows the remaining time above the frame.
+Structural walls are hidden in the shared map; your wristband dims blocked
+doorways, while d10 seals stay hidden until a door is tried.
 
 ---
 
@@ -170,10 +176,13 @@ axiom/
 │   ├── app/
 │   │   ├── arena.py        # 5×5 room matrix, generator, doors, shifts, A*, reachability
 │   │   ├── maze.py         # backwards-compatible shim over arena.py
-│   │   ├── fate.py         # d10 rolls, capacity, possible futures, sanctions
+│   │   ├── fate.py         # d10 seals, possible futures, sanctions
 │   │   ├── patterns.py     # 7 transformation types + rule engine
-│   │   ├── knowledge.py    # knowledge base + CSP cooperative cipher generator
-│   │   ├── nexus.py        # The Dealer AI director
+│   │   ├── knowledge.py    # knowledge base, CSP puzzles + observations
+│   │   ├── nexus.py        # The Dealer player model + utility decision core
+│   │   ├── directors.py    # Director interface, Nexus/Static/Random directors
+│   │   ├── simulation.py   # simulated players + 900-match experiment runner
+│   │   ├── experiment_charts.py # CSV-driven evaluation charts
 │   │   ├── stages.py       # seven-stage progression
 │   │   ├── roles.py        # four roles + asymmetric information filtering
 │   │   ├── game.py         # rooms, round loop, points, locks, revives, reconnect
@@ -185,7 +194,8 @@ axiom/
 │   │   ├── repositories.py # storage abstraction protocols
 │   │   ├── db.py           # match store selection (Supabase / SQLite fallback)
 │   │   └── main.py         # FastAPI HTTP API + WebSocket endpoint
-│   ├── tests/              # 94 pytest tests + live-server smoke scripts
+│   ├── tests/              # pytest suite + live-server smoke scripts
+│   ├── experiments/        # CLI entry point + generated result artifacts
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
@@ -211,12 +221,13 @@ axiom/
 |---|---|
 | Informed search (A*) | Pathfinding, reachability checks |
 | Procedural generation | Seeded spanning-tree rooms + door colours/d10s/sanctions |
-| Constraint satisfaction | Cooperative cipher split across 4 roles, solver-verified |
 | Knowledge representation | Rules & observations as structured facts |
 | Pattern recognition | Periodic / sequential rules + prediction scoring |
 | Clustering & classification | k-means over six-attribute player vectors → play styles |
-| Utility-based decision making | The Dealer scores `raise_complexity / add_hazard / give_clue / lower_dice / shift_information / hold` |
-| Adaptive difficulty | Timing, door capacity and hazards adjust to measured team skill |
+| Utility-based decision making | The Dealer scores `raise_complexity / add_hazard / give_clue / lower_dice / shift_information / hold` using skill fit, progress, cooperation balance and frustration |
+| Director baselines | `NexusDirector` is compared with `StaticDirector` and `RandomDirector` through the common `Director` interface |
+| Simulated players | Novice, average and expert policies generate seeded event streams for evaluation |
+| Adaptive difficulty | Rule complexity, hazards, clues, dice relief, information nudges and CSP difficulty adjust to measured team skill |
 
 Try The Dealer without the game:
 
@@ -224,15 +235,26 @@ Try The Dealer without the game:
 GET http://localhost:8000/api/nexus/tune?team_skill=0.9&cycles=10
 ```
 
+Run the full director comparison (3 directors × 3 team levels × 100 seeds = 900 matches):
+
+```
+cd backend
+python -m experiments.run_experiment
+```
+
+Artifacts are written to `backend/experiments/results/`: `experiment_results.csv`,
+`summary.csv`, `difficulty_history.csv`, `player_clusters.csv`,
+`search_results.csv`, `search_dynamic_summary.csv`, and six PNG charts for
+A* vs BFS nodes, search success, path length, difficulty over time, rule
+discovery and k-means clusters. See `docs/NEXUS_Evaluation.md` for the report.
+
 ---
 
 ## Theme and naming
 
 The client uses a full **Alice in Borderland** broadcast theme as an unofficial
-fan project. The project owner is responsible for the rights to any show
-character portraits placed in `frontend/public/avatars/characters/`; the
-codebase does not generate or source those likenesses. Character art is loaded
-from user-supplied assets.
+fan project. The default broadcast faces are five card symbols; custom images
+come only from user-supplied assets.
 
 | Show concept | Game term |
 |---|---|
@@ -243,7 +265,7 @@ from user-supplied assets.
 | penalty rooms | **Sanction Rooms** |
 | possible-futures preview | **Possible Futures** (LED wall strips) |
 | AI game master | **The Dealer** (NEXUS) |
-| final room | **The Last Room** (A5) |
+| final room | **The Last Room** (hidden edge exit) |
 | roles | **Navigator / Oracle / Timekeeper / Archivist** |
 
 The shell uses a near-black broadcast palette with signal red, card gold and
@@ -263,21 +285,22 @@ blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
   attached server-side, and guests cannot write ranked data.
 - Supabase service-role credentials stay in `backend/.env`; the browser only
   receives Firebase public web config.
-- All intents validated server-side (doors, capacity, cooldown, adjacency,
+- All intents validated server-side (doors, seals, cooldown, adjacency,
   rate limit) — clients cannot cheat by sending state.
 - Token-bucket rate limiting on game intents.
 - The hidden rule is never serialised to any client.
-- Sigils are stripped for non-Oracle/Archivist clients; d10 rolls and capacity
-  are stripped for non-Timekeeper clients (each player always sees their own
-  room's doors).
+- Sigils are stripped for non-Oracle/Archivist clients; hidden d10 seal results
+  are never serialised to any client (each player sees only door colours).
 
 ## Tests
 
 `cd backend && python -m pytest -q` covers the arena engine, all seven pattern
-types, solvability, The Dealer model and adaptation, the cipher solver across
-1,000 seeds, Supabase migration contracts, WebSocket first-frame auth, profile
+types, solvability, The Dealer model and adaptation, hidden-exit discovery,
+Supabase migration contracts, WebSocket first-frame auth, profile
 avatar presets/uploads/cleanup, and the server (movement, anti-cheat,
-prediction, asymmetric information, locks/revives, reconnect, rate limiting).
+prediction, asymmetric information, locks/revives, reconnect, rate limiting,
+room APIs, cooperative CSP puzzles, director baselines, 900-match configuration,
+changing-maze search and chart generation).
 
 Live-server smoke scripts (start the backend first, then run from `backend/`):
 

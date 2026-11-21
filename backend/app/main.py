@@ -18,9 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import config  # loads backend/.env before the constants below
-from . import audit, avatar_store, db, supabase_store
+from . import audit, auth, avatar_store, db, supabase_store
 from .avatar_store import is_pfp_preset, pfp_url
-from .characters import character_url, is_character
 from .auth import (
     AppCheckTokenError,
     AuthConfigurationError,
@@ -28,14 +27,18 @@ from .auth import (
     AuthUser,
     get_current_user,
     get_verified_user,
+    is_admin,
     require_admin,
     verify_app_check,
     verify_token,
 )
-from .game import GameAlreadyStarted, Room
+from .game import MAX_PLAYERS, GameAlreadyStarted, Room
+from .room_registry import RoomRegistry
 from .store_errors import MatchStoreUnavailable
 
+logger = logging.getLogger(__name__)
 ROUND_SECONDS = os.getenv("ROUND_SECONDS")
+MATCH_SECONDS = os.getenv("MATCH_SECONDS")
 MIN_PLAYERS = int(os.getenv("MIN_PLAYERS", "1"))
 ORIGINS = config.ALLOWED_ORIGINS
 
@@ -64,6 +67,12 @@ app.add_middleware(
 )
 
 rooms: dict[str, Room] = {}
+registry = RoomRegistry()
+room_creation_lock = asyncio.Lock()
+
+_app_check_problem = auth.app_check_config_error()
+if _app_check_problem:
+    logger.error("App Check startup configuration: %s", _app_check_problem)
 
 
 # ---------------------------------------------------------------------------
@@ -78,27 +87,34 @@ class MfaUpdate(BaseModel):
     enabled: bool
 
 
-class AvatarSelect(BaseModel):
-    character_id: str = Field(min_length=1, max_length=32)
-
-
 class AvatarPresetSelect(BaseModel):
     preset_id: str = Field(min_length=1, max_length=32)
 
 
-def _user_public(user: AuthUser) -> dict:
+class RoomCreate(BaseModel):
+    min_players: int | None = Field(default=None, ge=1, le=MAX_PLAYERS)
+
+
+class QuickMatchRequest(BaseModel):
+    client_key: str = Field(min_length=1, max_length=128)
+
+
+def _user_public(user: AuthUser, profile: dict | None = None) -> dict:
     return {
         "uid": user.uid,
         "email": user.email,
         "email_verified": user.email_verified,
         "display_name": user.name,
         "photo_url": user.picture,
+        "mfa_enabled": auth.mfa_enabled_from_profile(profile, user.mfa_enabled),
     }
 
 
 def _ensure_profile(user: AuthUser) -> dict:
     try:
         return supabase_store.create_or_update_profile(user)
+    except supabase_store.InvalidUsername as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except supabase_store.UsernameTaken as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except supabase_store.SupabaseUnavailable as exc:
@@ -137,8 +153,8 @@ def health():
 def me(user: AuthUser = Depends(get_current_user)):
     profile = _ensure_profile(user)
     return {
-        "user": _user_public(user),
-        "profile": supabase_store.profile_public(profile),
+        "user": _user_public(user, profile),
+        "profile": supabase_store.profile_public(profile, user),
         "stats": _stats_for(user, profile),
     }
 
@@ -149,6 +165,8 @@ def update_profile(payload: ProfileUpdate, user: AuthUser = Depends(get_current_
         profile = supabase_store.create_or_update_profile(
             user, requested_username=payload.username, display_name=payload.display_name
         )
+    except supabase_store.InvalidUsername as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except supabase_store.UsernameTaken as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except supabase_store.SupabaseUnavailable as exc:
@@ -157,24 +175,9 @@ def update_profile(payload: ProfileUpdate, user: AuthUser = Depends(get_current_
             detail="Profile storage is temporarily unavailable.",
         ) from exc
     return {
-        "profile": supabase_store.profile_public(profile),
+        "profile": supabase_store.profile_public(profile, user),
         "stats": _stats_for(user, profile),
     }
-
-
-@app.put("/api/me/avatar/select")
-def select_avatar(payload: AvatarSelect, user: AuthUser = Depends(get_current_user)):
-    if not is_character(payload.character_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown character avatar.")
-    url = character_url(payload.character_id)
-    old_path = avatar_store.storage_path_for(user.uid)
-    try:
-        avatar_store.persist(user.uid, payload.character_id, url)
-        avatar_store.delete_storage(old_path)
-    except avatar_store.AvatarUnavailable as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    audit.log(user.uid, "avatar_select", {"character_id": payload.character_id})
-    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
 
 
 @app.put("/api/me/avatar/preset")
@@ -189,14 +192,19 @@ def select_pfp_preset(payload: AvatarPresetSelect, user: AuthUser = Depends(get_
     except avatar_store.AvatarUnavailable as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     audit.log(user.uid, "avatar_preset_select", {"preset_id": payload.preset_id})
-    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+    return {"profile": supabase_store.profile_public(_ensure_profile(user), user)}
 
 
 @app.post("/api/me/avatar/upload")
 async def upload_avatar(file: UploadFile = File(...), user: AuthUser = Depends(get_current_user)):
     old_path = avatar_store.storage_path_for(user.uid)
     try:
-        data = await file.read()
+        data = await file.read(avatar_store.MAX_UPLOAD_BYTES + 1)
+        if len(data) > avatar_store.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Avatar images must be 5 MB or smaller.",
+            )
         meta = avatar_store.validate_upload(data, file.content_type or "")
         path, url = avatar_store.upload(user.uid, meta["data"], meta["content_type"])
         meta["storage_path"] = path
@@ -208,7 +216,7 @@ async def upload_avatar(file: UploadFile = File(...), user: AuthUser = Depends(g
     except avatar_store.AvatarUnavailable as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     audit.log(user.uid, "avatar_upload", {"bytes": meta["bytes"], "content_type": meta["content_type"]})
-    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+    return {"profile": supabase_store.profile_public(_ensure_profile(user), user)}
 
 
 @app.delete("/api/me/avatar")
@@ -220,11 +228,11 @@ def delete_avatar(user: AuthUser = Depends(get_current_user)):
     except avatar_store.AvatarUnavailable as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     audit.log(user.uid, "avatar_clear", {})
-    return {"profile": supabase_store.profile_public(_ensure_profile(user))}
+    return {"profile": supabase_store.profile_public(_ensure_profile(user), user)}
 
 
 @app.get("/api/me/export")
-def export_me(user: AuthUser = Depends(get_verified_user)):
+def export_me(user: AuthUser = Depends(get_current_user)):
     audit.log(user.uid, "data_export", {})
     if config.supabase_configured():
         return supabase_store.export_user(user.uid)
@@ -232,13 +240,12 @@ def export_me(user: AuthUser = Depends(get_verified_user)):
 
 
 @app.delete("/api/me")
-def delete_me(user: AuthUser = Depends(get_verified_user)):
-    old_path = avatar_store.storage_path_for(user.uid)
+def delete_me(user: AuthUser = Depends(get_current_user)):
+    avatar_store.clear_uploaded_storage(user.uid)
     if config.supabase_configured():
         supabase_store.delete_user(user.uid)
     else:
         db.store.delete_user(user.uid)
-    avatar_store.delete_storage(old_path)
     audit.log(user.uid, "data_delete", {})
     return {"ok": True}
 
@@ -310,6 +317,69 @@ def revoke_sessions(uid: str, _: AuthUser = Depends(require_admin)):
     return {"ok": True, "uid": uid}
 
 
+def _normalize_code(code: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:8]
+
+
+def _room_response(code: str) -> dict:
+    room = rooms.get(code)
+    if room is not None:
+        return {
+            "room_id": room.id,
+            "code": code,
+            "status": room.status,
+            "players": len(room.players),
+            "connected": sum(1 for p in room.players.values() if p.connected),
+        }
+    reservation = registry.get_reservation(code)
+    if reservation is not None:
+        return {
+            "room_id": reservation.room_id,
+            "code": code,
+            "status": "lobby",
+            "players": 0,
+            "connected": 0,
+        }
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+
+
+@app.post("/api/rooms")
+def create_room(payload: RoomCreate | None = None):
+    min_players = (payload.min_players if payload else None) or MIN_PLAYERS
+    reservation = registry.reserve(min_players, existing_codes=rooms.keys())
+    audit.log(None, "room_create", {"room_id": reservation.room_id, "code": reservation.code})
+    return {"room_id": reservation.room_id, "code": reservation.code}
+
+
+@app.post("/api/rooms/quick-match")
+def quick_match(payload: QuickMatchRequest):
+    try:
+        result = registry.queue(payload.client_key, MIN_PLAYERS, existing_codes=rooms.keys())
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if result.get("status") == "matched":
+        audit.log(None, "room_quick_match", {"code": result["code"]})
+    return result
+
+
+@app.get("/api/rooms/quick-match/{client_key}")
+def quick_match_status(client_key: str):
+    result = registry.queue_status(client_key)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Quick-match client not found."
+        )
+    return result
+
+
+@app.get("/api/rooms/{code}")
+def room_status(code: str):
+    normalized = _normalize_code(code)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+    return _room_response(normalized)
+
+
 @app.get("/api/stages")
 def stages():
     from .stages import STAGES
@@ -335,10 +405,7 @@ class WsIdentity:
     character_id: str | None = None
 
 
-async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: bool) -> WsIdentity | None:
-    if not auth_frame_required:
-        return WsIdentity(uid=None, name=name, pid=pid or None, verified=False)
-
+async def _read_auth_frame(ws: WebSocket) -> dict | None:
     try:
         frame = await asyncio.wait_for(ws.receive_json(), timeout=8.0)
     except asyncio.TimeoutError:
@@ -357,31 +424,28 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
                             "message": "An auth frame is required for this connection."})
         await ws.close(code=1008)
         return None
+    return frame
 
-    if config.APP_CHECK_ENFORCE:
-        try:
-            await asyncio.to_thread(
-                verify_app_check,
-                frame.get("app_check") or frame.get("appCheck"),
-            )
-        except (AppCheckTokenError, AuthConfigurationError) as exc:
-            code = "app_check_invalid" if isinstance(exc, AppCheckTokenError) else "app_check_unavailable"
-            await ws.send_json({"type": "error", "code": code, "message": str(exc)})
-            await ws.close(code=1008 if code == "app_check_invalid" else 1013)
-            return None
 
-    frame_name = str(frame.get("name") or name or "Player")
-    frame_pid = str(frame.get("pid") or pid or "")
-    token = frame.get("token")
-    if not token:
-        character_id, avatar_url = avatar_store.guest_avatar(frame.get("avatar"))
-        return WsIdentity(
-            uid=None, name=frame_name, pid=frame_pid or None, verified=False,
-            avatar_url=avatar_url, character_id=character_id,
-        )
-
+async def _enforce_frame_app_check(ws: WebSocket, frame: dict) -> bool:
+    if not config.APP_CHECK_ENFORCE:
+        return True
     try:
-        user = await asyncio.to_thread(verify_token, str(token))
+        await asyncio.to_thread(
+            verify_app_check,
+            frame.get("app_check") or frame.get("appCheck"),
+        )
+    except (AppCheckTokenError, AuthConfigurationError) as exc:
+        code = "app_check_invalid" if isinstance(exc, AppCheckTokenError) else "app_check_unavailable"
+        await ws.send_json({"type": "error", "code": code, "message": str(exc)})
+        await ws.close(code=1008 if code == "app_check_invalid" else 1013)
+        return False
+    return True
+
+
+async def _verify_frame_token(ws: WebSocket, token: object) -> AuthUser | None:
+    try:
+        return await asyncio.to_thread(verify_token, str(token))
     except AuthConfigurationError:
         await ws.send_json({"type": "error", "code": "auth_unavailable",
                             "message": "Authentication is not configured."})
@@ -392,11 +456,34 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
         await ws.close(code=1008)
         return None
 
+
+async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: bool) -> WsIdentity | None:
+    if not auth_frame_required:
+        return WsIdentity(uid=None, name=name, pid=pid or None, verified=False)
+
+    frame = await _read_auth_frame(ws)
+    if frame is None or not await _enforce_frame_app_check(ws, frame):
+        return None
+
+    frame_name = str(frame.get("name") or name or "Player")
+    frame_pid = str(frame.get("pid") or pid or "")
+    token = frame.get("token")
+    if not token:
+        avatar_url, _ = avatar_store.guest_avatar(frame.get("avatar"), frame_pid or frame_name)
+        return WsIdentity(
+            uid=None, name=frame_name, pid=frame_pid or None, verified=False,
+            avatar_url=avatar_url, character_id=None,
+        )
+
+    user = await _verify_frame_token(ws, token)
+    if user is None:
+        return None
+
     profile = None
     try:
         profile = await asyncio.to_thread(supabase_store.create_or_update_profile, user)
-    except supabase_store.SupabaseUnavailable:
-        logging.warning("profile lookup failed during websocket authentication")
+    except supabase_store.SupabaseUnavailable as exc:
+        logger.warning("profile lookup failed during websocket authentication: %s", exc)
 
     display_name = (
         (profile or {}).get("display_name")
@@ -404,18 +491,151 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
         or (user.email or "").split("@")[0]
         or "Player"
     )
-    character_id = (profile or {}).get("character_id")
-    avatar_url = (profile or {}).get("avatar_url")
-    if not avatar_url and is_character(character_id):
-        avatar_url = character_url(character_id)
+    avatar_url, _ = avatar_store.normalize_avatar(
+        (profile or {}).get("avatar_url"),
+        (profile or {}).get("character_id"),
+        user.uid,
+    )
     return WsIdentity(
         uid=user.uid,
         name=display_name,
         pid=frame_pid or None,
-        verified=bool(profile and user.email_verified),
+        verified=user.email_verified,
         avatar_url=avatar_url,
-        character_id=character_id if is_character(character_id) else None,
+        character_id=None,
     )
+
+
+async def _ws_admin_identity(ws: WebSocket) -> AuthUser | None:
+    frame = await _read_auth_frame(ws)
+    if frame is None or not await _enforce_frame_app_check(ws, frame):
+        return None
+    token = frame.get("token")
+    if not token:
+        await ws.send_json({
+            "type": "error", "code": "auth_required",
+            "message": "A Firebase token is required for spectator access.",
+        })
+        await ws.close(code=1008)
+        return None
+    user = await _verify_frame_token(ws, token)
+    if user is None:
+        return None
+    if not is_admin(user):
+        await ws.send_json({
+            "type": "error", "code": "admin_required",
+            "message": "Administrator access is required.",
+        })
+        await ws.close(code=1008)
+        return None
+    return user
+
+
+async def _spectator_socket(ws: WebSocket, room_id: str) -> None:
+    user = await _ws_admin_identity(ws)
+    if user is None:
+        return
+    room = rooms.get(room_id)
+    if room is None:
+        await ws.send_json({
+            "type": "error", "code": "room_not_found",
+            "message": "Room not found.",
+        })
+        await ws.close(code=1008)
+        return
+
+    audit.log(user.uid, "spectator_connect", {"room_id": room_id})
+    await room.watch(ws)
+    try:
+        while True:
+            try:
+                msg = await ws.receive_json()
+            except (json.JSONDecodeError, ValueError, RuntimeError):
+                continue
+            if isinstance(msg, dict) and msg.get("type") == "ping":
+                await ws.send_json({"type": "pong"})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await room.unwatch(ws)
+        audit.log(user.uid, "spectator_disconnect", {"room_id": room_id})
+
+
+async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
+                         auth_required: bool) -> None:
+    async with room_creation_lock:
+        room = rooms.get(room_id)
+        created = False
+        reservation = None
+        if room is None:
+            reservation = registry.get_reservation(room_id)
+            if reservation is None:
+                await ws.send_json({
+                    "type": "error", "code": "room_not_found",
+                    "message": "Room not found. Create or quick-match a room first.",
+                })
+                await ws.close(code=1008)
+                return
+            ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
+            ms = float(MATCH_SECONDS) if MATCH_SECONDS else None
+            room = Room(
+                reservation.room_id, round_seconds=ts,
+                min_players=reservation.min_players or MIN_PLAYERS, match_seconds=ms,
+            )
+            created = True
+
+        identity = await _ws_identity(ws, name, pid, auth_required)
+        if identity is None:
+            return
+        try:
+            player = await room.join(
+                ws, identity.name, identity.pid,
+                uid=identity.uid, verified=identity.verified,
+                avatar_url=identity.avatar_url, character_id=identity.character_id,
+            )
+        except GameAlreadyStarted:
+            await ws.send_json({
+                "type": "error", "code": "game_started",
+                "message": "This match has already started. Joining is closed.",
+            })
+            await ws.close(code=1008)
+            return
+        if player is None:
+            await ws.send_json({
+                "type": "error", "code": "room_full",
+                "message": "Room is full (4 players max).",
+            })
+            await ws.close(code=1008)
+            return
+
+        if created and reservation is not None:
+            registry.consume(room_id)
+            rooms[room_id] = room
+            audit.room_upsert(room_id, room)
+
+    audit.log(player.uid, "room_join", {"room_id": room_id, "verified": player.verified})
+    audit.room_upsert(room_id, room)
+    try:
+        while True:
+            try:
+                msg = await ws.receive_json()
+            except (json.JSONDecodeError, ValueError, RuntimeError):
+                continue
+            if isinstance(msg, dict):
+                try:
+                    await room.handle(player, msg)
+                except Exception as exc:  # never let one bad intent kill the match
+                    logger.exception("intent failed: %s", exc)
+                    await ws.send_json({"type": "error", "code": "internal",
+                                        "message": "That action could not be processed."})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await room.leave(player)
+        audit.room_upsert(room_id, room)
+        if not any(p.connected for p in room.players.values()) and not room.spectators:
+            rooms.pop(room_id, None)
+            audit.room_delete(room_id)
 
 
 @app.websocket("/ws/{room_id}")
@@ -423,69 +643,7 @@ async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: st
                       spectator: int = 0, auth: int = 0):
     await ws.accept()
     room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:8] or "LOBBY"
-    room = rooms.get(room_id)
-    if room is None:
-        ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
-        room = rooms[room_id] = Room(room_id, round_seconds=ts, min_players=MIN_PLAYERS)
-        audit.room_upsert(room_id, room)
     if spectator:
-        await room.watch(ws)
-        try:
-            while True:
-                try:
-                    msg = await ws.receive_json()
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if isinstance(msg, dict) and msg.get("type") == "ping":
-                    await ws.send_json({"type": "pong"})
-        except WebSocketDisconnect:
-            pass
-        finally:
-            await room.unwatch(ws)
-            if not any(p.connected for p in room.players.values()) and not room.spectators:
-                rooms.pop(room_id, None)
-                audit.room_delete(room_id)
+        await _spectator_socket(ws, room_id)
         return
-
-    identity = await _ws_identity(ws, name, pid, bool(auth))
-    if identity is None:
-        return
-    try:
-        player = await room.join(
-            ws, identity.name, identity.pid,
-            uid=identity.uid, verified=identity.verified,
-            avatar_url=identity.avatar_url, character_id=identity.character_id,
-        )
-    except GameAlreadyStarted:
-        await ws.send_json({
-            "type": "error", "code": "game_started",
-            "message": "This match has already started. Joining is closed.",
-        })
-        await ws.close(code=1008)
-        return
-    if player is None:
-        await ws.send_json({"type": "error", "code": "room_full", "message": "Room is full (4 players max)."})
-        await ws.close(code=1008)
-        return
-    audit.log(player.uid, "room_join", {"room_id": room_id, "verified": player.verified})
-    audit.room_upsert(room_id, room)
-    try:
-        while True:
-            try:
-                msg = await ws.receive_json()
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(msg, dict):
-                try:
-                    await room.handle(player, msg)
-                except Exception as exc:  # never let one bad intent kill the match
-                    logging.exception("intent failed: %s", exc)
-                    await ws.send_json({"type": "error", "code": "internal",
-                                        "message": "That action could not be processed."})
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await room.leave(player)
-        if not any(p.connected for p in room.players.values()) and not room.spectators:
-            rooms.pop(room_id, None)
-            audit.room_delete(room_id)
+    await _player_socket(ws, room_id, name, pid, bool(auth))

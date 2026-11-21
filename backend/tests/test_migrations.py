@@ -60,8 +60,9 @@ def test_phase4_migration_contract():
         "alter table public.rooms enable row level security",
         "alter table public.audit_logs enable row level security",
         "revoke all on public.avatars, public.rooms, public.audit_logs from anon, authenticated",
-        "create policy avatars_public_read on storage.objects",
+        "drop policy if exists avatars_public_read on storage.objects",
         "'avatar_url', avatar_url",
-        "'character_id', character_id",
     ]
     assert all(fragment in sql for fragment in required)
+    assert "'character_id', character_id" not in sql
+    assert "for select to anon, authenticated" not in sql

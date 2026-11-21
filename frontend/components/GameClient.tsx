@@ -20,6 +20,11 @@ const DOOR_HEX: Record<DoorColor, string> = {
 const DIRS = ["N", "E", "S", "W"] as const;
 const MAX_POINTS = 15;
 
+function formatClock(value: number) {
+  const total = Math.max(0, Math.ceil(value));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <section className={`broadcast-panel panel-cut p-4 ${className}`}>{children}</section>;
 }
@@ -43,7 +48,7 @@ function Points({ value }: { value: number }) {
         <span className={`mono text-lg ${value <= 3 ? "text-red" : "text-bone"}`}>{value}</span>
       </div>
       <div className="mt-1 h-2 overflow-hidden rounded-full bg-void/70">
-        <div className={`h-full rounded-full bg-gradient-to-r ${tone} transition-all`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full bg-gradient-to-r ${tone} transition-all duration-500 ease-out`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -51,15 +56,14 @@ function Points({ value }: { value: number }) {
 
 export default function GameClient({ room, name }: { room: string; name: string }) {
   const g = useGameSocket(room, name);
-  const [firstPerson, setFirstPerson] = useState(true);
-  const [showNotes, setShowNotes] = useState(false);
-  const [notes, setNotes] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [secs, setSecs] = useState<number | null>(null);
+  const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [guessType, setGuessType] = useState<PatternType | "">("");
   const [guessSigils, setGuessSigils] = useState<string[]>([]);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes">("none");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle">("none");
   const [teamOpen, setTeamOpen] = useState(false);
+  const [puzzleMark, setPuzzleMark] = useState("");
   const teamRef = useRef<HTMLDivElement>(null);
   const { sendOpenDoor, sendCrossDoor, sendWait } = g;
 
@@ -68,10 +72,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
     () => g.arena?.rooms.find((r) => r.code === me?.room_code) ?? null,
     [g.arena, me?.room_code]
   );
-  const exitCode = g.arena
-    ? `${String.fromCharCode(65 + g.arena.exit_room[0])}${g.arena.exit_room[1] + 1}`
-    : "A5";
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -80,8 +80,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const k = e.key.toLowerCase();
       if (k === " " || k === "spacebar") { e.preventDefault(); sendWait(); return; }
-      if (k === "v") { setFirstPerson((v) => !v); return; }
-      if (k === "n") { setShowNotes((s) => !s); return; }
       if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         e.preventDefault();
         return;
@@ -92,15 +90,21 @@ export default function GameClient({ room, name }: { room: string; name: string 
   }, [sendWait]);
 
   useEffect(() => {
-    if (g.nextAt == null) { setSecs(null); return; }
-    const tick = () => setSecs(Math.max(0, (g.nextAt! - performance.now()) / 1000));
+    const tick = () => {
+      setSecs(g.nextAt == null ? null : Math.max(0, (g.nextAt - performance.now()) / 1000));
+      setMatchSecs(g.matchAt == null ? null : Math.max(0, (g.matchAt - performance.now()) / 1000));
+    };
     tick();
     const t = setInterval(tick, 100);
     return () => clearInterval(t);
-  }, [g.nextAt]);
+  }, [g.nextAt, g.matchAt]);
 
   const toggleSigil = (s: string) =>
     setGuessSigils((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+
+  useEffect(() => {
+    setPuzzleMark("");
+  }, [g.puzzle?.you?.role, g.puzzle?.you?.domain.join("|")]);
 
   useEffect(() => {
     if (!teamOpen) return;
@@ -136,23 +140,18 @@ export default function GameClient({ room, name }: { room: string; name: string 
         you={me}
         players={g.players}
         youId={g.you}
-        role={g.role}
-        dice={g.dice}
-        futures={g.futures}
-        exitUnsealed={g.exitUnsealed}
         transitionId={g.transition.id}
         moved={g.transition.moved}
         cross={g.cross}
-        firstPerson={firstPerson}
+        doorEvent={g.doorEvent}
         onOpenDoor={sendOpenDoor}
         onCrossDoor={sendCrossDoor}
       />
 
-      {firstPerson && g.status === "running" && (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center">
-          <div className="mx-auto h-2.5 w-2.5 rounded-full border border-bone/90 bg-void/70 shadow-hud" />
-          <p className="mono mt-3 rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
-            Click to look · click a door to open · walk in
+      {g.status === "running" && (
+        <div className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 xl:bottom-24">
+          <p className="mono rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
+            Click into arena to look · click a door to open · WASD to walk in · Esc stops view
           </p>
         </div>
       )}
@@ -164,19 +163,16 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="signal-dot" />
             Live
           </span>
-          <span className="mono border border-gold/30 bg-void/85 px-2.5 py-2 text-xs tracking-[0.2em] text-gold backdrop-blur">
-            {room}
-          </span>
-          <span className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur sm:inline-flex">
-            Stage <span className="mono ml-1 text-yellow">{g.stage}</span>/{g.maxStage}
-            <span className="mx-1 text-ash">·</span>
-            {g.stageName}
-          </span>
           <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
             R<span className="mono ml-1 text-bone">{g.round}</span>/{g.maxRounds}
           </span>
           <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
             Room <span className="mono ml-1 text-bone">{me?.room_code ?? "--"}</span>
+          </span>
+          <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
+            SANCTIONS <span className="mono ml-1 text-bone">{g.sanctionFound}</span>
+            <span className="mx-1 text-ash">/</span>
+            <span className="mono text-bone">{g.sanctionTotal}</span>
           </span>
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
@@ -203,7 +199,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                       <Avatar
                         src={player.avatar_url}
                         name={player.name}
-                        characterId={player.character_id}
                         color={player.color}
                         size={24}
                         showSuit={false}
@@ -217,6 +212,16 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             )}
           </div>
+          {g.status === "running" && (
+            <div className="border border-gold/40 bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
+              <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
+                Time left
+              </div>
+              <div className={`mono text-base tabular-nums sm:text-lg ${matchSecs != null && matchSecs < 30 ? "text-red" : "text-gold"}`}>
+                {matchSecs == null ? "--" : formatClock(matchSecs)}
+              </div>
+            </div>
+          )}
           <div className="border border-edge bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
             <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
               Next shift
@@ -225,21 +230,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {secs == null ? "--" : secs.toFixed(1) + "s"}
             </div>
           </div>
-          <button
-            onClick={() => setFirstPerson((v) => !v)}
-            className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-neon/50 hover:text-bone sm:block"
-            title="Toggle camera (V)"
-            aria-label="Toggle camera"
-          >
-            {firstPerson ? "First" : "Third"}
-          </button>
-          <button
-            onClick={() => setShowNotes((s) => !s)}
-            className="hidden border border-edge bg-void/85 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-gold/50 hover:text-bone sm:block"
-            aria-label="Toggle team notes"
-          >
-            {showNotes ? "Hide notes" : "Notes"}
-          </button>
         </div>
       </div>
 
@@ -279,9 +269,9 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="text-xs uppercase tracking-widest text-dim">Wristband</span>
             <span className="mono text-[10px] text-dim">A1–E5</span>
           </div>
-          <WristbandMap arena={g.arena} youCode={me?.room_code ?? null} className="mt-2" />
+          <WristbandMap arena={g.arena} youCode={me?.room_code ?? null} exitCode={me?.exit_code ?? null} className="mt-2" />
           <p className="mt-2 text-[10px] leading-relaxed text-dim">
-            Edge bars are door colours; dim bars are sealed. The grid shifts every round.
+            Edge bars are door colours; dim bars are blocked walls. D10 seals stay hidden.
           </p>
         </Panel>
 
@@ -300,31 +290,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </Panel>
         )}
 
-        {showNotes && (
-          <Panel>
-            <span className="text-xs uppercase tracking-widest text-dim">Team notes</span>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Yellow door in C3 is sealed. Oracle, read the north wall…"
-              className="scroll-thin mt-2 h-24 w-full resize-none rounded-lg border border-edge bg-ink/60 p-2 text-xs outline-none focus:border-blue"
-            />
-            <button
-              onClick={() => { g.sendClue(g.role ?? "unassigned", notes); setNotes(""); }}
-              disabled={!g.role || !notes.trim()}
-              className="mt-2 w-full rounded-lg border border-edge py-1.5 text-xs text-dim transition hover:border-blue hover:text-bone disabled:opacity-40"
-            >
-              Share with team
-            </button>
-            <div className="scroll-thin mt-2 max-h-24 space-y-1 overflow-y-auto">
-              {g.teamNotes.map((n, i) => (
-                <p key={i} className="text-xs text-dim">
-                  <span className="text-bone">{n.from}</span> · {n.text}
-                </p>
-              ))}
-            </div>
-          </Panel>
-        )}
       </div>
 
       {/* right column */}
@@ -334,7 +299,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="text-xs uppercase tracking-widest text-dim">The Dealer</span>
             <span className="h-2 w-2 animate-pulse-glow rounded-full bg-yellow" />
           </div>
-          <p className="mt-2 text-xs italic leading-relaxed text-bone">“{g.pa}”</p>
+          <p className="mt-2 text-xs italic leading-relaxed text-bone">“{g.dealerClue?.text ?? g.pa}”</p>
+          {g.dealerNudge && (
+            <p className="mt-2 rounded-lg border border-yellow/40 bg-yellow/10 px-2 py-1 text-[11px] text-yellow">
+              Whisper · {g.dealerNudge.text}
+              {g.dealerNudge.puzzle ? ` ${g.dealerNudge.puzzle}` : ""}
+            </p>
+          )}
           <div className="mt-3 space-y-1.5">
             <Stat label="Team skill" value={`${Math.round((g.nexus.team_skill ?? 0) * 100)}%`} accent="text-blue" />
             <div className="flex items-center justify-between gap-4">
@@ -360,7 +331,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
         <Panel>
           <span className="text-xs uppercase tracking-widest text-dim">Movement</span>
           <p className="mt-2 text-[11px] leading-relaxed text-dim">
-            Click a door or press E to pay 1 point and hold it open for 10s. Walk into the open doorway to enter the next room; any living teammate can follow for free. WASD moves, mouse looks.
+            Move the cursor to look around, click a door or press E to pay 1 point and hold it open for 10s. Walk into the open doorway to enter the next room; any living teammate can follow for free.
           </p>
         </Panel>
 
@@ -386,7 +357,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                         if (!dd) return null;
                         return (
                           <span key={dir} className="mono ml-1" style={{ color: DOOR_HEX[dd.color] }}>
-                            {dir}{dd.roll}
+                            {dir}
                           </span>
                         );
                       })}
@@ -413,7 +384,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                     {DIRS.map((dir) => {
                       const d = fr.doors?.[dir];
                       if (!d) return null;
-                      const label = d.future ?? (d.capacity != null ? String(d.capacity) : "?");
+                      const label = d.future ?? "?";
                       return (
                         <span key={dir} className={`mono ${futureTone(d.future)}`} style={d.color ? { color: DOOR_HEX[d.color] } : undefined}>
                           {dir}:{label}
@@ -473,35 +444,59 @@ export default function GameClient({ room, name }: { room: string; name: string 
           )}
         </Panel>
 
-        {g.puzzle && (
-          <Panel className="border-yellow/50">
-            <span className="text-xs uppercase tracking-widest text-yellow">Cooperative cipher</span>
-            <p className="mt-2 text-sm">{g.puzzle.question}</p>
-            <ul className="mt-2 space-y-1">
-              {g.puzzle.clues.map((c, i) => (
-                <li key={i} className="rounded-lg bg-ink/50 p-2 text-[11px] text-dim">
-                  Your clue: {c}
-                </li>
-              ))}
-            </ul>
-            <div className="scroll-thin mt-2 grid max-h-40 grid-cols-5 gap-1 overflow-y-auto">
-              {g.puzzle.options.map((o, i) => (
-                <button
-                  key={o}
-                  onClick={() => g.sendPuzzle(i)}
-                  className="mono rounded-lg border border-edge py-1.5 text-[10px] transition hover:border-yellow hover:text-yellow"
-                >
-                  {o}
-                </button>
-              ))}
-            </div>
-            {g.puzzleResult != null && (
-              <p className={`mt-2 text-xs ${g.puzzleResult ? "text-green" : "text-red"}`}>
-                {g.puzzleResult ? "Accepted — the final door is open" : "The cipher rejects that code"}
+        <Panel>
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-widest text-dim">Role mark puzzle</span>
+            <span className="mono text-[10px] text-dim">
+              {g.puzzle?.public?.solved ? "solved" : `${g.puzzle?.public?.attempts ?? 0} tries`}
+            </span>
+          </div>
+          {g.puzzle?.you ? (
+            <>
+              <p className="mt-1 text-[11px] leading-relaxed text-dim">
+                Set only your role's mark. Share the clues; every role must contribute.
               </p>
-            )}
-          </Panel>
-        )}
+              <div className="mt-2 space-y-1">
+                {g.puzzle.you.clues.map((clue, index) => (
+                  <p key={index} className="text-[11px] text-bone">· {clue}</p>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {g.puzzle.you.domain.map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setPuzzleMark(value)}
+                    className={`rounded-full border px-2 py-0.5 text-[10px] transition ${
+                      puzzleMark === value ? "border-yellow bg-yellow/15 text-yellow" : "border-edge text-dim hover:text-bone"
+                    }`}
+                  >
+                    {SIGIL_GLYPH[value] ?? value}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  if (g.puzzle?.you && puzzleMark) g.sendPuzzleMark(g.puzzle.you.role, puzzleMark);
+                }}
+                disabled={!puzzleMark}
+                className="mt-3 w-full rounded-lg bg-bone py-2 text-sm font-semibold text-coal transition hover:brightness-95 disabled:opacity-40"
+              >
+                Submit role mark
+              </button>
+            </>
+          ) : (
+            <p className="mt-2 text-[11px] text-dim">No role clue assigned.</p>
+          )}
+          {g.puzzleResult && (
+            <p className={`mt-2 text-xs ${g.puzzleResult.correct ? "text-green" : "text-red"}`}>
+              {g.puzzleResult.code === "unavailable" || g.puzzleResult.code === "invalid_mark"
+                ? g.puzzleResult.code.replace("_", " ")
+                : g.puzzleResult.correct
+                  ? "Marks aligned. The team is rewarded."
+                  : `${g.puzzleResult.marks}/4 marks set · ${g.puzzleResult.attempts} tries`}
+            </p>
+          )}
+        </Panel>
       </div>
 
       {/* bottom chat */}
@@ -547,7 +542,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   </span>
                   <span className="mono text-[9px] text-dim">A1–E5</span>
                 </div>
-                <WristbandMap arena={g.arena} youCode={me?.room_code ?? null} className="mt-2" />
+                <WristbandMap arena={g.arena} wristband={g.wristband} youCode={me?.room_code ?? null} exitCode={me?.exit_code ?? null} className="mt-2" />
                 <p className="mt-2 text-[10px] leading-relaxed text-dim">
                   Edge bars are door colours. Dim bars are sealed. The grid shifts every round.
                 </p>
@@ -597,37 +592,47 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             )}
 
-            {mobilePanel === "notes" && (
+            {mobilePanel === "puzzle" && (
               <div>
-                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">
-                  Team notes
-                </span>
-                <textarea
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
-                  placeholder="Yellow door in C3 is sealed. Oracle, read the north wall…"
-                  className="scroll-thin mt-2 h-20 w-full resize-none rounded-lg border border-edge bg-ink/60 p-2 text-xs outline-none focus:border-blue"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    g.sendClue(g.role ?? "unassigned", notes);
-                    setNotes("");
-                  }}
-                  disabled={!g.role || !notes.trim()}
-                  className="mt-2 w-full rounded-lg border border-edge py-2 text-xs text-dim transition hover:border-blue hover:text-bone disabled:opacity-40"
-                >
-                  Share with team
-                </button>
-                <div className="scroll-thin mt-2 max-h-24 space-y-1 overflow-y-auto">
-                  {g.teamNotes.map((note, index) => (
-                    <p key={index} className="text-xs text-dim">
-                      <span className="text-bone">{note.from}</span> · {note.text}
-                    </p>
-                  ))}
-                </div>
+                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Role marks</span>
+                {g.puzzle?.you ? (
+                  <>
+                    <div className="mt-2 space-y-1">
+                      {g.puzzle.you.clues.map((clue, index) => (
+                        <p key={index} className="text-[11px] text-bone">· {clue}</p>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {g.puzzle.you.domain.map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setPuzzleMark(value)}
+                          className={`rounded-full border px-2 py-0.5 text-[10px] transition ${
+                            puzzleMark === value ? "border-yellow bg-yellow/15 text-yellow" : "border-edge text-dim"
+                          }`}
+                        >
+                          {SIGIL_GLYPH[value] ?? value}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (g.puzzle?.you && puzzleMark) g.sendPuzzleMark(g.puzzle.you.role, puzzleMark);
+                      }}
+                      disabled={!puzzleMark}
+                      className="mt-2 w-full rounded-lg bg-bone py-2 text-xs font-semibold text-coal disabled:opacity-40"
+                    >
+                      Submit role mark
+                    </button>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs text-dim">No role clue assigned.</p>
+                )}
               </div>
             )}
+
           </div>
         )}
 
@@ -675,11 +680,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="text-[9px] leading-tight text-dim">Tap a door to open it for 10s, then walk in.</span>
           </div>
 
-          <div className="grid grid-cols-3 gap-1">
+          <div className="grid grid-cols-2 gap-1">
             {([
               ["map", "Map"],
               ["chat", "Chat"],
-              ["notes", "Notes"],
+              ["puzzle", "Marks"],
             ] as const).map(([key, label]) => (
               <button
                 key={key}
@@ -705,40 +710,39 @@ export default function GameClient({ room, name }: { room: string; name: string 
         className="pointer-events-none absolute bottom-44 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2 xl:bottom-32"
       >
         {g.doorEvent?.locked && (
-          <div className="rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
-            Lockdown. Two teammates must scan your wristband free.
+          <div className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
+            {g.doorEvent?.message || "Lockdown. Two teammates must scan your wristband free."}
           </div>
         )}
         {g.doorEvent && g.doorEvent.accepted && (
-          <div className="rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
             {g.doorEvent.color ?? g.doorEvent.door} door open for 10s
             {g.doorEvent.target_code ? ` → ${g.doorEvent.target_code}` : ""}
             <span className="mono ml-1 text-yellow">−{g.doorEvent.cost ?? 1} pt</span>
-            {g.doorEvent.remaining != null ? ` · ${g.doorEvent.remaining} uses left` : ""}
           </div>
         )}
         {g.cross.id > 0 && g.cross.player === g.you && (
-          <div className="rounded-xl border border-blue/60 bg-ink/90 px-4 py-2 text-xs text-blue backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-blue/60 bg-ink/90 px-4 py-2 text-xs text-blue backdrop-blur">
             Entered {g.cross.to ?? "the next room"} · free crossing
           </div>
         )}
         {g.doorEvent && !g.doorEvent.accepted && !g.doorEvent.locked && g.doorEvent.message && (
-          <div className="rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur">
             {g.doorEvent.message}
           </div>
         )}
         {g.hazard && (
-          <div className="rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
             Sanction room {g.hazard.room_code} · −{g.hazard.penalty} points
           </div>
         )}
         {g.revive && (
-          <div className="rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
             A locked player was scanned free.
           </div>
         )}
         {g.exitNotice && (
-          <div className="rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur">
+          <div className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur">
             {g.exitNotice}
           </div>
         )}
@@ -770,7 +774,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   <Avatar
                     src={p.avatar_url}
                     name={p.name}
-                    characterId={p.character_id}
                     color={p.color}
                     size={28}
                   />
@@ -793,7 +796,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {g.players.find((p) => p.id === g.you)?.ready ? "Cancel ready" : "Ready up"}
             </button>
             <p className="mt-4 text-[11px] leading-relaxed text-dim">
-              Spawn in C3. Reach A5 with every living player and unseal the final door. 15 points each.
+              Spawn in C3. Find the hidden exit and bring every living player into it. 15 points each.
             </p>
           </div>
         </div>
@@ -806,7 +809,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {g.status === "won" ? "Escape" : "Game over"}
             </p>
             <h2 className="mt-2 text-2xl font-semibold">
-              {g.status === "won" ? "The final door is open." : "The Last Room claims you."}
+              {g.status === "won" ? "Every living player reached the exit." : "The Last Room claims you."}
             </h2>
             <p className="mt-2 text-sm text-dim">
               {g.gameOver?.summary
@@ -817,7 +820,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {(g.gameOver?.summary?.players ?? []).map((p: any, i: number) => (
                 <div key={i} className="flex items-center justify-between gap-2 text-xs">
                   <span className="flex min-w-0 items-center gap-2">
-                    <Avatar src={p.avatar_url} name={p.name} characterId={p.character_id} size={24} showSuit={false} />
+                    <Avatar src={p.avatar_url} name={p.name} size={24} showSuit={false} />
                     <span className="truncate">{p.name}</span>
                   </span>
                   <span className="mono text-dim">
@@ -872,14 +875,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       <div className="mono pointer-events-none absolute bottom-2 right-3 z-10 hidden text-[10px] text-dim xl:block">
-        {alive.length}/{g.players.length} alive · exit {exitCode} {g.exitUnsealed ? "open" : "sealed"}
+        {alive.length}/{g.players.length} alive · exit {me?.exit_found ? "found" : "hidden"}
       </div>
     </main>
   );
 }
 
 function futureTone(future?: string) {
-  if (future === "exit") return "text-yellow";
   if (future === "sanction") return "text-red";
   if (future === "open") return "text-green";
   return "text-dim";

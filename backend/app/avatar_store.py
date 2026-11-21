@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from io import BytesIO
 from typing import Any
 from urllib.parse import quote
@@ -9,12 +11,30 @@ import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import config, db, supabase_store
-from .characters import character_url, is_character
 from .repositories import AvatarRepository
 
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 PFP_PRESET_IDS = ("joker", "spade", "club", "heart", "diamond")
+LEGACY_CHARACTER_PFP = {
+    "arisu": "spade",
+    "usagi": "heart",
+    "chishiya": "diamond",
+    "kuina": "club",
+    "ann": "spade",
+    "karube": "heart",
+    "chota": "diamond",
+    "shibuki": "club",
+    "niragi": "spade",
+    "aguni": "heart",
+    "hatter": "diamond",
+    "mira": "club",
+    "tatta": "spade",
+    "lastboss": "heart",
+    "heiya": "diamond",
+    "kuzuryu": "club",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +56,8 @@ def _magic_ok(data: bytes, content_type: str) -> bool:
 
 
 def validate_upload(data: bytes, content_type: str) -> dict[str, Any]:
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise AvatarInvalid("Avatar images must be 5 MB or smaller.")
     media_type = (content_type or "").split(";", 1)[0].strip().lower()
     if media_type not in ALLOWED_TYPES:
         raise AvatarInvalid("Use a PNG, JPEG or WEBP image.")
@@ -87,6 +109,35 @@ def is_pfp_preset(value: object) -> bool:
 
 def pfp_url(preset_id: str) -> str:
     return f"/avatars/pfp/{preset_id}.png"
+
+
+def default_pfp_id(seed: object | None) -> str:
+    if seed is None or seed == "":
+        return "joker"
+    digest = hashlib.sha256(str(seed).encode("utf-8")).digest()
+    return PFP_PRESET_IDS[digest[0] % len(PFP_PRESET_IDS)]
+
+
+def normalize_avatar(
+    avatar_url: object | None,
+    character_id: object | None = None,
+    seed: object | None = None,
+) -> tuple[str | None, None]:
+    raw_url = avatar_url.strip() if isinstance(avatar_url, str) else ""
+    if raw_url:
+        preset_match = re.fullmatch(r"/avatars/pfp/([a-z]+)\.png", raw_url)
+        if preset_match and is_pfp_preset(preset_match.group(1)):
+            return raw_url, None
+        legacy_match = re.fullmatch(r"/avatars/characters/([a-z0-9-]+)\.png", raw_url)
+        if legacy_match:
+            preset_id = LEGACY_CHARACTER_PFP.get(legacy_match.group(1))
+            return pfp_url(preset_id or default_pfp_id(seed)), None
+        if raw_url.startswith("/"):
+            return pfp_url(default_pfp_id(seed)), None
+        return raw_url, None
+    if isinstance(character_id, str) and character_id in LEGACY_CHARACTER_PFP:
+        return pfp_url(LEGACY_CHARACTER_PFP[character_id]), None
+    return pfp_url(default_pfp_id(seed)), None
 
 
 def storage_path_for(uid: str) -> str | None:
@@ -178,10 +229,5 @@ def clear(uid: str) -> None:
         raise AvatarUnavailable(str(exc)) from exc
 
 
-def guest_avatar(payload: object) -> tuple[str | None, str | None]:
-    if not isinstance(payload, dict):
-        return None, None
-    character_id = payload.get("character_id")
-    if not is_character(character_id):
-        return None, None
-    return character_id, character_url(character_id)
+def guest_avatar(payload: object, seed: object | None = None) -> tuple[str | None, None]:
+    return normalize_avatar(None, None, seed)

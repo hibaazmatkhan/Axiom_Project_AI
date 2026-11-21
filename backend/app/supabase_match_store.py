@@ -40,7 +40,18 @@ def _rpc(name: str, payload: dict[str, Any]) -> Any:
     if response.status_code == 404:
         raise MatchStoreUnavailable(_MIGRATION_HINT)
     if response.status_code >= 400:
-        raise MatchStoreUnavailable("Supabase rejected a match storage request.")
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        message = payload.get("message") if isinstance(payload, dict) else None
+        detail = f"Supabase RPC {name} failed (HTTP {response.status_code})"
+        if code:
+            detail += f", PostgREST code {code}"
+        if message:
+            detail += f": {message}"
+        raise MatchStoreUnavailable(detail)
     if not response.content:
         return None
     try:
@@ -62,5 +73,17 @@ class SupabaseMatchStore:
         return stats if isinstance(stats, dict) else {}
 
     def leaderboard(self, limit: int = 10) -> list[dict[str, Any]]:
+        from .avatar_store import normalize_avatar
+
         rows = _rpc("leaderboard", {"p_limit": limit})
-        return rows if isinstance(rows, list) else []
+        if not isinstance(rows, list):
+            return []
+        result = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            avatar_url, _ = normalize_avatar(
+                row.get("avatar_url"), row.get("character_id"), row.get("username")
+            )
+            result.append({**row, "avatar_url": avatar_url, "character_id": None})
+        return result

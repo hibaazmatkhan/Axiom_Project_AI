@@ -1,5 +1,10 @@
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, type Auth } from "firebase/auth";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  type ActionCodeSettings,
+  type Auth,
+} from "firebase/auth";
 import { getToken, initializeAppCheck, ReCaptchaV3Provider, type AppCheck } from "firebase/app-check";
 
 const firebaseConfig = {
@@ -62,4 +67,11 @@ export function getGoogleProvider(): GoogleAuthProvider {
   googleProvider = new GoogleAuthProvider();
   googleProvider.setCustomParameters({ prompt: "select_account" });
   return googleProvider;
+}
+
+export function emailActionCodeSettings(path: string): ActionCodeSettings {
+  return {
+    url: typeof window === "undefined" ? path : `${window.location.origin}${path}`,
+    handleCodeInApp: true,
+  };
 }

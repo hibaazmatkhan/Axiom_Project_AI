@@ -16,11 +16,11 @@ const TICKER = [
   "EVERY DOOR IS A CHOICE",
   "THE GRID MOVES EVERY ROUND",
   "PREDICT THE SHIFT",
-  "UNSEAL THE FINAL DOOR AT A5",
+  "FIND THE HIDDEN EXIT",
 ];
 
 const LOOP = [
-  ["01", "Roll", "Four coloured d10s set the capacity of every doorway."],
+  ["01", "Roll", "Four coloured d10s secretly seal some doorways."],
   ["02", "Cross", "Both rooms must open the same side. Crossing spends a point."],
   ["03", "Read", "Each role sees a different slice of the truth."],
   ["04", "Predict", "Call the next shift. Correct calls delay the arena."],
@@ -49,7 +49,7 @@ const ROLES = [
     tag: "Fate",
     tone: "text-yellow",
     border: "group-hover:border-yellow/50",
-    desc: "Sees every roll and the capacity left behind each door.",
+    desc: "Calls the countdown and the next shift.",
   },
   {
     name: "Archivist",
@@ -78,7 +78,7 @@ const STAGES = [
   ["04", "Visions", "LED walls show possible futures. Predict before committing."],
   ["05", "Lockdown", "The Dealer reacts to the team and seals doors."],
   ["06", "Convergence", "Several rules interact and the grid becomes hard to read."],
-  ["07", "The Last Room", "Reach A5 with every living player and open the final door."],
+  ["07", "The Last Room", "Find the hidden exit and bring every living player into it."],
 ];
 
 function SectionHeading({
@@ -123,8 +123,8 @@ export default function Landing() {
 
             <p className="mt-6 max-w-xl text-sm leading-relaxed text-dim sm:text-base">
               Four players wake inside a five-by-five matrix of white cube rooms. Every door is
-              coloured. Every room can move. Read the broadcast, trust your role, and reach the final
-              door at <span className="mono text-bone">A5</span> before the points run out.
+              coloured. Every room can move. Read the broadcast, trust your role, and find the hidden
+              exit before the points run out.
             </p>
 
             <div className="mt-8 flex flex-wrap gap-3">
@@ -136,7 +136,7 @@ export default function Landing() {
                 <span className="transition group-hover:translate-x-1">→</span>
               </Link>
               <Link
-                href="/login"
+                href="/login?mode=signup"
                 className="inline-flex items-center border border-bone/20 bg-bone/[0.03] px-6 py-3 text-sm font-medium uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon focus-ring"
               >
                 Create account
@@ -194,7 +194,7 @@ export default function Landing() {
                     <div className="mono text-[9px] uppercase tracking-[0.22em] text-gold/80">
                       Exit
                     </div>
-                    <div className="mono mt-1 text-xs text-gold">A5 sealed</div>
+                    <div className="mono mt-1 text-xs text-gold">location unknown</div>
                   </div>
                 </div>
               </div>
@@ -411,7 +411,7 @@ export default function Landing() {
               The broadcast is live
             </p>
             <h2 className="mx-auto mt-4 max-w-3xl font-display text-5xl uppercase leading-[0.9] tracking-[0.03em] text-bone sm:text-6xl">
-              Four players. One final door.
+              Four players. One hidden exit.
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-dim">
               Assemble your team, choose a role, and find out what the room has planned for you.
@@ -424,7 +424,7 @@ export default function Landing() {
                 Enter the Last Room
               </Link>
               <Link
-                href="/login"
+                href="/login?mode=signup"
                 className="border border-bone/20 px-7 py-3 text-sm font-medium uppercase tracking-[0.16em] text-bone transition hover:border-neon/60 hover:text-neon focus-ring"
               >
                 Create your account

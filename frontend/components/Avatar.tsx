@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { findCharacter } from "@/lib/characters";
+import { PFP_SUITS, PFP_TONES, pfpPresetFromUrl } from "@/lib/avatarRules";
 
 const PALETTE = ["#7aa2f7", "#f7768e", "#e0af68", "#9ece6a", "#bb9af7", "#7dcfff"];
 
@@ -23,7 +23,6 @@ function initials(value: string): string {
 type AvatarProps = {
   src?: string | null;
   name: string;
-  characterId?: string | null;
   size?: number;
   color?: string | null;
   className?: string;
@@ -33,16 +32,15 @@ type AvatarProps = {
 export default function Avatar({
   src,
   name,
-  characterId,
   size = 32,
   color,
   className = "",
   showSuit = true,
 }: AvatarProps) {
   const [failed, setFailed] = useState(false);
-  const character = findCharacter(characterId);
-  const label = character?.name || name || "player";
-  const tone = color || character?.color || PALETTE[hash(label) % PALETTE.length];
+  const presetId = pfpPresetFromUrl(src);
+  const label = name || "player";
+  const tone = color || (presetId ? PFP_TONES[presetId] : PALETTE[hash(label) % PALETTE.length]);
 
   useEffect(() => setFailed(false), [src]);
 
@@ -71,12 +69,12 @@ export default function Avatar({
           {initials(label)}
         </span>
       )}
-      {showSuit && size >= 24 && (
+      {showSuit && size >= 24 && presetId && (
         <span
           className="absolute bottom-0 right-[1px] leading-none text-gold/80"
           style={{ fontSize: Math.max(7, size * 0.24) }}
         >
-          {character?.suit ?? "♠"}
+          {PFP_SUITS[presetId]}
         </span>
       )}
     </span>

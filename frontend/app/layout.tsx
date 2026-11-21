@@ -15,7 +15,7 @@ export const metadata: Metadata = {
   },
   applicationName: "Alice in Borderland: The Last Room",
   description:
-    "A four-player broadcast game of possible futures. Cross the 5×5 moving rooms, read the cards, predict the shift, and unseal the final door before The Dealer closes the arena.",
+    "A four-player broadcast game of possible futures. Cross the 5×5 moving rooms, read the cards, predict the shift, and bring every living player to the hidden exit before The Dealer closes the arena.",
   keywords: [
     "Alice in Borderland",
     "The Last Room",
@@ -36,7 +36,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Alice in Borderland · The Last Room",
     description:
-      "Four players. Five by five moving rooms. One final door. The broadcast is live.",
+      "Four players. Five by five moving rooms. One hidden exit. The broadcast is live.",
     type: "website",
     siteName: "Alice in Borderland: The Last Room",
     images: [{
@@ -49,7 +49,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Alice in Borderland · The Last Room",
-    description: "Four players. Five by five moving rooms. One final door.",
+    description: "Four players. Five by five moving rooms. One hidden exit.",
     images: ["/opengraph.svg"],
   },
 };

@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS matches (
     seed INTEGER,
     winner INTEGER DEFAULT 0,
     cycles INTEGER DEFAULT 0,
+    rounds INTEGER DEFAULT 0,
+    eliminated INTEGER DEFAULT 0,
     duration REAL DEFAULT 0,
     team_skill REAL DEFAULT 0,
     difficulty REAL DEFAULT 0,
@@ -107,6 +109,11 @@ class Store:
         with self.conn() as c:
             c.executescript(SCHEMA)
             # Forward-compatible migration for databases created before v2.
+            match_cols = {r["name"] for r in c.execute("PRAGMA table_info(matches)")}
+            for name, decl in (("rounds", "INTEGER DEFAULT 0"),
+                               ("eliminated", "INTEGER DEFAULT 0")):
+                if name not in match_cols:
+                    c.execute(f"ALTER TABLE matches ADD COLUMN {name} {decl}")
             cols = {r["name"] for r in c.execute("PRAGMA table_info(match_players)")}
             for name, decl in (("eliminated", "INTEGER DEFAULT 0"),
                                ("points", "INTEGER DEFAULT 0"),
@@ -146,10 +153,12 @@ class Store:
     def record_match(self, summary: dict) -> int:
         with self.conn() as c:
             cur = c.execute(
-                "INSERT INTO matches(room, seed, winner, cycles, duration, team_skill, difficulty, created_at, summary)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO matches(room, seed, winner, cycles, rounds, eliminated, duration,"
+                " team_skill, difficulty, created_at, summary)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (summary.get("room"), summary.get("seed"), int(summary.get("winner", 0)),
-                 summary.get("cycles", 0), summary.get("duration", 0),
+                 summary.get("cycles", 0), summary.get("rounds", 0),
+                 summary.get("eliminated", 0), summary.get("duration", 0),
                  summary.get("team_skill", 0), summary.get("difficulty", 0), time.time(),
                  json.dumps(summary)))
             match_id = cur.lastrowid
@@ -332,12 +341,17 @@ class Store:
                 " FROM player_models m LEFT JOIN avatars a ON a.firebase_uid = m.auth_uid"
                 " WHERE m.auth_uid IS NOT NULL ORDER BY m.matches DESC, m.username ASC LIMIT ?",
                 (limit,)).fetchall()
+        from .avatar_store import normalize_avatar
+
         out = []
         for r in rows:
             attrs = json.loads(r["attributes"] or "{}")
+            avatar_url, _ = normalize_avatar(
+                r["avatar_url"], r["character_id"], r["username"]
+            )
             out.append({"username": r["username"], "matches": r["matches"],
                         "pattern": attrs.get("pattern", 0),
-                        "avatar_url": r["avatar_url"], "character_id": r["character_id"]})
+                        "avatar_url": avatar_url, "character_id": None})
         return out
 
 

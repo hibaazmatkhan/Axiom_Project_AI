@@ -13,14 +13,21 @@ from urllib.parse import quote
 import httpx
 
 from . import config
-from .auth import AuthUser
+from .auth import AuthUser, mfa_enabled_from_profile
 
 _MISSING_TABLE_HINT = (
-    "The Supabase profiles table is missing. Run backend/migrations/001_profiles.sql "
-    "in the Supabase SQL editor, then try again."
+    "The required Supabase table is missing. Run the matching file in "
+    "backend/migrations/ in the Supabase SQL editor, then try again."
 )
+_SCHEMA_TABLES = {
+    "profiles": "backend/migrations/001_profiles.sql",
+    "avatars": "backend/migrations/003_phase4_avatar.sql",
+    "rooms": "backend/migrations/003_phase4_avatar.sql",
+    "audit_logs": "backend/migrations/003_phase4_avatar.sql",
+}
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9 _-]{3,24}$")
+_NON_ASCII_USERNAME_RE = re.compile(r"[^A-Za-z0-9 _-]")
 _schema_ready = False
 
 
@@ -29,6 +36,10 @@ class SupabaseUnavailable(RuntimeError):
 
 
 class UsernameTaken(ValueError):
+    pass
+
+
+class InvalidUsername(ValueError):
     pass
 
 
@@ -47,6 +58,39 @@ def _url(path: str, query: str = "") -> str:
     base = config.SUPABASE_URL.rstrip("/")
     suffix = f"?{query}" if query else ""
     return f"{base}/rest/v1/{path}{suffix}"
+
+
+def _response_detail(response: Any) -> tuple[Any, str]:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    code = payload.get("code") if isinstance(payload, dict) else None
+    message = ""
+    if isinstance(payload, dict):
+        message = payload.get("message") or payload.get("details") or ""
+    if not message:
+        message = (response.text or "").strip()[:200] or "no response body"
+    return code, str(message)
+
+
+def _table_hint(path: str) -> str:
+    table = path.split("?", 1)[0]
+    migration = _SCHEMA_TABLES.get(table)
+    if migration:
+        return f"Run {migration} in the Supabase SQL editor, then try again."
+    return _MISSING_TABLE_HINT
+
+
+def _unavailable(method: str, path: str, response: Any, hint: str = "") -> SupabaseUnavailable:
+    code, message = _response_detail(response)
+    parts = [f"Supabase {method} /rest/v1/{path} failed (HTTP {response.status_code})"]
+    if code:
+        parts.append(f"PostgREST code {code}")
+    parts.append(f"message: {message}")
+    if hint:
+        parts.append(hint)
+    return SupabaseUnavailable(". ".join(parts))
 
 
 def _request(
@@ -69,49 +113,49 @@ def _request(
                 json=json,
             )
     except httpx.HTTPError as exc:
-        raise SupabaseUnavailable("Supabase is unavailable.") from exc
+        raise SupabaseUnavailable(f"Supabase {method} /rest/v1/{path} is unavailable.") from exc
     if response.status_code == 404:
-        raise SupabaseUnavailable(_MISSING_TABLE_HINT)
+        raise _unavailable(method, path, response, hint=_table_hint(path))
     if response.status_code == 409:
-        try:
-            code = response.json().get("code")
-        except ValueError:
-            code = None
+        code, _ = _response_detail(response)
         if code == "23505":
             raise UsernameTaken("That username is already taken.")
+        raise _unavailable(method, path, response)
     if response.status_code >= 400:
-        raise SupabaseUnavailable("Supabase rejected the profile request.")
+        raise _unavailable(method, path, response)
     if not response.content:
         return None
     try:
         return response.json()
     except ValueError as exc:
-        raise SupabaseUnavailable("Supabase returned an invalid response.") from exc
+        raise SupabaseUnavailable(
+            f"Supabase {method} /rest/v1/{path} returned an invalid response."
+        ) from exc
 
 
 def ensure_schema() -> None:
-    """Verify that the profiles table exists.
+    """Verify that every table used by profile/avatar persistence is ready.
 
-    The migration is intentionally run once by a human in the Supabase SQL
-    editor. The backend only verifies readiness, so the service role never
-    needs DDL privileges.
+    Migrations are run once by a human in the Supabase SQL editor. The backend
+    only verifies readiness, so the service role never needs DDL privileges.
     """
     global _schema_ready
     if _schema_ready:
         return
-    _request("GET", "profiles", query="select=id&limit=0")
+    for table in _SCHEMA_TABLES:
+        _request("GET", table, query="select=*&limit=0")
     _schema_ready = True
 
 
 def _clean_username(value: str) -> str:
-    return re.sub(r"[^\w \-]", "", value or "").strip()[:24]
+    return _NON_ASCII_USERNAME_RE.sub("", value or "").strip()[:24]
 
 
 def _validate_username(value: str) -> str:
     username = _clean_username(value)
     if not _USERNAME_RE.fullmatch(username):
-        raise UsernameTaken(
-            "Username must be 3-24 letters, numbers, spaces, underscores or hyphens."
+        raise InvalidUsername(
+            "Username must be 3-24 ASCII letters, numbers, spaces, underscores or hyphens."
         )
     return username
 
@@ -144,9 +188,26 @@ def _default_username(user: AuthUser) -> str:
     for index in range(1, 100):
         suffix = "" if index == 1 else str(index)
         candidate = f"{base[:24 - len(suffix)]}{suffix}"
+        try:
+            candidate = _validate_username(candidate)
+        except InvalidUsername:
+            continue
         if get_profile_by_username(candidate) is None:
             return candidate
-    return f"Player{secrets.token_hex(3)}"
+    fallback = f"Player{secrets.token_hex(3)}"
+    return _validate_username(fallback)
+
+
+def ensure_profile_for(uid: str) -> dict[str, Any]:
+    """Create a minimal profile so avatar rows never violate the FK."""
+    existing = get_profile(uid)
+    if existing:
+        return existing
+    placeholder = AuthUser(
+        uid=uid, email=None, email_verified=False, name=None,
+        picture=None, mfa_enabled=False, claims={},
+    )
+    return create_or_update_profile(placeholder)
 
 
 def create_or_update_profile(
@@ -213,11 +274,13 @@ def save_avatar(
     meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ensure_schema()
+    ensure_profile_for(uid)
     details = meta or {}
     row = {
         "firebase_uid": uid,
         "character_id": character_id,
         "avatar_url": avatar_url,
+        "storage_path": details.get("storage_path"),
         "content_type": details.get("content_type"),
         "width": details.get("width"),
         "height": details.get("height"),
@@ -316,18 +379,26 @@ def delete_user(uid: str) -> None:
         _request("DELETE", table, query=f"{column}=eq.{safe_uid}")
 
 
-def profile_public(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+def profile_public(
+    profile: dict[str, Any] | None, user: AuthUser | None = None
+) -> dict[str, Any] | None:
     if not profile:
         return None
+    from .avatar_store import normalize_avatar
+
+    avatar_url, _ = normalize_avatar(
+        profile.get("avatar_url"), profile.get("character_id"), profile.get("id")
+    )
+    token_fallback = bool(user.mfa_enabled) if user else False
     return {
         "id": profile["id"],
         "email": profile.get("email"),
         "username": profile["username"],
         "display_name": profile["display_name"],
-        "avatar_url": profile.get("avatar_url"),
-        "character_id": profile.get("character_id"),
+        "avatar_url": avatar_url,
+        "character_id": None,
         "email_verified": bool(profile.get("email_verified")),
-        "mfa_enabled": bool(profile.get("mfa_enabled")),
+        "mfa_enabled": mfa_enabled_from_profile(profile, token_fallback),
         "created_at": profile.get("created_at"),
         "updated_at": profile.get("updated_at"),
     }

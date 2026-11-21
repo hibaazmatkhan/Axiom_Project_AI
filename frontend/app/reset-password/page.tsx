@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { authErrorMessage } from "@/lib/authErrors";
-import { getFirebaseAuth } from "@/lib/firebase";
+import { firebaseConfigured, getFirebaseAuth } from "@/lib/firebase";
 import { confirmPasswordReset, verifyPasswordResetCode } from "firebase/auth";
 
 export default function ResetPasswordPage() {
@@ -18,6 +18,7 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!firebaseConfigured) return;
     const value = new URLSearchParams(window.location.search).get("oobCode");
     setCode(value);
     if (!value) {
@@ -31,8 +32,8 @@ export default function ResetPasswordPage() {
 
   const submit = async () => {
     if (!code || busy) return;
-    if (password.length < 6) {
-      setError("Use at least 6 characters.");
+    if (password.length < 8) {
+      setError("Use at least 8 characters.");
       return;
     }
     if (password !== confirm) {
@@ -66,6 +67,12 @@ export default function ResetPasswordPage() {
           <p className="mt-3 text-sm leading-relaxed text-dim">
             {email ? `Resetting the password for ${email}.` : "Verifying your reset link…"}
           </p>
+          {!firebaseConfigured && (
+            <div className="mt-6 border border-red/40 bg-red/10 p-4 text-sm text-red">
+              Firebase is not configured. Add the `FIREBASE_*` values to
+              `frontend/.env.local`.
+            </div>
+          )}
           {(error || message) && (
             <p
               aria-live="polite"

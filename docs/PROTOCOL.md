@@ -8,9 +8,11 @@ opening an `auth=1` socket. The server is authoritative: clients send intents,
 never state.
 
 The arena is a **5×5 matrix of white cube rooms** labelled `A1`–`E5`:
-`bx` runs A→E (0–4), `by` runs 1→5 (0–4). Players spawn in **C3** `(2,2)` and the
-exit is fixed at **A5** `(0,4)`. Rooms carry a persistent identity (`rid`) while
-their grid position moves every round; players ride their room.
+`bx` runs A→E (0–4), `by` runs 1→5 (0–4). Players spawn in **C3** `(2,2)`.
+Each match hides its exit in a randomly selected edge room. The exit coordinate
+is omitted from player snapshots; only the player who physically enters it gets
+`exit_found`. Rooms carry a persistent identity (`rid`) while their grid
+position moves every round; players ride their room.
 
 HTTP API is separate (accounts, profiles, history) — see the bottom of this file.
 
@@ -19,7 +21,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | type | fields | notes |
 |---|---|---|
 | `auth` | `token` (nullable), `name`, `pid`, `app_check` (optional) | required first frame when `auth=1`; no token creates a guest identity; `app_check` accepts the Firebase App Check token when enforcement is enabled |
-| `open_door` | `door` (`N`/`E`/`S`/`W`) or `color` | pay 1 point, consume 1 capacity and hold the doorway open for 10s |
+| `open_door` | `door` (`N`/`E`/`S`/`W`) or `color` | pay 1 point and hold the doorway open for 10s |
 | `choose_door` | `door` or `color` | alias of `open_door` |
 | `choose_gate` | `door` | alias of `open_door` |
 | `cross_door` | `door` | walk through an active temporary doorway; no extra cost |
@@ -27,8 +29,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `wait` | none | spends 1 point |
 | `unlock` | `target` (player id) | asks the server to scan a locked teammate free; two helpers in or beside the room are required, each spends 1 point |
 | `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it |
-| `puzzle_answer` | `choice` (int index into `options`) | cooperative cipher answer; a correct answer unseals the final door |
-| `clue_share` | `role`, `text` | broadcast to teammates as a team note |
+| `puzzle_submit` | `assignment` with only the sender's `role` and chosen mark | contributes one role mark to the cooperative CSP puzzle |
 | `chat` | `text` | team chat |
 | `ready` | `value` (bool) | lobby ready toggle; match starts when all connected players are ready |
 | `ping` | none | server replies `pong` |
@@ -38,22 +39,23 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | type | fields | when |
 |---|---|---|
 | `welcome` | `you`, `state` | to the joining / reconnecting player |
-| `state` | `state` | join/leave, lobby change, move/wait/unlock, prediction, puzzle |
-| `players` | `status`, `players[]` | after every accepted move / wait / unlock |
-| `round` | role-filtered shift + `arena`, `players`, `next_round_in`, `state`, `dice`, `futures`, `puzzle`, `pa` | the grid shifted and new d10s were rolled |
-| `door_result` | `accepted`, `locked`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent |
-| `door_opened` | `accepted`, `player`, `door`, `color`, `remaining`, `room_code`, `target_code`, `cost`, `open_until`, `message` | a paid doorway opened for 10s |
-| `door_closed` | `door`, `room_code`, `target_code`, `message` | the 10s window expired or the grid shifted |
-| `room_entered` | `player`, `door`, `from`, `to`, `cost` | a player physically crossed an open doorway |
-| `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a 0-capacity door and is locked |
+| `state` | `state` | join/leave, lobby change, open/cross/wait/unlock, prediction |
+| `players` | `status`, `players[]` | after every accepted door open / wait / unlock |
+| `round` | role-filtered shift + `arena`, `players`, `next_round_in`, `state`, `dice`, `futures`, `pa` | the grid shifted and new d10s were rolled |
+| `door_result` | `accepted`, `locked`, `door`, `color`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent; private to the acting player |
+| `door_opened` | `accepted`, `player`, `door`, `color`, `cost`, `open_until`, `message`; plus `room_code`/`target_code` only for players in either connected room | a paid doorway opened for 10s |
+| `door_closed` | `door`, `message`; plus `room_code`/`target_code` only for players in either connected room | the 10s window expired or the grid shifted |
+| `room_entered` | `player`, `door`, `cost` | a player physically crossed an open doorway |
+| `exit_found` | `room_code`, `message` | private to a player who entered the exit or saw it through an active doorway |
+| `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a second sealed door in one round and is locked |
 | `hazard` | `player`, `room_code`, `penalty`, `points` | a Sanction room drained points |
+| `dealer_clue` | `tier`, `text` | private to a living, unlocked player near a hidden Sanction room |
+| `dealer_nudge` | `role`, `text`, `puzzle`, `round` | private role-appropriate nudge; never carries another role's puzzle mark |
+| `puzzle_result` | `correct`, `attempts`, `points`, `complete`, `marks`, `code`, `message` | result of a role-mark submission |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
 | `elimination` | `player`, `reason` | points reached zero |
 | `prediction_result` | `correct`, `score`, `points`, `message` | after a prediction |
-| `puzzle_result` | `correct`, `solved`, `message` | after a cipher answer |
-| `exit_unsealed` | `message` | the cooperative cipher opened the final door |
-| `team_note` | `from`, `role`, `text` | a teammate shared a clue |
-| `team_note_ack` | none | your clue was delivered |
+| `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
 | `game_over` | `won`, `summary`, `nexus` | match ended (stored to the database) |
 | `error` | `code`, `message` | e.g. `rate_limited`, `not_adjacent`, `need_two` |
@@ -65,20 +67,27 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
   "room": "ABCD", "status": "running",
   "round": 3, "max_rounds": 15,
   "stage": 2, "stage_name": "First Shift", "max_stage": 7,
-  "arena": { ... }, "players": [ ... ],
+  "arena": { ... }, "wristband": { ... }, "players": [ ... ],
   "you": {
     "id": "p1", "room_id": "r12", "room_code": "C3", "room": [2, 2],
     "doors": {
-      "N": { "color": "blue", "sealed": false, "open": true, "capacity": 2, "roll": 2, "temporary_open": true, "open_until": 1730000000.0 }
+      "N": { "color": "blue", "open": true, "temporary_open": true, "open_until": 1730000000.0 }
     },
     "locked": false, "eliminated": false, "escaped": false,
+    "exit_found": false, "exit_code": null,
     "points": 15, "role": "archivist"
   },
   "next_round_in": 12.4, "round_seconds": 22,
+  "match_time_left": 184.2, "match_seconds": 300,
   "min_players": 1, "rule_count": 1,
+  "sanction_total": 7, "sanction_found": 0,
   "nexus": { ... }, "pa": "ROUND 3. THE GRID MOVES.",
   "dice": { ... }, "futures": { ... },
-  "puzzle": null, "exit_unsealed": false,
+  "dice_relief_rounds": 0,
+  "puzzle": {
+    "public": { "difficulty": "easy", "complexity": 1, "attempts": 0, "solved": false },
+    "you": { "role": "oracle", "domain": ["spade", "club"], "clues": ["..."] }
+  },
   "role": "oracle", "role_label": "Oracle", "role_hint": "..."
 }
 ```
@@ -86,6 +95,19 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 `status` is `lobby`, `running`, `won` or `over`.
 `pattern_type` is one of
 `rotation, reflection, translation, symbol, sequential, conditional, compound`.
+`sanction_total` and `sanction_found` are counts only. Unrevealed Sanction rooms
+stay `sanction: null` and `revealed: false`; no room id, code or location is sent
+for them.
+
+`dealer_clue` is private to the player it was sent to. `tier: 1` is a vague clue
+for a hidden Sanction two doorways away; `tier: 2` is a clearer clue for one
+doorway away. Clues never include a direction, colour, room code or room count.
+
+`state.puzzle.you` contains only the player's own role, domain and constraint
+descriptions. `puzzle_submit` accepts only that role's chosen mark; the server
+combines the four role marks, validates them against the CSP and rewards the
+contributors once. `dealer_nudge` is a private role-appropriate hint and never
+includes another role's mark or the full solution.
 
 ### `arena`
 
@@ -93,30 +115,49 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 {
   "size": 5,
   "start_room": [2, 2],          // C3
-  "exit_room": [0, 4],           // A5
-  "exit_unsealed": false,
   "rooms": [{
     "id": "r12", "code": "C3", "bx": 2, "by": 2,
     "sigil": "spade",             // spade | heart | diamond | club (Oracle/Archivist only)
     "doors": {
-      "N": { "color": "red", "sealed": false, "capacity": 3, "roll": 3, "temporary_open": false, "open_until": null }
+      "N": { "color": "red", "temporary_open": false, "open_until": null }
     },
     "sanction": null,              // hidden until revealed
     "revealed": false,
-    "is_exit": false,
     "future": null,                // Oracle only
     "open": { "N": true, "E": false, "S": true, "W": false }
   }]
 }
 ```
 
+### `wristband`
+
+```jsonc
+{
+  "C3": { "N": true, "E": false, "S": false, "W": true }
+}
+```
+
+`wristband` is the player-visible source of structural doorway passability;
+`true` means that doorway is blocked by a wall. D10 seals are not shown in the
+wristband or in `arena.rooms[].doors`/`you.doors`; all doors look coloured and
+locked in the 3D arena. Clicking a sealed door returns `door_result` with
+`accepted: false` and `message: "That door is sealed."`; a second sealed click
+in the same room during the same shift locks the player until two teammates
+scan them free.
+
+Admin observer snapshots (`admin_state`) add `exit_room`, `exit_rid` and
+per-room `is_exit`; player snapshots never include those fields. A player learns
+the exit through `exit_found` when they enter it or when an active temporary
+doorway connects their room to it. The team wins when every living player is in
+the exit room.
+
 Door colours are `red | blue | yellow | green`. A structural doorway is passable
 only when **both** rooms have that side open (`open[d] === true`). Paying for a
 doorway sets `temporary_open = true` and `open_until` for 10 seconds; any living
-teammate may send `cross_door` during that window without another cost. A door
-with `capacity <= 0` locks the player who tries to open it until two helpers
-scan them free. Returning through the door you came from is blocked for the rest
-of the round.
+teammate may send `cross_door` during that window without another cost. Two
+sealed-door clicks in the same room during the same round lock the player until
+two helpers scan them free. Returning through the door you came from is blocked
+for the rest of the round.
 
 ### `players[]`
 
@@ -141,8 +182,8 @@ receives every room.
   "C3": {
     "room": "C3", "rid": "r12",
     "doors": {
-      "N": { "color": "red", "roll": 3, "capacity": 3 },
-      "E": { "color": "green", "roll": 0, "capacity": 0 }
+      "N": { "color": "red" },
+      "E": { "color": "green" }
     }
   }
 }
@@ -156,7 +197,7 @@ Keyed by room code. Filtered per role:
 |---|---|
 | `oracle` | door `future` (open/sanction/exit/void) + door `color` |
 | `navigator` | only `exit`/`void` futures, otherwise `unknown` |
-| `timekeeper` | door `capacity` |
+| `timekeeper` | d10 pedestal colours and timing |
 | `archivist` | nothing here; the `round` payload carries `previous` (the old arena) |
 
 ## Asymmetric information (O3)
@@ -168,11 +209,11 @@ The server filters every `round` and `state` per role (see
 |---|---|
 | `navigator` | which rooms moved (positions only) |
 | `oracle` | sigils and door colours of moved rooms + the cleanest futures |
-| `timekeeper` | d10 rolls, door capacity and timing |
+| `timekeeper` | d10 seal states and timing |
 | `archivist` | the previous grid configuration only |
 
 Sigils are stripped from the arena for every role except the Oracle and
-Archivist; capacity and rolls are stripped for every role except the Timekeeper.
+Archivist; hidden d10 seal results are never serialised to any player.
 No client ever receives another role's hidden data, and the hidden rule itself
 (`PatternEngine.rule`) is never serialised.
 
@@ -184,7 +225,6 @@ No client ever receives another role's hidden data, and the hidden rule itself
 | `DOOR_COST` | 1 |
 | `WAIT_COST` | 1 |
 | `REVIVE_COST` | 1 per helper |
-| `EXIT_BONUS` | 2 per player on cipher success |
 | `MAX_ROUNDS` | 15 |
 
 ## HTTP API
@@ -200,10 +240,9 @@ marked public omit auth.
 | GET | `/health` | public liveness + live room/player counts |
 | GET | `/api/me` | create/read the caller's Supabase profile and stats |
 | PUT | `/api/me/profile` | update username and display name |
-| PUT | `/api/me/avatar/select` | select an allowlisted character avatar |
-| PUT | `/api/me/avatar/preset` | select a card PFP preset (`joker`, `spade`, `club`, `heart`, `diamond`) |
+| PUT | `/api/me/avatar/preset` | select a default symbol PFP (`joker`, `spade`, `club`, `heart`, `diamond`) |
 | POST | `/api/me/avatar/upload` | upload a PNG/JPEG/WEBP avatar of any size; server crops it to a square PNG |
-| DELETE | `/api/me/avatar` | clear the avatar and remove uploaded storage |
+| DELETE | `/api/me/avatar` | clear the custom avatar, remove uploaded storage and restore the default symbol |
 | POST | `/api/me/mfa` | update optional MFA flag |
 | GET | `/api/me/history?limit=` | verified caller's match history |
 | GET | `/api/me/export` | verified caller's account data export |
@@ -213,3 +252,8 @@ marked public omit auth.
 | GET | `/api/nexus/tune?team_skill=&cycles=` | public simulated-team tuning |
 | GET | `/api/admin/rooms` | administrator-only room inventory |
 | POST | `/api/admin/revoke/{uid}` | administrator-only token revocation |
+
+Players without a custom upload or chosen preset receive a deterministic default
+symbol from `joker`, `spade`, `club`, `heart` and `diamond`. Guests receive the
+same default symbol treatment from their stable client id. Legacy character
+avatar URLs are normalized to the matching suit symbol for display only.

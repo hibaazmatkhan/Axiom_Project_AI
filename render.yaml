@@ -20,6 +20,8 @@ services:
         sync: false
       - key: FIREBASE_PRIVATE_KEY
         sync: false
+      - key: APP_CHECK_ENFORCE
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY

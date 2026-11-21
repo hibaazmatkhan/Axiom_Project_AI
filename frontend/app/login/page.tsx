@@ -2,13 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import { api } from "@/lib/api";
 import { authErrorMessage } from "@/lib/authErrors";
-import { firebaseConfigured, getFirebaseAuth, getGoogleProvider } from "@/lib/firebase";
+import {
+  emailActionCodeSettings,
+  firebaseConfigured,
+  getFirebaseAuth,
+  getGoogleProvider,
+} from "@/lib/firebase";
 import {
   TotpMultiFactorGenerator,
   createUserWithEmailAndPassword,
@@ -37,6 +42,13 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [resolver, setResolver] = useState<MultiFactorResolver | null>(null);
   const [mfaCode, setMfaCode] = useState("");
+  const [verificationPending, setVerificationPending] = useState(false);
+  const [pendingUsername, setPendingUsername] = useState("");
+
+  useEffect(() => {
+    const queryMode = new URLSearchParams(window.location.search).get("mode");
+    if (queryMode === "signup") setMode("signup");
+  }, []);
 
   const nextPath = () => {
     if (typeof window === "undefined") return null;
@@ -74,6 +86,10 @@ export default function LoginPage() {
 
   const submit = async () => {
     if (busy || !firebaseConfigured) return;
+    if (verificationPending) {
+      await retryVerification();
+      return;
+    }
     setBusy(true);
     setMsg(null);
     setInfo(null);
@@ -91,7 +107,16 @@ export default function LoginPage() {
           password
         );
         await updateProfile(credential.user, { displayName: cleanUsername });
-        await sendEmailVerification(credential.user).catch(() => undefined);
+        try {
+          await sendEmailVerification(credential.user, emailActionCodeSettings("/verify-email"));
+        } catch (cause) {
+          setPendingUsername(cleanUsername);
+          setVerificationPending(true);
+          setMsg(
+            `Account created, but the verification email could not be sent: ${authErrorMessage(cause)} Retry before continuing.`
+          );
+          return;
+        }
         await syncProfile(cleanUsername);
         router.push(nextPath() ?? "/profile");
       } else {
@@ -118,7 +143,7 @@ export default function LoginPage() {
     try {
       const credential = await signInWithPopup(getFirebaseAuth(), getGoogleProvider());
       await syncProfile();
-      router.push(credential.user.emailVerified ? "/lobby" : "/profile");
+      router.push(nextPath() ?? (credential.user.emailVerified ? "/lobby" : "/profile"));
     } catch (error) {
       handleAuthError(error);
     } finally {
@@ -155,11 +180,19 @@ export default function LoginPage() {
       setMsg("Enter your email address first.");
       return;
     }
+    if (!firebaseConfigured) {
+      setMsg("Firebase is not configured. Add the FIREBASE_* values to frontend/.env.local.");
+      return;
+    }
     setBusy(true);
     setMsg(null);
     setInfo(null);
     try {
-      await sendPasswordResetEmail(getFirebaseAuth(), email.trim());
+      await sendPasswordResetEmail(
+        getFirebaseAuth(),
+        email.trim(),
+        emailActionCodeSettings("/reset-password")
+      );
       setInfo("Password reset email sent. Check your inbox.");
     } catch (error) {
       setMsg(authErrorMessage(error));
@@ -174,10 +207,29 @@ export default function LoginPage() {
     setMsg(null);
     setInfo(null);
     try {
-      await sendEmailVerification(user);
+      await sendEmailVerification(user, emailActionCodeSettings("/verify-email"));
       setInfo("Verification email sent. Check your inbox.");
     } catch (error) {
       setMsg(authErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retryVerification = async () => {
+    const current = getFirebaseAuth().currentUser;
+    if (!current || busy) return;
+    setBusy(true);
+    setMsg(null);
+    setInfo(null);
+    try {
+      await sendEmailVerification(current, emailActionCodeSettings("/verify-email"));
+      await syncProfile(pendingUsername || current.displayName || undefined);
+      setVerificationPending(false);
+      setInfo("Verification email sent. Opening your dossier…");
+      router.push(nextPath() ?? "/profile");
+    } catch (cause) {
+      setMsg(authErrorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -263,7 +315,7 @@ export default function LoginPage() {
             <p className="mono mt-8 text-xs uppercase tracking-[0.2em] text-ash">
               Checking session…
             </p>
-          ) : user ? (
+          ) : user && !verificationPending ? (
             <div className="mt-6 space-y-4">
               <div className="border border-bone/10 bg-void/50 p-4">
                 <div className="mono text-[9px] uppercase tracking-[0.22em] text-ash">
@@ -403,9 +455,19 @@ export default function LoginPage() {
                 className="mt-6 space-y-4"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  submit();
+                  if (verificationPending) {
+                    void retryVerification();
+                  } else {
+                    submit();
+                  }
                 }}
               >
+                {verificationPending && (
+                  <p className="border border-yellow/35 bg-yellow/10 p-3 text-xs leading-relaxed text-yellow">
+                    Your account exists. We could not send the verification email yet — retry below
+                    before continuing.
+                  </p>
+                )}
                 {mode === "signup" && (
                   <div>
                     <label
@@ -492,13 +554,20 @@ export default function LoginPage() {
                   disabled={
                     busy ||
                     !firebaseConfigured ||
-                    !email.trim() ||
-                    password.length < 6 ||
-                    (mode === "signup" && username.trim().length < 3)
+                    (!verificationPending &&
+                      (!email.trim() ||
+                        password.length < 8 ||
+                        (mode === "signup" && username.trim().length < 3)))
                   }
                   className="w-full border border-gold bg-gold px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-void transition hover:border-bone hover:bg-bone disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {busy ? "Transmitting…" : mode === "login" ? "Enter the lobby" : "Create player"}
+                  {busy
+                    ? "Transmitting…"
+                    : verificationPending
+                      ? "Retry verification email"
+                      : mode === "login"
+                        ? "Enter the lobby"
+                        : "Create player"}
                 </button>
               </form>
 

@@ -48,20 +48,15 @@ export default function BroadcastBoard() {
           const px = x * cell;
           const py = y * cell;
           const isYou = x === 2 && y === 2;
-          const isExit = x === 0 && y === 4;
 
-          ctx.fillStyle = isExit
-            ? "rgba(244, 197, 66, 0.10)"
-            : isYou
-              ? "rgba(104, 232, 255, 0.08)"
-              : "rgba(244, 241, 234, 0.025)";
+          ctx.fillStyle = isYou
+            ? "rgba(104, 232, 255, 0.08)"
+            : "rgba(244, 241, 234, 0.025)";
           ctx.fillRect(px + 5, py + 5, cell - 10, cell - 10);
 
           ctx.strokeStyle = isYou
             ? "rgba(244, 197, 66, 0.95)"
-            : isExit
-              ? "rgba(255, 70, 85, 0.55)"
-              : "rgba(244, 241, 234, 0.13)";
+            : "rgba(244, 241, 234, 0.13)";
           ctx.lineWidth = isYou ? 2 : 1;
           ctx.strokeRect(px + 5, py + 5, cell - 10, cell - 10);
 

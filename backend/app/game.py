@@ -1,9 +1,9 @@
 """Room and game state for THE LAST ROOM.
 
 The server is authoritative. Clients send intents (choose a coloured door, wait,
-unlock, predict, puzzle answer, chat, ready). The server validates them, applies
-the round loop, rolls the d10 pedestal, resolves lockdowns/sanctions, asks The
-Dealer for the next action, filters information per role and broadcasts.
+unlock, predict, chat, ready). The server validates them, applies the round loop,
+rolls the d10 pedestal, resolves lockdowns/sanctions, asks The Dealer for the
+next action, filters information per role and broadcasts.
 
 Game loop
 ---------
@@ -23,7 +23,6 @@ from fastapi import WebSocket
 
 from .arena import (
     DIRECTIONS,
-    EXIT_ROOM,
     OPPOSITE,
     START_ROOM,
     STEP,
@@ -31,12 +30,14 @@ from .arena import (
     Room as ArenaRoom,
     reachable_after_changes,
 )
+from .avatar_store import normalize_avatar
 from .patterns import PatternEngine
 from .stages import MAX_STAGE, rules_for_stage, stage_config
-from .nexus import Nexus
-from .knowledge import KnowledgeBase, PuzzleGenerator
+from .directors import Director, NexusDirector
+from .knowledge import KnowledgeBase, LEVEL_DIFFICULTIES
+from .nexus import DICE_RELIEF_ROUNDS, MAX_COMPLEXITY, Nexus
 from .roles import ROLES, filter_arena, filter_round, filter_snapshot, filter_visions
-from . import fate, db
+from . import audit, fate, db
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ MAX_PLAYERS = 4
 COLORS = ["#e23b3b", "#3f7bd9", "#e8b53a", "#3f9f6b"]
 INTENT_BUCKET = 0.5
 INTENT_MAX = 14
+DEFAULT_MATCH_SECONDS = 300.0
 
 START_POINTS = fate.START_POINTS
 MAX_ROUNDS = fate.MAX_ROUNDS
@@ -75,6 +77,7 @@ class Player:
     avatar_url: str | None = None
     character_id: str | None = None
     escaped: bool = False
+    exit_found: bool = False
     ready: bool = False
     connected: bool = True
     disconnected_at: float = 0.0
@@ -85,12 +88,12 @@ class Player:
     points: int = START_POINTS
     locked: bool = False
     eliminated: bool = False
+    sealed_strikes: int = 0
     waits: int = 0
     revives: int = 0
     last_room_id: str | None = None
     last_door: str | None = None
     entered_round: int = 0
-    puzzle_inputs: dict = field(default_factory=dict)
     ws: WebSocket | None = field(default=None, repr=False)
     bucket_at: float = 0.0
     bucket_n: int = 0
@@ -127,7 +130,8 @@ class TemporaryDoor:
 
 class Room:
     def __init__(self, room_id: str, seed: int | None = None,
-                 round_seconds: float | None = None, min_players: int = 1):
+                 round_seconds: float | None = None, min_players: int = 1,
+                 match_seconds: float | None = None, director: Director | None = None):
         self.id = room_id
         self.seed = seed if seed is not None else random.randrange(1 << 30)
         self.arena = Arena.generate(size=5, seed=self.seed)
@@ -135,20 +139,38 @@ class Room:
         cfg = stage_config(self.stage)
         self.round_override = round_seconds
         self.round_seconds = round_seconds or cfg["round_seconds"]
+        self.shift_seconds = self.round_seconds
+        self.match_seconds = match_seconds if match_seconds and match_seconds > 0 else DEFAULT_MATCH_SECONDS
+        self.match_deadline: float | None = None
         self.min_players = min_players
         self.engines = [PatternEngine(r, self.arena.size)
                         for r in rules_for_stage(self.stage, self.seed)]
-        self.nexus = Nexus(seed=self.seed)
-        self.puzzle_gen = PuzzleGenerator(size=5)
-        self.puzzle: dict | None = None
+        self.nexus = director if director is not None else NexusDirector(seed=self.seed)
         self.players: dict[str, Player] = {}
         self.status = "lobby"  # lobby | running | won | over
         self.round = 0
+        self.knowledge = KnowledgeBase()
+        self.complexity_override = 1
+        if hasattr(self.nexus, "complexity_level"):
+            self.nexus.complexity_level = self.complexity_override
+        self.puzzle = None
+        self.puzzle_rewarded = False
+        self.puzzle_contributions: dict[str, str] = {}
+        self.puzzle_contributors: dict[str, str] = {}
+        self._director_seals: list[tuple[str, str]] = []
+        self.dice_relief_rounds = 0
+        self.pending_nudges: list[tuple[str, dict]] = []
+        self.info_nudges: dict[str, int] = {}
         self.max_rounds = MAX_ROUNDS
         self.next_round_at: float | None = None
         self.events: list[dict] = []
         self.prev_arena: dict | None = None
-        self.pa = "THE LAST ROOM. FIND THE FINAL DOOR."
+        self.pa = "THE LAST ROOM. FIND THE HIDDEN EXIT."
+        self.sanction_total = 0
+        self.sanction_found = 0
+        self.pending_clues: list[tuple[str, dict]] = []
+        self.puzzle = self._new_puzzle()
+        self._recompute_sanctions()
         self.rng = random.Random(self.seed ^ 0x9E3779B9)
         self._role_rng = random.Random(self.seed ^ 0x51ED270B)
         self.role_pool = list(ROLES)
@@ -170,17 +192,99 @@ class Room:
     def _load_stage(self) -> None:
         cfg = stage_config(self.stage)
         self.engines = [PatternEngine(r, self.arena.size)
-                        for r in rules_for_stage(self.stage, self.seed)]
+                        for r in rules_for_stage(self.stage, self.seed,
+                                                 complexity=self.complexity_override)]
         self.round_seconds = self.round_override if self.round_override is not None else cfg["round_seconds"]
         self.pa = f"STAGE {self.stage}: {cfg['name'].upper()}."
 
+    # ---- cooperative CSP puzzle -------------------------------------------
+    def _puzzle_complexity(self) -> int:
+        return max(1, min(MAX_COMPLEXITY, int(self.complexity_override or 1)))
+
+    def _new_puzzle(self):
+        level = self._puzzle_complexity()
+        puzzle = self.knowledge.generate_puzzle(
+            self.seed ^ (self.round * 7919) ^ (self.stage * 104729),
+            difficulty=LEVEL_DIFFICULTIES.get(level, "easy"),
+            complexity=level,
+        )
+        self.puzzle_rewarded = False
+        self.puzzle_contributions = {}
+        self.puzzle_contributors = {}
+        self.log(None, "puzzle_generated", puzzle.public())
+        return puzzle
+
+    async def submit_puzzle(self, player: Player, assignment) -> None:
+        if self.status != "running" or player.eliminated or player.escaped:
+            return
+        if self.puzzle is None or self.puzzle_rewarded:
+            await self.send(player, {"type": "puzzle_result", "correct": False,
+                                     "code": "unavailable"})
+            return
+        role = player.role
+        if role not in self.puzzle.domains:
+            await self.send(player, {"type": "puzzle_result", "correct": False,
+                                     "code": "role_unavailable"})
+            return
+        value = assignment.get(role) if isinstance(assignment, dict) else None
+        if not isinstance(value, str) or value not in self.puzzle.domains[role]:
+            await self.send(player, {"type": "puzzle_result", "correct": False,
+                                     "code": "invalid_mark"})
+            return
+
+        self.puzzle_contributions[role] = value
+        self.puzzle_contributors[role] = player.id
+        self.log(player.id, "puzzle_attempt", {"role": role, "value": value})
+        complete = all(name in self.puzzle_contributions for name in self.puzzle.domains)
+        correct = False
+        attempts = len(self.puzzle_contributions)
+        if complete:
+            attempts = self.knowledge.submit_puzzle(dict(self.puzzle_contributions))
+            correct = attempts["correct"]
+        if correct:
+            self.puzzle_rewarded = True
+            for contributor in set(self.puzzle_contributors.values()):
+                recipient = self.players.get(contributor)
+                if recipient is not None and not recipient.eliminated:
+                    recipient.points += 1
+            self.log(None, "puzzle_solved", {"attempts": attempts["attempts"]})
+            audit.room_upsert(self.id, self)
+            self.pa = "THE ROLE MARKS ALIGN. THE PUZZLE IS SOLVED."
+        elif complete:
+            self.pa = "THE MARKS DO NOT ALIGN. KEEP SHARING."
+        else:
+            self.pa = "ONE ROLE MARK IS SET. WAIT FOR THE OTHERS."
+        await self.send(player, {
+            "type": "puzzle_result", "correct": correct,
+            "attempts": attempts if isinstance(attempts, int) else attempts["attempts"],
+            "points": player.points,
+            "complete": complete,
+            "marks": len(self.puzzle_contributions),
+            "message": self.pa,
+        })
+        await self.broadcast_state()
+
     # ---- helpers ----------------------------------------------------------
+    def _nexus_report(self) -> dict:
+        report = self.nexus.team_report()
+        report["dice_relief_rounds"] = self.dice_relief_rounds
+        return report
+
+    def _audit_room(self) -> None:
+        audit.room_upsert(self.id, self)
+
     def log(self, player_id: str | None, kind: str, data: dict | None = None) -> None:
         ev = {"t": time.time(), "player": player_id, "kind": kind, "data": data or {}}
         self.events.append(ev)
         if len(self.events) > 5000:
             del self.events[:1000]
         self.nexus.ingest(ev)
+
+    def _roll_shift_seconds(self) -> float:
+        base = self.round_override if self.round_override is not None else self.round_seconds
+        if base <= 0:
+            return base
+        return round(self.rng.uniform(base * 0.8, base * 1.2), 1)
 
     def _temporary_for(self, room: ArenaRoom, d: str) -> TemporaryDoor | None:
         target = self.arena.door_target(room, d)
@@ -202,6 +306,17 @@ class Room:
                     pub_room["open"][d] = True
         return pub
 
+    def wristband_public(self) -> dict:
+        return {
+            room.code: {d: not self.arena.door_open(room, d) for d in DIRECTIONS}
+            for room in self.arena.rooms
+        }
+
+    def _recompute_sanctions(self) -> None:
+        hidden = [room for room in self.arena.rooms if room.sanction]
+        self.sanction_total = len(hidden)
+        self.sanction_found = sum(1 for room in hidden if room.revealed)
+
     def _prune_open_doors(self, now: float) -> list[TemporaryDoor]:
         expired: list[TemporaryDoor] = []
         for key, temp in list(self.open_doors.items()):
@@ -217,13 +332,23 @@ class Room:
         for temp in expired:
             a = self.arena.room_by_id(temp.a_rid)
             b = self.arena.room_by_id(temp.b_rid)
-            await self.broadcast({
+            public = {
                 "type": "door_closed",
                 "door": temp.a_dir,
+                "message": "The doorway slammed shut.",
+            }
+            private = {
+                **public,
                 "room_code": a.code if a else None,
                 "target_code": b.code if b else None,
-                "message": "The doorway slammed shut.",
-            })
+            }
+            for player in list(self.players.values()):
+                if not player.connected:
+                    continue
+                if player.room_id in (temp.a_rid, temp.b_rid):
+                    await self.send(player, private)
+                else:
+                    await self.send(player, public)
         await self.broadcast_state()
 
     def alive(self) -> list[Player]:
@@ -251,10 +376,7 @@ class Room:
                 temp = self._temporary_for(room, d)
                 doors[d] = {
                     "color": door.color,
-                    "sealed": door.sealed,
                     "open": self.arena.door_open(room, d) or temp is not None,
-                    "capacity": door.capacity,
-                    "roll": door.last_roll,
                     "temporary_open": temp is not None,
                     "open_until": temp.expires_at if temp else None,
                 }
@@ -264,26 +386,37 @@ class Room:
             "room": [room.bx, room.by] if room else None,
             "doors": doors, "locked": p.locked, "eliminated": p.eliminated,
             "escaped": p.escaped, "points": p.points, "role": p.role,
+            "exit_found": p.exit_found,
+            "exit_code": self.arena.exit_room().code if p.exit_found else None,
         }
 
     def snapshot(self, for_player: Player | None = None) -> dict:
         remaining = None
         if self.status == "running" and self.next_round_at is not None:
             remaining = max(0.0, self.next_round_at - time.time())
+        match_remaining = None
+        if self.status == "running" and self.match_deadline is not None:
+            match_remaining = max(0.0, self.match_deadline - time.time())
         role = for_player.role if for_player else "unassigned"
         snap = {
             "room": self.id, "status": self.status, "round": self.round,
             "max_rounds": self.max_rounds,
             "stage": self.stage, "stage_name": stage_config(self.stage)["name"],
             "max_stage": MAX_STAGE,
-            "arena": self.arena_public(), "players": self.players_public(),
+            "arena": self.arena_public(), "wristband": self.wristband_public(),
+            "players": self.players_public(),
             "you": self.you_public(for_player) if for_player else None,
             "next_round_in": remaining, "round_seconds": self.round_seconds,
+            "match_time_left": match_remaining, "match_seconds": self.match_seconds,
             "min_players": self.min_players, "rule_count": len(self.engines),
-            "nexus": self.nexus.team_report(), "pa": self.pa,
+            "sanction_total": self.sanction_total, "sanction_found": self.sanction_found,
+            "nexus": self._nexus_report(), "pa": self.pa,
             "dice": self.dice, "futures": filter_visions(self.visions, role),
-            "puzzle": self.puzzle_public(role) if (self.puzzle and for_player) else None,
-            "exit_unsealed": self.arena.exit_unsealed,
+            "dice_relief_rounds": self.dice_relief_rounds,
+            "puzzle": {
+                "public": self.puzzle.public() if self.puzzle else {},
+                "you": self.puzzle.role_view(role) if self.puzzle and role in self.puzzle.domains else None,
+            },
         }
         return filter_snapshot(snap, role)
 
@@ -308,17 +441,13 @@ class Room:
 
     # ---- admin observers ----------------------------------------------------
     def admin_arena(self) -> dict:
-        """Unfiltered arena: every sigil, sanction, roll and capacity."""
-        arena = self.arena_public()
+        """Unfiltered arena: every sigil, sanction and exit."""
+        arena = self.arena.to_public(include_exit=True)
         for pub, room in zip(arena["rooms"], self.arena.rooms):
             pub["sigil"] = room.sigil
             pub["sanction"] = room.sanction
             pub["revealed"] = True
             pub["future"] = room.future
-            for d in DIRECTIONS:
-                door = room.doors[d]
-                pub["doors"][d]["capacity"] = door.capacity
-                pub["doors"][d]["roll"] = door.last_roll
         return arena
 
     def timeline_public(self, limit: int = 160) -> list[dict]:
@@ -342,6 +471,9 @@ class Room:
         remaining = None
         if self.status == "running" and self.next_round_at is not None:
             remaining = max(0.0, self.next_round_at - time.time())
+        match_remaining = None
+        if self.status == "running" and self.match_deadline is not None:
+            match_remaining = max(0.0, self.match_deadline - time.time())
         return {
             "type": "admin_state",
             "room": self.id,
@@ -355,15 +487,22 @@ class Room:
             "players": self.players_public(),
             "dice": self.dice,
             "visions": self.visions,
-            "exit_unsealed": self.arena.exit_unsealed,
             "next_round_in": remaining,
             "round_seconds": self.round_seconds,
+            "match_time_left": match_remaining,
+            "match_seconds": self.match_seconds,
             "min_players": self.min_players,
             "rule_count": len(self.engines),
-            "nexus": self.nexus.team_report(),
+            "sanction_total": self.sanction_total,
+            "sanction_found": self.sanction_found,
+            "nexus": self._nexus_report(),
             "pa": self.pa,
+            "puzzle": {
+                "public": self.puzzle.public() if self.puzzle else {},
+                "solution": dict(self.puzzle.solution) if self.puzzle else {},
+            },
+            "dice_relief_rounds": self.dice_relief_rounds,
             "last_shift": self.last_shift,
-            "puzzle": self.puzzle if self.puzzle else None,
             "timeline": self.timeline_public(),
             "seed": self.seed,
             "started_at": self.started_at,
@@ -403,17 +542,19 @@ class Room:
                    uid: str | None = None, verified: bool = False,
                    avatar_url: str | None = None,
                    character_id: str | None = None) -> Player | None:
+        avatar_url, _ = normalize_avatar(avatar_url, character_id, uid or player_id or name)
         if player_id and player_id in self.players:
             p = self.players[player_id]
             if (p.uid or None) == (uid or None):
                 p.ws = ws
                 p.connected = True
                 p.verified = verified
-                p.avatar_url = avatar_url or p.avatar_url
-                p.character_id = character_id or p.character_id
+                p.avatar_url = avatar_url
+                p.character_id = None
                 if self.arena.room_by_id(p.room_id) is None:
                     p.room_id = self.arena.start_room().rid
                 self.log(p.id, "reconnect")
+                self._audit_room()
                 await self.send(p, {"type": "welcome", "you": p.id, "state": self.snapshot(p)})
                 await self.broadcast_state()
                 return p
@@ -433,9 +574,10 @@ class Room:
         player = Player(pid, clean_name(name) or f"Player {slot + 1}", slot,
                         COLORS[slot], role, self.arena.start_room().rid,
                         uid=uid, verified=verified, avatar_url=avatar_url,
-                        character_id=character_id, ws=ws)
+                        character_id=None, ws=ws)
         self.players[pid] = player
         self.log(pid, "join", {"role": player.role, "name": player.name})
+        self._audit_room()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
         await self.send(player, {"type": "welcome", "you": pid, "state": self.snapshot(player)})
@@ -449,6 +591,7 @@ class Room:
         player.ws = None
         player.disconnected_at = time.time()
         self.log(player.id, "disconnect")
+        self._audit_room()
         await self.broadcast_state()
 
     def purge_disconnected(self) -> None:
@@ -456,6 +599,8 @@ class Room:
                 if not p.connected and time.time() - getattr(p, "disconnected_at", time.time()) > 120]
         for pid in dead:
             self.players.pop(pid, None)
+        if dead:
+            self._audit_room()
 
     # ---- input --------------------------------------------------------------
     async def handle(self, player: Player, msg: dict) -> None:
@@ -481,12 +626,11 @@ class Room:
             await self.unlock(player, msg.get("target"))
         elif kind == "predict":
             await self.predict(player, msg)
-        elif kind == "puzzle_answer":
-            await self.puzzle_answer(player, msg.get("choice"))
-        elif kind == "clue_share":
-            await self.clue_share(player, msg.get("role"), msg.get("text"))
+        elif kind in ("puzzle_submit", "solve_puzzle"):
+            await self.submit_puzzle(player, msg.get("assignment"))
         elif kind == "ready":
             player.ready = bool(msg.get("value"))
+            self._audit_room()
             await self.broadcast_state()
             await self.maybe_start()
         elif kind == "chat":
@@ -495,6 +639,68 @@ class Room:
             await self.send(player, {"type": "pong"})
 
     # ---- movement / doors ---------------------------------------------------
+    def _visible_exit_code(self, player: Player) -> str | None:
+        room = self.arena.room_by_id(player.room_id)
+        if room is None:
+            return None
+        if self.arena.is_exit(room):
+            return room.code
+        for direction in DIRECTIONS:
+            if self._temporary_for(room, direction) is None:
+                continue
+            target = self.arena.door_target(room, direction)
+            if target is not None and self.arena.is_exit(target):
+                return target.code
+        return None
+
+    async def _refresh_exit_visibility(self, player: Player) -> None:
+        if player.exit_found or player.eliminated or player.escaped:
+            return
+        code = self._visible_exit_code(player)
+        if code is None:
+            return
+        player.exit_found = True
+        self.log(player.id, "exit_found", {"room": code, "visible": True})
+        await self.send(player, {
+            "type": "exit_found", "room_code": code,
+            "message": f"EXIT SIGHTED — ROOM {code}. TELL YOUR TEAM.",
+        })
+
+    async def _lock_player(self, player: Player, room: Room, door: str, message: str) -> None:
+        player.locked = True
+        self.log(player.id, "lockdown", {"door": door, "room": room.code, "message": message})
+        await self.broadcast({
+            "type": "lockdown", "player": player.id, "room_code": room.code,
+            "door": door, "message": message,
+        })
+        await self.send(player, {
+            "type": "door_result", "accepted": False, "locked": True,
+            "door": door, "color": room.doors[door].color,
+            "room_code": room.code, "message": message,
+        })
+        await self.broadcast_state()
+
+    async def _strike_sealed_door(self, player: Player, room: Room, door: str) -> None:
+        player.sealed_strikes += 1
+        player.points -= 1
+        self.log(player.id, "bump", {"door": door, "room": room.code})
+        if player.sealed_strikes >= 2:
+            await self._lock_player(
+                player, room, door,
+                "Two sealed doors in one round. You are locked in.",
+            )
+            if player.points <= 0:
+                await self._eliminate(player, "Points drained by a sealed door")
+            return
+        await self.send(player, {
+            "type": "door_result", "accepted": False, "door": door,
+            "room_code": room.code, "message": "That door is sealed.",
+        })
+        if player.points <= 0:
+            await self._eliminate(player, "Points drained by a sealed door")
+            return
+        await self.broadcast_state()
+
     async def open_door(self, player: Player, door=None, color=None) -> None:
         if self.status != "running" or player.escaped or player.eliminated:
             return
@@ -517,11 +723,8 @@ class Room:
         door = str(door or "").upper()
         if door not in DIRECTIONS:
             return
-        if not self.arena.door_open(room, door):
-            await self.send(player, {
-                "type": "door_result", "accepted": False, "door": door,
-                "room_code": room.code, "message": "That door is sealed.",
-            })
+        if not self.arena.door_open(room, door) or room.doors[door].rolled_sealed:
+            await self._strike_sealed_door(player, room, door)
             return
         target = self.arena.door_target(room, door)
         if target is None:
@@ -542,24 +745,6 @@ class Room:
                 "message": "That doorway is already open.",
             })
             return
-        accepted, remaining = self.arena.consume(room, door)
-        if not accepted:
-            player.locked = True
-            self.log(player.id, "lockdown", {"door": door, "room": room.code})
-            await self.broadcast({
-                "type": "lockdown", "player": player.id, "room_code": room.code,
-                "door": door,
-                "message": "LOCKDOWN. Two teammates must scan the wristband.",
-            })
-            await self.send(player, {
-                "type": "door_result", "accepted": False, "locked": True,
-                "door": door, "color": room.doors[door].color, "remaining": 0,
-                "room_code": room.code,
-                "message": "The door is sealed. You are locked in.",
-            })
-            await self.broadcast_state()
-            return
-
         player.last_move = now
         player.points -= DOOR_COST
         expires_at = time.time() + DOOR_OPEN_SECONDS
@@ -571,13 +756,23 @@ class Room:
         self.log(player.id, "door_open", {
             "room": room.code, "target": target.code, "door": door,
         })
-        await self.broadcast({
+        public = {
             "type": "door_opened", "accepted": True, "player": player.id,
-            "door": door, "color": room.doors[door].color, "remaining": remaining,
-            "room_code": room.code, "target_code": target.code,
+            "door": door, "color": room.doors[door].color,
             "cost": DOOR_COST, "open_until": expires_at,
             "message": f"Door open for {int(DOOR_OPEN_SECONDS)}s. Walk through.",
-        })
+        }
+        private = {**public, "room_code": room.code, "target_code": target.code}
+        for other in list(self.players.values()):
+            if not other.connected:
+                continue
+            if other.room_id in (room.rid, target.rid):
+                await self.send(other, private)
+            else:
+                await self.send(other, public)
+        for other in list(self.players.values()):
+            if other.room_id in (room.rid, target.rid):
+                await self._refresh_exit_visibility(other)
         if player.points <= 0:
             await self._eliminate(player, "Points spent to open a door")
             return
@@ -603,11 +798,8 @@ class Room:
         door = str(door or "").upper()
         if door not in DIRECTIONS:
             return
-        if not self.arena.door_open(room, door):
-            await self.send(player, {
-                "type": "door_result", "accepted": False, "door": door,
-                "room_code": room.code, "message": "That door is sealed.",
-            })
+        if not self.arena.door_open(room, door) or room.doors[door].rolled_sealed:
+            await self._strike_sealed_door(player, room, door)
             return
         target = self.arena.door_target(room, door)
         if target is None:
@@ -641,9 +833,11 @@ class Room:
         player.last_move = time.monotonic()
         self.log(player.id, "cross", {"room": target.code, "from": room.code, "door": door})
 
+        await self._refresh_exit_visibility(player)
+
         await self.broadcast({
             "type": "room_entered", "player": player.id, "door": door,
-            "from": room.code, "to": target.code, "cost": 0,
+            "cost": 0,
         })
 
         if fate.reveal(self.arena, target) and target.sanction:
@@ -654,6 +848,7 @@ class Room:
                 "penalty": target.sanction, "points": player.points,
             })
             self.pa = "A SANCTION ROOM DRAINS THE TEAM."
+            self._recompute_sanctions()
 
         if player.points <= 0:
             await self._eliminate(player, "Points drained to zero")
@@ -749,14 +944,33 @@ class Room:
         exit_room = self.arena.exit_room()
         in_exit = [p for p in alive if p.room_id == exit_room.rid]
         if len(in_exit) == len(alive):
-            if self.arena.exit_unsealed:
-                for p in alive:
-                    p.escaped = True
-                await self.finish(won=True)
-            else:
-                self.pa = "THE FINAL DOOR IS SEALED. SOLVE THE CIPHER."
+            self.pa = "THE EXIT IS OPEN. THE TEAM ESCAPED."
+            for p in alive:
+                p.escaped = True
+            await self.finish(won=True)
 
-    # ---- prediction / puzzle ------------------------------------------------
+    async def _expire_match(self) -> None:
+        if self.status != "running":
+            return
+        self.match_deadline = None
+        self.next_round_at = None
+        self.pa = "TIME EXPIRED. THE TEAM WAS ELIMINATED."
+        living = [p for p in self.players.values() if not p.eliminated]
+        for p in living:
+            p.eliminated = True
+            p.locked = False
+            p.points = max(0, p.points)
+            self.log(p.id, "eliminated", {"reason": "match timer expired"})
+        await self.broadcast({"type": "time_up", "message": self.pa})
+        for p in living:
+            await self.broadcast({
+                "type": "elimination", "player": p.id,
+                "reason": "The match timer expired.",
+            })
+        await self.broadcast(self.players_message())
+        await self.finish(won=False)
+
+    # ---- prediction ----------------------------------------------------------
     async def predict(self, player: Player, msg: dict) -> None:
         if self.status != "running" or player.eliminated:
             return
@@ -784,7 +998,8 @@ class Room:
             player.points -= 1
             self.next_round_at = max(time.time() + 2,
                                      (self.next_round_at or time.time()) - 2.0)
-        self.log(player.id, "predict", {"guess": guess})
+        time_left = max(0.0, (self.next_round_at or time.time()) - time.time())
+        self.log(player.id, "predict", {"guess": guess, "time_left": round(time_left, 2)})
         self.log(player.id, "predict_ok" if ok else "predict_bad", {"score": round(score, 2)})
         self.pa = ("CORRECT CALL. THE NEXT SHIFT IS DELAYED." if ok
                    else "THAT VISION MISSED. THE NEXT SHIFT COMES SOONER.")
@@ -797,41 +1012,10 @@ class Room:
             return
         await self.broadcast_state()
 
-    async def puzzle_answer(self, player: Player, choice) -> None:
-        if self.puzzle is None or type(choice) is not int:
-            return
-        ok = choice == self.puzzle["solution"]
-        player.puzzle_inputs["answer"] = choice
-        player.puzzle_inputs["correct"] = ok
-        self.log(player.id, "puzzle_ok" if ok else "puzzle_step", {"choice": choice})
-        if ok:
-            self.arena.exit_unsealed = True
-            self.puzzle = None
-            self.pa = "FINAL DOOR UNSEALED. REACH A5."
-            for p in self.players.values():
-                if p.connected and not p.eliminated:
-                    p.points += 2
-                    p.puzzle_inputs.clear()
-            await self.broadcast({"type": "exit_unsealed", "message": self.pa})
-            await self._check_endings()
-        await self.send(player, {
-            "type": "puzzle_result", "correct": ok, "solved": ok,
-            "message": "Accepted. The final door is open." if ok
-            else "The cipher rejects that code.",
-        })
-        await self.broadcast_state()
-
-    async def clue_share(self, player: Player, role, text) -> None:
-        text = re.sub(r"[^\w \-.,!?']", "", str(text or ""))[:160]
-        self.log(player.id, "share", {"text": text})
-        await self.broadcast({"type": "team_note", "from": player.name, "role": role,
-                              "text": text}, exclude=player.id)
-        await self.send(player, {"type": "team_note_ack"})
-        await self.broadcast_admin()
-
     async def team_chat(self, player: Player, text) -> None:
         text = re.sub(r"[^\w \-.,!?']", "", str(text or ""))[:200]
         if text:
+            self.log(player.id, "share", {"length": len(text)})
             await self.broadcast({"type": "chat", "from": player.name, "color": player.color,
                                   "text": text})
             await self.broadcast_admin()
@@ -841,19 +1025,20 @@ class Room:
         if (self.status == "lobby" and len(connected) >= self.min_players
                 and all(p.ready for p in connected)):
             self.status = "running"
+            self._audit_room()
             self.started_at = time.time()
+            self.match_deadline = self.started_at + self.match_seconds
             self.round = 0
             self.dice = fate.roll_round(self.arena, self.rng)
             self.visions = fate.build_visions(self.arena, self.rng, 0)
-            self.next_round_at = time.time() + self.round_seconds
-            self.pa = "THE LAST ROOM IS OPEN. FIND THE FINAL DOOR."
-            if self.puzzle is None:
-                self.puzzle = self._make_puzzle()
+            self.shift_seconds = self._roll_shift_seconds()
+            self.next_round_at = time.time() + self.shift_seconds
+            self.pa = "THE LAST ROOM IS OPEN. FIND THE HIDDEN EXIT."
             await self.broadcast_state()
 
     # ---- rounds -------------------------------------------------------------
     def step_round(self) -> dict:
-        self.prev_arena = self.arena.to_public()
+        self.prev_arena = self.arena_public()
         self.open_doors.clear()
         moved: list[dict] = []
         ops: list[dict] = []
@@ -863,8 +1048,17 @@ class Room:
             ops.extend(res["ops"])
         repairs = self.arena.ensure_connected()
         self.round += 1
+        self._audit_room()
+        for player in self.players.values():
+            player.sealed_strikes = 0
+            if not player.eliminated and not player.escaped:
+                self.log(player.id, "round", {"round": self.round})
 
-        self.dice = fate.roll_round(self.arena, self.rng)
+        relief = self.dice_relief_rounds
+        self.dice = fate.roll_round(self.arena, self.rng, relief=relief)
+        if relief:
+            self.dice_relief_rounds = max(0, relief - 1)
+            self.log(None, "dice_relief", {"rounds": self.dice_relief_rounds})
         self.visions = fate.build_visions(self.arena, self.rng, self.round)
         self.last_shift = {
             "pattern_type": self.engines[0].rule.pattern_type if self.engines else None,
@@ -875,16 +1069,19 @@ class Room:
         self.nexus.extract(len(self.arena.rooms))
         self.nexus.cluster()
         solvable = self.arena.solvable() and reachable_after_changes(
-            self.arena, self.engines, START_ROOM, EXIT_ROOM, horizon=3)
-        action = self.nexus.decide(self.round, solvable, self.round_seconds)
+            self.arena, self.engines, START_ROOM, None, horizon=3)
+        action = self.nexus.decide(self.round, solvable, self.shift_seconds)
         self._apply_director(action)
+        self._recompute_sanctions()
         self.log(None, "round", {
             "round": self.round,
             "pattern_types": [e.rule.pattern_type for e in self.engines],
             "action": action["action"], "repairs": len(repairs),
+            "duration": self.shift_seconds,
         })
 
-        self.next_round_at = time.time() + self.round_seconds
+        self.shift_seconds = self._roll_shift_seconds()
+        self.next_round_at = time.time() + self.shift_seconds
         if repairs:
             self.pa = "THE GRID SHIFTED. THE DEALER REPAIRED A BREACH."
         elif moved:
@@ -898,13 +1095,24 @@ class Room:
             "type": "round", "round": self.round,
             "pattern_type": self.last_shift["pattern_type"], "active": True,
             "moved": moved, "ops": ops, "arena": self.arena_public(),
-            "players": self.players_public(), "next_round_in": self.round_seconds,
-            "dice": self.dice, "visions": self.visions, "pa": self.pa,
-            "exit_unsealed": self.arena.exit_unsealed,
+            "players": self.players_public(), "next_round_in": self.shift_seconds,
+            "dice": self.dice, "visions": self.visions,             "pa": self.pa,
         }
 
     def _apply_director(self, action: dict) -> None:
+        self.pending_clues = []
+        self.pending_nudges = []
         kind = action.get("action")
+        if kind in ("raise_complexity", "lower_complexity"):
+            delta = 1 if kind == "raise_complexity" else -1
+            target = max(1, min(MAX_COMPLEXITY, self._puzzle_complexity() + delta))
+            self.complexity_override = target
+            if hasattr(self.nexus, "complexity_level"):
+                self.nexus.complexity_level = target
+            self._load_stage()
+            self.puzzle = self._new_puzzle()
+            self.log(None, "complexity", {"level": target, "rules": len(self.engines)})
+            self._audit_room()
         if kind == "raise_complexity":
             candidates = [
                 (room, d) for room in self.arena.rooms for d in DIRECTIONS
@@ -913,59 +1121,95 @@ class Room:
             if candidates:
                 room, d = self.rng.choice(candidates)
                 room.doors[d].sealed = True
+                self._director_seals.append((room.rid, d))
                 self.arena.ensure_connected()
             self.pa = "THE DEALER SEALS A DOOR."
+        elif kind == "lower_complexity":
+            if self._director_seals:
+                rid, d = self._director_seals.pop()
+                room = self.arena.room_by_id(rid)
+                if room is not None:
+                    room.doors[d].sealed = False
+                    self.arena.ensure_connected()
+            self.pa = "THE DEALER OPENS A DOOR."
         elif kind == "add_hazard":
             candidates = [r for r in self.arena.rooms
-                          if not r.is_exit and r.sanction == 0]
+                          if not self.arena.is_exit(r) and r.sanction == 0]
             if candidates:
                 room = self.rng.choice(candidates)
                 room.sanction = self.rng.choice([1, 2])
                 room.revealed = False
+                self._recompute_sanctions()
             self.pa = "THE DEALER SEEDS A SANCTION ROOM."
         elif kind == "lower_dice":
-            for room in self.arena.rooms:
-                for d in DIRECTIONS:
-                    if self.arena.door_open(room, d):
-                        room.doors[d].capacity = min(4, room.doors[d].capacity + 1)
-            self.pa = "THE DEALER OPENS THE DOORS."
-        elif kind in ("give_clue", "shift_information"):
+            self.dice_relief_rounds = DICE_RELIEF_ROUNDS
+            self.log(None, "dice_relief", {"rounds": self.dice_relief_rounds})
+            self.pa = "THE DEALER EASES THE DICE."
+        elif kind == "give_clue":
+            now = time.time()
             hidden = [r for r in self.arena.rooms if r.sanction and not r.revealed]
-            if hidden and kind == "give_clue":
-                self.rng.choice(hidden).revealed = True
+            for player in self.alive():
+                if player.locked or player.escaped or not hidden:
+                    continue
+                room = self.arena.room_by_id(player.room_id)
+                if room is None:
+                    continue
+                distances = []
+                for target in hidden:
+                    distance = self.arena.door_distance(room, target)
+                    if distance is not None:
+                        distances.append(distance)
+                if not distances:
+                    continue
+                nearest = min(distances)
+                tier = 1 if nearest == 2 else 2 if nearest == 1 else 0
+                if not tier:
+                    continue
+                clue = self.nexus.make_clue(player.id, tier, now, self.stage)
+                if clue:
+                    self.pending_clues.append((player.id, clue))
             if self.round_override is None:
                 self.round_seconds = min(26.0, self.round_seconds + 0.5)
             self.pa = "THE DEALER OFFERS A VISION."
+        elif kind == "shift_information":
+            available = [p.role for p in self.alive()]
+            nudge = Nexus.role_nudge(self.round, available)
+            target = next((p for p in self.alive() if p.role == nudge["role"]), None)
+            if target is not None:
+                puzzle_clue = (self.puzzle.hint(nudge["role"], level=1)
+                               if self.puzzle and nudge["role"] in self.puzzle.domains else "")
+                self.pending_nudges.append((target.id, {
+                    "type": "dealer_nudge", "role": nudge["role"],
+                    "text": nudge["text"], "puzzle": puzzle_clue,
+                    "round": self.round,
+                }))
+                self.info_nudges[target.id] = self.info_nudges.get(target.id, 0) + 1
+                self.log(None, "info_nudge", {"role": nudge["role"], "round": self.round})
+            if self.round_override is None:
+                self.round_seconds = min(26.0, self.round_seconds + 0.5)
+            self.pa = "THE DEALER WHISPERS TO ONE ROLE."
         else:
             self.pa = "THE DEALER WATCHES."
+
 
     def _maybe_advance_stage(self) -> None:
         target = min(MAX_STAGE, 1 + self.round // 4)
         if target > self.stage:
             self.stage = target
             self._load_stage()
-
-    def _make_puzzle(self) -> dict:
-        p = self.puzzle_gen.generate_many(1, seeds=self.seed)[0]
-        return {
-            "question": p.question, "options": p.options,
-            "solution": p.solution, "clues_by_role": p.clues,
-        }
-
-    def maybe_puzzle(self) -> None:
-        if self.puzzle is None and self.status == "running" and not self.arena.exit_unsealed:
-            self.puzzle = self._make_puzzle()
+            self.puzzle = self._new_puzzle()
+            self._audit_room()
 
     async def broadcast_round(self) -> None:
         payload = self.step_round()
         for p in list(self.players.values()):
             if not p.connected:
                 continue
+            await self._refresh_exit_visibility(p)
             room = self.arena.room_by_id(p.room_id)
             current = room.code if room else None
             view = filter_round(payload, p.role, self.prev_arena)
             view["state"] = self.snapshot(p)
-            view["puzzle"] = self.puzzle_public(p.role) if self.puzzle else None
             view["arena"] = filter_arena(payload["arena"], p.role, current)
             view["players"] = payload["players"]
             view["next_round_in"] = payload["next_round_in"]
@@ -975,24 +1219,27 @@ class Room:
             else:
                 view["dice"] = {current: payload["dice"].get(current, {})} if current else {}
             await self.send(p, view)
+        for player_id, clue in self.pending_clues:
+            p = self.players.get(player_id)
+            if p and p.connected and not p.eliminated:
+                await self.send(p, {"type": "dealer_clue", **clue})
+        self.pending_clues = []
+        for player_id, nudge in self.pending_nudges:
+            p = self.players.get(player_id)
+            if p and p.connected and not p.eliminated:
+                await self.send(p, nudge)
+        self.pending_nudges = []
         await self.broadcast_admin(force=True)
-
-    def puzzle_public(self, role: str) -> dict | None:
-        if not self.puzzle:
-            return None
-        return {
-            "question": self.puzzle["question"],
-            "options": self.puzzle["options"],
-            "clues": self.puzzle["clues_by_role"].get(role, []),
-        }
 
     # ---- endings ------------------------------------------------------------
     async def finish(self, won: bool) -> None:
         self.status = "won" if won else "over"
+        self._audit_room()
         self.next_round_at = None
         if won:
             for p in self.alive():
                 p.escaped = True
+                self.log(p.id, "escaped", {"round": self.round})
         duration = time.time() - self.started_at
         self.nexus.extract(len(self.arena.rooms))
         self.nexus.cluster()
@@ -1003,6 +1250,7 @@ class Room:
             "cycles": self.round, "rounds": self.round,
             "duration": round(duration, 1),
             "team_skill": report["team_skill"], "difficulty": report["difficulty"],
+            "puzzle": self.knowledge.puzzle_metrics(),
             "eliminated": sum(1 for p in self.players.values() if p.eliminated),
             "players": [
                 {
@@ -1034,6 +1282,11 @@ class Room:
                     return
                 await self.expire_open_doors()
                 await self.broadcast_admin()
+                if (self.status == "running" and self.match_deadline is not None
+                        and time.time() >= self.match_deadline):
+                    await self._check_endings()
+                    if self.status == "running":
+                        await self._expire_match()
                 if (self.status == "running" and self.next_round_at is not None
                         and time.time() >= self.next_round_at):
                     await self.broadcast_round()
