@@ -59,11 +59,12 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `delay_status` | `state`, `cooldown_s`, `attempts_left` | private status to the Timekeeper and Decoder |
 | `delay_result` | `ok`, `message`, `delta_s` (Timekeeper only) | result of a delay answer or timeout; no countdown or delta for other roles |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
-| `elimination` | `player`, `reason` | points reached zero |
-| `king_spawn` | `king` | non-player KING OF SPADES appeared for a 180s window |
-| `king_teleport` | `king` | KING OF SPADES moved to the next of five rooms |
-| `king_despawn` | `id`, `appearance`, `king` | KING OF SPADES window ended or match finished |
-| `king_kill` | `id`, `appearance`, `victim`, `victim_name`, `room_code`, `room`, `reason` | KING OF SPADES eliminated a player |
+| `elimination` | `player`, `reason` | points reached zero or KING OF SPADES eliminated the player |
+| `king_watch` | `id`, `appearance`, `total`, `in_seconds`, `starts_at`, `room_code`, `room` | private 30-second Watcher alert with only that session's first room |
+| `king_spawn` | `king` | non-player KING OF SPADES appeared for a 180s window; not sent to the Watcher |
+| `king_teleport` | `king` | KING OF SPADES moved to the next of five rooms; hidden from the Watcher |
+| `king_despawn` | `id`, `appearance`, `king` | KING OF SPADES window ended or match finished; hidden from the Watcher |
+| `king_kill` | `id`, `appearance`, `victim`, `victim_name`, `room_code`, `room`, `reason` | KING OF SPADES eliminated a player; hidden from the Watcher |
 | `prediction_result` | `correct`, `score`, `points`, `message` | after a prediction |
 | `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
@@ -88,28 +89,31 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     "points": 15, "role": "decoder"
   },
   "next_round_in": null, "round_seconds": 22,
-  "match_time_left": 784.2, "match_seconds": 900,
+  "match_time_left": 1654.2, "match_seconds": 1800,
   "min_players": 1, "rule_count": 1,
   "sanction_total": 7, "sanction_found": 0,
   "nexus": { ... }, "pa": "ROUND 3. THE GRID MOVES.",
   "king": null,
+  "king_watch": null,
   "futures": { ... },
   "delay_status": { "state": "idle", "cooldown_s": 0, "attempts_left": 2 },
   "dice_relief_rounds": 0,
   "puzzle": {
     "public": { "difficulty": "easy", "complexity": 1, "attempts": 0, "solved": false },
-    "you": { "role": "oracle", "domain": ["spade", "club"], "clues": ["..."] }
+    "you": { "role": "watcher", "domain": ["spade", "club"], "clues": ["..."] }
   },
-  "role": "oracle", "role_label": "Oracle", "role_hint": "..."
+  "role": "watcher", "role_label": "Watcher", "role_hint": "..."
 }
 ```
 
 `status` is `lobby`, `running`, `won` or `over`.
-`max_rounds: 0` means the match ends on its 900-second timer rather than a round
+`max_rounds: 0` means the match ends on its 1800-second timer rather than a round
 cap. `state.king` is the currently active KING OF SPADES appearance, or `null`
 between appearances. The KING is not a player role and is never assigned to a
-player; five 180-second appearances begin at 0/180/360/540/720 seconds and each
-visits five rooms before the next appearance.
+player; five 180-second appearances begin at 30/210/390/570/750 seconds and each
+visits five rooms before the next appearance. `state.king_watch` is the current
+private Watcher alert, or `null`; the Watcher snapshot omits `state.king` and
+never receives KING spawn, teleport, despawn or kill events.
 `next_round_in` is populated only for the Timekeeper; every other role receives
 `null`. `delay_status` is sent only to the Timekeeper and Decoder. No player
 snapshot contains dice data.
@@ -137,13 +141,13 @@ includes another role's mark or the full solution.
   "start_room": [2, 2],          // C3
   "rooms": [{
     "id": "r12", "code": "C3", "bx": 2, "by": 2,
-    "sigil": "spade",             // spade | heart | diamond | club (Oracle only)
+    "sigil": "spade",             // spade | heart | diamond | club (never sent to players)
     "doors": {
       "N": { "color": "red", "temporary_open": false, "open_until": null }
     },
     "sanction": null,              // hidden until revealed
     "revealed": false,
-    "future": null,                // Oracle only
+    "future": null,                // never sent to players
     "open": { "N": true, "E": false, "S": true, "W": false }
   }]
 }
@@ -218,8 +222,8 @@ Keyed by room code. Filtered per role:
 
 | role | receives |
 |---|---|
-| `oracle` | door `future` (open/sanction/exit/void) + door `color` |
 | `pathfinder` | only `exit`/`void` futures, otherwise `unknown` |
+| `watcher` | nothing here; KING first-room warnings arrive separately |
 | `timekeeper` | nothing here; the delay key and countdown arrive separately |
 | `decoder` | nothing here; the delay question arrives separately |
 
@@ -231,7 +235,7 @@ The server filters every `round` and `state` per role (see
 | role | sees |
 |---|---|
 | `pathfinder` | which rooms moved (positions only); `pathfinder_reveal` exposes blocked walls and sanction rooms until the next shift |
-| `oracle` | sigils and door colours of moved rooms + the cleanest futures |
+| `watcher` | 30-second warning before each KING session: time remaining and that session's first room only; no active KING state and no teleport rooms |
 | `timekeeper` | the countdown and the delay puzzle key, never the puzzle question |
 | `decoder` | the delay puzzle question, never the key or countdown |
 
@@ -244,8 +248,9 @@ codes are only included as `wristband_sanctions` for an active reveal.
 `you.wristband_revealed` and `you.wristband_cooldown_remaining` expose that
 state; d10 `rolled_sealed` values are still never serialised.
 
-Sigils are stripped from the arena for every role except the Oracle; hidden d10
-seal results are never serialised to any player.
+Sigils are stripped from the arena for every role; hidden d10 seal results are
+never serialised to any player. Active KING position and teleport events are
+stripped from the Watcher, which receives only the private first-room warning.
 No client ever receives another role's hidden data, and the hidden rule itself
 (`PatternEngine.rule`) is never serialised.
 
@@ -257,10 +262,12 @@ No client ever receives another role's hidden data, and the hidden rule itself
 | `DOOR_COST` | 1 |
 | `WAIT_COST` | 1 |
 | `REVIVE_COST` | 1 per helper |
-| `DEFAULT_MATCH_SECONDS` | 900 |
+| `DEFAULT_MATCH_SECONDS` | 1800 |
 | `MAX_ROUNDS` | 0 (no round cap) |
 | `KING_APPEARANCES` | 5 |
 | `KING_APPEARANCE_SECONDS` | 180 |
+| `KING_FIRST_SPAWN_SECONDS` | 30 |
+| `KING_WATCH_LEAD_SECONDS` | 30 |
 | `KING_ROOMS_PER_APPEARANCE` | 5 |
 
 ## HTTP API

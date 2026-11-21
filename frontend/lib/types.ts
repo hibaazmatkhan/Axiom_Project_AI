@@ -1,6 +1,6 @@
 export type DoorColor = "red" | "blue" | "yellow" | "green";
 export type Sigil = "spade" | "heart" | "diamond" | "club";
-export type Role = "pathfinder" | "oracle" | "timekeeper" | "decoder";
+export type Role = "pathfinder" | "watcher" | "timekeeper" | "decoder";
 export type Direction = "N" | "E" | "S" | "W";
 export type PatternType =
   | "rotation" | "reflection" | "translation"
@@ -86,6 +86,16 @@ export type KingEvent = {
   victim?: string;
   victim_name?: string;
   reason?: string;
+};
+
+export type KingWatchView = {
+  id: string;
+  appearance: number;
+  total: number;
+  in_seconds: number;
+  starts_at: number;
+  room_code: string | null;
+  room: [number, number] | null;
 };
 
 export type CrossEvent = {
@@ -221,6 +231,7 @@ export type Snapshot = {
   role_label: string;
   role_hint: string;
   king?: KingView | null;
+  king_watch?: KingWatchView | null;
   puzzle?: PuzzleSnapshot;
   delay_status?: DelayStatusView;
 };

@@ -15,8 +15,8 @@ strips on the walls previewing possible futures.
                        │                Frontend (Next.js)            │
    Browser ─── HTTP ──▶ │  landing · lobby · login · profile · game    │
                        │  Three.js first-person cube room · HUD ·     │
-                        │  wristband map · door animations · futures · │
-                       │  locks/revives · chat                        │
+                         │  wristband map · door animations · alerts · │
+                        │  locks/revives · chat                        │
                        └───────────────┬──────────────────────────────┘
                                        │  WebSocket (intents ↓ / state ↑)
                        ┌───────────────▼──────────────────────────────┐
@@ -101,9 +101,11 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 
  7. **Check endings.** Points at zero eliminate a player. The team wins when
     every living player is in the hidden exit room. The match ends when the
-    900-second timer expires, or when nobody is left; there is no round cap.
-    KING OF SPADES is a non-player hazard with five 180-second appearances,
-    each teleporting through five rooms and eliminating occupants.
+    1800-second timer expires, or when nobody is left; there is no round cap.
+    KING OF SPADES is a non-player hazard with five 180-second appearances
+    beginning at 30/210/390/570/750 seconds, each teleporting through five rooms
+    and eliminating occupants. The Watcher gets a private 30-second alert with
+    only that appearance's first room; teleport rooms stay hidden.
 
 ## Door semantics
 
@@ -146,7 +148,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `backend/app/simulation.py` | Simulated players, seeded experiment runner, search benchmark |
 | `backend/app/experiment_charts.py` | CSV-driven evaluation charts |
 | `backend/app/stages.py` | Seven stage definitions and per-stage rules |
-| `backend/app/roles.py` | Pathfinder/Oracle/Timekeeper/Decoder + per-role filtering |
+| `backend/app/roles.py` | Pathfinder/Watcher/Timekeeper/Decoder + per-role filtering |
 | `backend/app/puzzles.py` | Seeded delay puzzles, solver checks and public/key views |
 | `backend/app/game.py` | Rooms, round state machine, points, locks, revives, delay puzzles, KING OF SPADES spawner, reconnect |
 | `backend/app/auth.py` | Firebase ID token, App Check and admin dependency guards |
@@ -162,7 +164,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `frontend/app/login/page.tsx` | Accounts |
 | `frontend/app/profile/page.tsx` | Profile, avatars, history, leaderboard |
 | `frontend/components/GameCanvas.tsx` | Three.js first-person cube room, animated doors, physics-like walking/crossing, teammates |
-| `frontend/components/GameClient.tsx` | HUD: points, doors, futures, delay puzzle, locks, exit notices, chat |
+| `frontend/components/GameClient.tsx` | HUD: points, doors, Watcher alerts, delay puzzle, locks, exit notices, chat |
 | `frontend/components/WristbandMap.tsx` | 5×5 wristband map with door-colour edges and private sealed-door state |
 | `frontend/lib/avatarRules.ts` | Client-side default symbol PFPs, fallback assignment and upload validation |
 | `frontend/lib/useGameSocket.ts` | WebSocket state machine |
@@ -203,7 +205,7 @@ loaded only from user-supplied assets.
 | possible-futures preview | **Possible Futures** (LED wall strips) |
 | AI game master | **The Dealer** (NEXUS) |
 | final room | **The Last Room** (hidden edge exit) |
-| roles | **Pathfinder / Oracle / Timekeeper / Decoder** |
+| roles | **Pathfinder / Watcher / Timekeeper / Decoder** |
 
 ## Palette
 

@@ -88,24 +88,41 @@ def test_lower_dice_reduces_seals_and_is_time_bounded():
 def test_shift_information_sends_a_private_role_nudge():
     room = Room("NUDGE", seed=29, round_seconds=60)
     room.status = "running"
-    oracle = _player(room, "o", 1, "oracle")
+    watcher = _player(room, "w", 1, "watcher")
     pathfinder = _player(room, "n", 0, "pathfinder")
-    room.players = {oracle.id: oracle, pathfinder.id: pathfinder}
+    room.players = {watcher.id: watcher, pathfinder.id: pathfinder}
     room.nexus.decide = lambda *args, **kwargs: {"action": "shift_information"}
 
     asyncio.run(room.broadcast_round())
-    nudges = [m for m in oracle.ws.sent if m.get("type") == "dealer_nudge"]
+    nudges = [m for m in watcher.ws.sent if m.get("type") == "dealer_nudge"]
     if not nudges:
         nudges = [m for m in pathfinder.ws.sent if m.get("type") == "dealer_nudge"]
     assert len(nudges) == 1
-    receiver = oracle if nudges[0] in oracle.ws.sent else pathfinder
-    other = pathfinder if receiver is oracle else oracle
+    receiver = watcher if nudges[0] in watcher.ws.sent else pathfinder
+    other = pathfinder if receiver is watcher else watcher
     assert not [m for m in other.ws.sent if m.get("type") == "dealer_nudge"]
-    assert receiver.role in ("oracle", "pathfinder")
+    assert receiver.role in ("watcher", "pathfinder")
     assert nudges[0]["text"]
     assert "solution" not in nudges[0] and "sanction" not in nudges[0]["text"]
     assert room.nexus.puzzle_metrics()["info_nudges"] == 1
     assert room.info_nudges[receiver.id] == 1
+
+
+def test_shift_information_handles_the_full_role_roster():
+    room = Room("NUDGEALL", seed=30, round_seconds=60)
+    room.status = "running"
+    room.round = 3
+    for slot, role in enumerate(ROLES):
+        player = _player(room, f"p{slot}", slot, role)
+        room.players[player.id] = player
+
+    room._apply_director({"action": "shift_information"})
+
+    assert len(room.pending_nudges) == 1
+    target_id, payload = room.pending_nudges[0]
+    assert payload["role"] == "decoder"
+    assert room.players[target_id].role == "decoder"
+    assert payload["text"] == "Decoder: solve the puzzle with the key the Timekeeper passes you."
 
 
 def test_complexity_actuators_regenerate_puzzle_and_reverse_a_seal():

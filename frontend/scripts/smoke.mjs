@@ -1,16 +1,25 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const port = Number(process.env.SMOKE_PORT || 3210);
 const base = `http://127.0.0.1:${port}`;
-const server = spawn("npm", ["run", "start", "--", "-p", String(port)], {
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmArgs = ["run", "start", "--", "-p", String(port)];
+const options = {
   cwd: process.cwd(),
   env: { ...process.env, PORT: String(port) },
   stdio: ["ignore", "pipe", "pipe"],
-  detached: true,
-});
+  detached: process.platform !== "win32",
+};
+const server = process.env.npm_execpath
+  ? spawn(process.execPath, [process.env.npm_execpath, ...npmArgs], options)
+  : spawn(npmCommand, npmArgs, {
+      ...options,
+      shell: process.platform === "win32",
+    });
 let output = "";
 server.stdout.on("data", (chunk) => { output += chunk.toString(); });
 server.stderr.on("data", (chunk) => { output += chunk.toString(); });
+server.on("error", (error) => { output += `${error.message}\n`; });
 
 const pages = [
   ["/", "Four players"],
@@ -45,6 +54,12 @@ try {
   }
 } finally {
   try {
-    process.kill(-server.pid, "SIGTERM");
+    if (server.pid && server.exitCode === null && server.signalCode === null) {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+      } else {
+        process.kill(-server.pid, "SIGTERM");
+      }
+    }
   } catch {}
 }

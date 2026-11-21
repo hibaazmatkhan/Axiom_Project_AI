@@ -10,8 +10,8 @@ from app.arena import DIRECTIONS, OPPOSITE, STEP
 from app import puzzles
 from app.game import (
     DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_SECONDS,
-    KING_ROOMS_PER_APPEARANCE, PATHFINDER_REVEAL_COOLDOWN,
-    Player, Room, TemporaryDoor,
+    KING_FIRST_SPAWN_SECONDS, KING_ROOMS_PER_APPEARANCE, KING_WATCH_LEAD_SECONDS,
+    PATHFINDER_REVEAL_COOLDOWN, Player, Room, TemporaryDoor,
 )
 from app.main import app, rooms
 from app.nexus import CLUE_TIERS
@@ -60,11 +60,12 @@ def test_next_shift_countdown_varies_by_shift():
 
 def test_snapshot_is_filtered_by_role():
     room = Room("T", seed=7)
-    p = _player(room, role="oracle")
+    p = _player(room, role="watcher")
     snap = room.snapshot(p)
-    assert snap["role"] == "oracle"
+    assert snap["role"] == "watcher"
     assert "rule_count" in snap and snap["dice"] == {}
     assert snap["you"]["room_id"] == p.room_id
+    assert "king" not in snap and "king_watch" in snap
 
 
 def test_snapshot_hides_exit_until_a_player_discovers_it():
@@ -127,8 +128,8 @@ def test_pathfinder_reveal_is_neutral_for_others_and_expires_on_shift():
         room = Room("PFScan", seed=7, round_seconds=60)
         room.status = "running"
         pathfinder = _player(room, "pf", 0, "pathfinder")
-        oracle = _player(room, "or", 1, "oracle")
-        room.players = {pathfinder.id: pathfinder, oracle.id: oracle}
+        watcher = _player(room, "wa", 1, "watcher")
+        room.players = {pathfinder.id: pathfinder, watcher.id: watcher}
         hidden = next(r for r in room.arena.rooms if r.sanction and not r.revealed)
         sealed = next(d for d in DIRECTIONS if room.arena.start_room().doors[d].sealed)
 
@@ -137,8 +138,8 @@ def test_pathfinder_reveal_is_neutral_for_others_and_expires_on_shift():
         assert neutral["wristband_sanctions"] == []
         assert neutral["you"]["wristband_revealed"] is False
 
-        await room.reveal_wristband(oracle)
-        assert oracle.wristband_revealed is False
+        await room.reveal_wristband(watcher)
+        assert watcher.wristband_revealed is False
 
         await room.reveal_wristband(pathfinder)
         revealed = room.snapshot(pathfinder)
@@ -147,7 +148,7 @@ def test_pathfinder_reveal_is_neutral_for_others_and_expires_on_shift():
         assert hidden.code in revealed["wristband_sanctions"]
         assert revealed["you"]["wristband_revealed"] is True
 
-        other_view = room.snapshot(oracle)
+        other_view = room.snapshot(watcher)
         assert other_view["wristband_sanctions"] == []
         assert other_view["wristband"][room.arena.start_room().code][sealed] is False
 
@@ -328,11 +329,11 @@ def test_filter_round_hides_data_per_role():
             "N": {"color": "red"}}}},
     }
     nav = filter_round(payload, "pathfinder", None)
-    oracle = filter_round(payload, "oracle", None)
+    watcher = filter_round(payload, "watcher", None)
     keeper = filter_round(payload, "timekeeper", None)
     decoder = filter_round(payload, "decoder", None)
     assert "sigil" not in nav["moved"][0]
-    assert oracle["moved"][0]["sigil"] == "spade"
+    assert watcher["moved"] == [] and "sigil" not in str(watcher["moved"])
     assert keeper["moved"] == [] and keeper["timing"]["next_in"] == 5
     assert "dice" not in keeper
     assert decoder["moved"] == [] and "timing" not in decoder
@@ -675,7 +676,7 @@ def test_locked_player_needs_two_helpers():
     room.status = "running"
     target = _player(room, "t", 0, "pathfinder")
     target.locked = True
-    helper = _player(room, "h", 1, "oracle")
+    helper = _player(room, "h", 1, "watcher")
     room.players = {"t": target, "h": helper}
     asyncio.run(room.unlock(helper, "t"))
     assert target.locked, "one helper must not free a locked player"
@@ -922,7 +923,7 @@ def test_delay_successes_stack_at_half_rate_and_cap_total():
 
 def test_match_defaults_to_five_king_appearances_and_no_round_cap():
     room = Room("KINGCFG", seed=3)
-    assert room.match_seconds == 900.0
+    assert room.match_seconds == 1800.0
     assert room.max_rounds == 0
     p = _player(room)
     p.ready = True
@@ -931,20 +932,21 @@ def test_match_defaults_to_five_king_appearances_and_no_round_cap():
     asyncio.run(room.maybe_start())
 
     assert len(room.king_spawn_at) == KING_APPEARANCES
+    assert len(room.king_plans) == KING_APPEARANCES
     assert [
         round(at - room.started_at, 3) for at in room.king_spawn_at
-    ] == [i * KING_APPEARANCE_SECONDS for i in range(KING_APPEARANCES)]
+    ] == [
+        KING_FIRST_SPAWN_SECONDS + i * KING_APPEARANCE_SECONDS
+        for i in range(KING_APPEARANCES)
+    ]
 
 
 def test_king_runs_five_sequential_three_minute_appearances():
     room = Room("KINGSEQ", seed=4)
     room.status = "running"
     room.started_at = time.time()
-    room.match_deadline = room.started_at + 900
-    room.king_spawn_at = [
-        room.started_at + i * KING_APPEARANCE_SECONDS
-        for i in range(KING_APPEARANCES)
-    ]
+    room.match_deadline = room.started_at + 1800
+    room._prepare_king_plan(room.started_at)
 
     async def scenario():
         for appearance in range(1, KING_APPEARANCES + 1):
@@ -965,6 +967,21 @@ def test_king_runs_five_sequential_three_minute_appearances():
     asyncio.run(scenario())
 
 
+def test_king_window_uses_scheduled_spawn_time():
+    room = Room("KINGDRIFT", seed=5)
+    room.status = "running"
+    room.started_at = time.time()
+    room._prepare_king_plan(room.started_at)
+    scheduled = room.king_spawn_at[0]
+
+    asyncio.run(room._update_king(scheduled + 0.4))
+
+    assert room.king is not None
+    assert room.king["started_at"] == scheduled
+    assert room.king["ends_at"] == scheduled + KING_APPEARANCE_SECONDS
+    assert room.king["next_teleport_at"] == scheduled + KING_APPEARANCE_SECONDS / KING_ROOMS_PER_APPEARANCE
+
+
 def test_king_teleports_through_five_rooms_and_kills_occupants():
     room = Room("KINGKILL", seed=17)
     p1 = _player(room, "a", 0)
@@ -980,7 +997,7 @@ def test_king_teleports_through_five_rooms_and_kills_occupants():
         for player in (p1, p2, p3):
             player.room_id = safe
 
-        await room._update_king(room.started_at)
+        await room._update_king(room.king_spawn_at[0])
         assert room.king is not None
         assert len(set(room.king["room_ids"])) == KING_ROOMS_PER_APPEARANCE
         assert not any(p.eliminated for p in (p1, p2, p3))
@@ -998,5 +1015,74 @@ def test_king_teleports_through_five_rooms_and_kills_occupants():
         await room._king_strike()
         assert p2.eliminated
         assert not p3.eliminated
+
+    asyncio.run(scenario())
+
+
+def test_watcher_gets_first_room_alert_without_teleport_intel():
+    room = Room("KINGWATCH", seed=19)
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    watcher = _player(room, "w", 1, "watcher")
+    guard = _player(room, "g", 0, "pathfinder")
+    watcher.ws = FakeWebSocket()
+    guard.ws = FakeWebSocket()
+    for player in (watcher, guard):
+        player.ready = True
+        room.players[player.id] = player
+
+    async def scenario():
+        await room.maybe_start()
+        first_spawn = room.king_spawn_at[0]
+        await room._update_king(first_spawn - KING_WATCH_LEAD_SECONDS)
+
+        alerts = [m for m in watcher.ws.sent if m.get("type") == "king_watch"]
+        assert len(alerts) == 1
+        first_room = room.arena.room_by_id(room.king_plans[0]["room_ids"][0])
+        assert alerts[0]["appearance"] == 1
+        assert alerts[0]["total"] == KING_APPEARANCES
+        assert alerts[0]["in_seconds"] == KING_WATCH_LEAD_SECONDS
+        assert alerts[0]["room_code"] == first_room.code
+        assert alerts[0]["room"] == [first_room.bx, first_room.by]
+        assert not [m for m in guard.ws.sent if m.get("type") == "king_watch"]
+
+        await room._update_king(first_spawn - KING_WATCH_LEAD_SECONDS)
+        assert len([m for m in watcher.ws.sent if m.get("type") == "king_watch"]) == 1
+
+        await room._update_king(first_spawn)
+        assert not [m for m in watcher.ws.sent if m.get("type") == "king_spawn"]
+        assert [m for m in guard.ws.sent if m.get("type") == "king_spawn"]
+
+        await room._update_king(room.king["next_teleport_at"])
+        assert not [m for m in watcher.ws.sent if m.get("type") == "king_teleport"]
+        assert [m for m in guard.ws.sent if m.get("type") == "king_teleport"]
+
+        for index in range(1, KING_APPEARANCES):
+            spawn_at = room.king_spawn_at[index]
+            await room._update_king(spawn_at - KING_WATCH_LEAD_SECONDS)
+            appearance_alerts = [
+                m for m in watcher.ws.sent
+                if m.get("type") == "king_watch" and m.get("appearance") == index + 1
+            ]
+            assert len(appearance_alerts) == 1
+            alert = appearance_alerts[0]
+            expected = room.arena.room_by_id(room.king_plans[index]["room_ids"][0])
+            assert alert["room_code"] == expected.code
+            assert alert["room"] == [expected.bx, expected.by]
+            assert "room_ids" not in alert and "teleport" not in str(alert).lower()
+
+            await room._update_king(spawn_at)
+            assert not [m for m in watcher.ws.sent if m.get("type") == "king_spawn"]
+            assert len([m for m in guard.ws.sent if m.get("type") == "king_spawn"]) == index + 1
+
+        snap = room.snapshot(watcher)
+        assert "king" not in snap
+        assert snap["king_watch"] is None
 
     asyncio.run(scenario())

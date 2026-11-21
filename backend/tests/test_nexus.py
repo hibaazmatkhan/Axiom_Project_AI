@@ -19,6 +19,7 @@ from app.nexus import (
     Nexus,
     PlayerModel,
 )
+from app.roles import ROLES
 
 
 def test_six_attributes_present():
@@ -253,12 +254,13 @@ def test_lower_dice_sets_bounded_relief_without_hidden_state():
 
 
 def test_shift_information_produces_a_role_appropriate_nudge():
-    nudge = Nexus.role_nudge(2, ["oracle", "timekeeper"])
-    assert nudge["role"] in ("oracle", "timekeeper")
-    assert nudge["text"] == ROLE_NUDGES[nudge["role"]]
-    assert "sigil" not in nudge["text"] or nudge["role"] == "oracle"
+    for cycle, role in enumerate(ROLES):
+        nudge = Nexus.role_nudge(cycle, list(ROLES))
+        assert nudge["role"] == role
+        assert nudge["text"] == ROLE_NUDGES[role]
+        assert "sigil" not in nudge["text"]
     nx = Nexus(seed=41)
-    nx.ingest({"t": 1, "player": None, "kind": "info_nudge", "data": {"role": "oracle"}})
+    nx.ingest({"t": 1, "player": None, "kind": "info_nudge", "data": {"role": "watcher"}})
     assert nx.puzzle_metrics()["info_nudges"] == 1
 
 

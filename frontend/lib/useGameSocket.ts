@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Visions, Wristband, You,
+  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, KingWatchView, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Wristband, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -89,7 +89,7 @@ export function useGameSocket(room: string, name: string) {
   const [nextAt, setNextAt] = useState<number | null>(null);
   const [roundSeconds, setRoundSeconds] = useState(20);
   const [matchAt, setMatchAt] = useState<number | null>(null);
-  const [matchSeconds, setMatchSeconds] = useState(900);
+  const [matchSeconds, setMatchSeconds] = useState(1800);
   const [minPlayers, setMinPlayers] = useState(1);
   const [nexus, setNexus] = useState<NexusReport>(EMPTY_NEXUS);
   const [pa, setPa] = useState("The Last Room is open. Find the hidden exit.");
@@ -102,7 +102,6 @@ export function useGameSocket(room: string, name: string) {
   const [delayStatus, setDelayStatus] = useState<DelayStatusView | null>(null);
   const [delayResult, setDelayResult] = useState<DelayResultView | null>(null);
   const [delayDeadlineAt, setDelayDeadlineAt] = useState<number | null>(null);
-  const [futures, setFutures] = useState<Visions>({});
   const [transition, setTransition] = useState<RoundTransition>({
     id: 0, round: 0, moved: [], sigils: [], patternType: null, previous: null,
   });
@@ -115,6 +114,7 @@ export function useGameSocket(room: string, name: string) {
   const [revive, setRevive] = useState<ReviveEvent | null>(null);
   const [eliminated, setEliminated] = useState<EliminationEvent | null>(null);
   const [king, setKing] = useState<KingView | null>(null);
+  const [kingWatch, setKingWatch] = useState<KingWatchView | null>(null);
   const [kingEvent, setKingEvent] = useState<KingEvent | null>(null);
   const [chat, setChat] = useState<ChatLine[]>([]);
   const [exitNotice, setExitNotice] = useState<string | null>(null);
@@ -188,7 +188,7 @@ export function useGameSocket(room: string, name: string) {
       setSanctionFound(s.sanction_found ?? 0);
       setMinPlayers(s.min_players);
       setRoundSeconds(s.round_seconds ?? 20);
-      setMatchSeconds(s.match_seconds ?? 900);
+      setMatchSeconds(s.match_seconds ?? 1800);
       setMatchAt(s.match_time_left != null ? performance.now() + s.match_time_left * 1000 : null);
       setNexus(s.nexus ?? EMPTY_NEXUS);
       setPa(s.pa ?? "");
@@ -197,7 +197,7 @@ export function useGameSocket(room: string, name: string) {
       setRoleHint(s.role_hint);
       setDelayStatus(s.delay_status ?? null);
       setKing(s.king ?? null);
-      setFutures(s.futures ?? {});
+      setKingWatch(s.king_watch ?? null);
       setPuzzle(s.puzzle ?? null);
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
     };
@@ -313,7 +313,6 @@ export function useGameSocket(room: string, name: string) {
           }));
           setRound(tv.round);
           if (tv.pa) setPa(tv.pa);
-          if (tv.futures) setFutures(tv.futures);
           if (tv.next_round_in != null) setNextAt(performance.now() + tv.next_round_in * 1000);
           if (tv.state) apply(tv.state);
         } else if (m.type === "door_result") {
@@ -394,9 +393,13 @@ export function useGameSocket(room: string, name: string) {
           setRevive({ player: m.player, by: m.by, points: m.points });
         } else if (m.type === "elimination") {
           setEliminated({ player: m.player, reason: m.reason });
+        } else if (m.type === "king_watch") {
+          setKingWatch(m as KingWatchView);
+          setNotice("KING WARNING: FIRST ROOM REVEALED TO THE WATCHER.");
         } else if (m.type === "king_spawn") {
           const view = m.king as KingView | null;
           setKing(view);
+          setKingWatch(null);
           setKingEvent((prev) => ({
             id: (prev?.id ?? 0) + 1, type: "spawn", king: view,
             room_code: view?.room_code ?? null,
@@ -411,6 +414,7 @@ export function useGameSocket(room: string, name: string) {
           }));
         } else if (m.type === "king_despawn") {
           setKing(null);
+          setKingWatch(null);
           setKingEvent((prev) => ({
             id: (prev?.id ?? 0) + 1, type: "despawn",
             king: (m.king as KingView | null) ?? null,
@@ -516,8 +520,8 @@ export function useGameSocket(room: string, name: string) {
   return {
     connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
-    roleHint, futures, transition, prediction, doorEvent, cross,
-    hazard, revive, eliminated, king, kingEvent, chat, exitNotice, gameOver,
+    roleHint, transition, prediction, doorEvent, cross,
+    hazard, revive, eliminated, king, kingWatch, kingEvent, chat, exitNotice, gameOver,
     dealerClue, dealerNudge, puzzle, puzzleResult, sanctionTotal, sanctionFound,
     delayPuzzle, delayKey, delayStatus, delayResult, delayDeadlineAt,
     sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat,

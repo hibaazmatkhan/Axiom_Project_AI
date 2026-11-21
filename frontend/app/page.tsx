@@ -21,7 +21,7 @@ const TICKER = [
 
 const LOOP = [
   ["01", "Roll", "Four coloured d10s secretly seal some doorways."],
-  ["02", "Cross", "Both rooms must open the same side. Crossing spends a point."],
+  ["02", "Cross", "Both rooms must open the same side. Opening costs a point; crossing is free."],
   ["03", "Read", "Each role sees a different slice of the truth."],
   ["04", "Predict", "Call the next shift. Correct calls delay the arena."],
 ];
@@ -36,12 +36,12 @@ const ROLES = [
     desc: "Reveals the wristband map once per shift to read blocked walls and sanction rooms.",
   },
   {
-    name: "Oracle",
+    name: "Watcher",
     suit: "\u2665",
-    tag: "Visions",
+    tag: "Warning",
     tone: "text-red",
     border: "group-hover:border-red/50",
-    desc: "Sees sigils, door colours and the cleanest possible futures.",
+    desc: "Gets 30 seconds before each KING OF SPADES appearance and only its first room.",
   },
   {
     name: "Timekeeper",
@@ -263,7 +263,7 @@ export default function Landing() {
               <SectionHeading
                 eyebrow="Four roles · one truth"
                 title="You cannot see the whole game."
-                copy="Information is asymmetric by design. The Pathfinder scans the wristband, the Oracle sees futures, the Timekeeper holds the clock and key, and the Decoder answers the delay puzzle."
+                copy="Information is asymmetric by design. The Pathfinder scans the wristband, the Watcher warns of the KING, the Timekeeper holds the clock and key, and the Decoder answers the delay puzzle."
               />
               <p className="mono max-w-xs text-[10px] uppercase leading-relaxed tracking-[0.2em] text-ash">
                 Every role receives a different server-filtered slice. No client can see the hidden

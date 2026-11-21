@@ -70,7 +70,7 @@ def build_visions(arena: Arena, rng: random.Random, round_no: int) -> dict[str, 
     """Deterministic door visions for the round.
 
     Ground truth is mixed with a small amount of seeded noise so a vision is a
-    *possible* future, not a perfect map. The Oracle sees the cleanest signal.
+    *possible* future, not a perfect map. The Pathfinder sees the cleanest signal.
     """
     visions: dict[str, dict] = {}
     for room in arena.rooms:

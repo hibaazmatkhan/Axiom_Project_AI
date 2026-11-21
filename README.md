@@ -34,13 +34,13 @@ players adapt again.
 | Four coloured d10 rolls per room, with bounded seal relief | Done |
 | Data-driven pattern engine, **7 transformation types** as data | Done |
 | D10 door seals, two-sealed-click lockdowns and two-helper scans | Done |
-| Points economy, Sanction rooms, 900-second timer with no round cap, eliminations | Done |
+| Points economy, Sanction rooms, 30-minute timer with no round cap, eliminations | Done |
 | Hidden edge exit discovery and team escape win condition | Done |
-| Asymmetric information across 4 roles (Pathfinder / Oracle / Timekeeper / Decoder) | Done |
+| Asymmetric information across 4 roles (Pathfinder / Watcher / Timekeeper / Decoder) | Done |
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
 | Cooperative CSP role-mark puzzle with per-role private clues | Done |
 | Cooperative delay puzzle shared by the Timekeeper and Decoder | Done |
-| Non-player KING OF SPADES: five 180s appearances, five rooms each, kills occupants | Done |
+| Non-player KING OF SPADES: five 180s appearances, five rooms each, kills occupants; Watcher gets first-room alerts | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
@@ -63,11 +63,14 @@ Convergence → The Last Room`.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
 - Scan a locked teammate free: **−1** per helper (two helpers in or beside the
   room are required).
-- Points at zero eliminate you. The match ends when the **15-minute** match timer
+- Points at zero eliminate you. The match ends when the **30-minute** match timer
   expires, or early if the team escapes or everyone is eliminated.
 - KING OF SPADES is not a player role: five 180-second appearances begin at
-  0:00, 3:00, 6:00, 9:00 and 12:00. Each visits five rooms and eliminates anyone
+  0:30, 3:30, 6:30, 9:30 and 12:30. Each visits five rooms and eliminates anyone
   inside the room it occupies.
+- The Watcher receives a private alert 30 seconds before each appearance with
+  only that session's first room. The four teleport rooms stay hidden from the
+  Watcher.
 
 ---
 
@@ -275,7 +278,7 @@ come only from user-supplied assets.
 | possible-futures preview | **Possible Futures** (LED wall strips) |
 | AI game master | **The Dealer** (NEXUS) |
 | final room | **The Last Room** (hidden edge exit) |
-| roles | **Pathfinder / Oracle / Timekeeper / Decoder** |
+| roles | **Pathfinder / Watcher / Timekeeper / Decoder** |
 
 The shell uses a near-black broadcast palette with signal red, card gold and
 neon cyan. The landing page, login, lobby, profile and game HUD share the same
@@ -298,8 +301,10 @@ blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
   rate limit) — clients cannot cheat by sending state.
 - Token-bucket rate limiting on game intents.
 - The hidden rule is never serialised to any client.
-- Sigils are stripped for non-Oracle clients; hidden d10 seal results are never
+- Sigils are stripped from every client; hidden d10 seal results are never
   serialised to any client (each player sees only door colours).
+- Active KING positions and teleports are hidden from the Watcher; only that
+  role receives the 30-second first-room alert.
 - The shift countdown goes only to the Timekeeper; the Decoder gets the puzzle
   question and the Timekeeper gets the key, never the other way around.
 

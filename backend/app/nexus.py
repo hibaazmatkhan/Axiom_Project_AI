@@ -85,9 +85,9 @@ MAX_COMPLEXITY = 3
 DICE_RELIEF_ROUNDS = 2
 ROLE_NUDGES = {
     "pathfinder": "Pathfinder: reveal the wristband map before calling a route.",
-    "oracle": "Oracle: compare one sigil you can see with the coloured doors.",
+    "watcher": "Watcher: warn the team before the KING'S first room is revealed.",
     "timekeeper": "Timekeeper: call the countdown before the next shift.",
-    "archivist": "Archivist: compare last round's grid with the living one.",
+    "decoder": "Decoder: solve the puzzle with the key the Timekeeper passes you.",
 }
 UTILITY_WEIGHTS = {
     "skill_fit": 0.45,
@@ -550,7 +550,11 @@ class Nexus:
         options = [r for r in ROLES if r in set(available_roles)]
         pool = options or list(ROLES)
         role = pool[int(cycle) % len(pool)]
-        return {"role": role, "text": ROLE_NUDGES[role], "cycle": int(cycle)}
+        return {
+            "role": role,
+            "text": ROLE_NUDGES.get(role, f"{role.title()}: share what you can see."),
+            "cycle": int(cycle),
+        }
 
     def puzzle_metrics(self) -> dict:
         return {

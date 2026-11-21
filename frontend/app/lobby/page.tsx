@@ -15,14 +15,14 @@ const QUICK_MATCH_KEY = "axiom.quickMatchClientKey";
 
 const ROLES = [
   ["\u2660", "Pathfinder", "Wristband scan", "text-blue"],
-  ["\u2665", "Oracle", "Sigils + futures", "text-red"],
+  ["\u2665", "Watcher", "KING alert", "text-red"],
   ["\u2666", "Timekeeper", "Countdown + key", "text-yellow"],
   ["\u2663", "Decoder", "Puzzle answer", "text-green"],
 ];
 
 const ROLE_PREVIEWS: Record<string, string> = {
   Pathfinder: "Wristband scan: reveal blocked walls and sanction rooms until the next shift.",
-  Oracle: "Future sight: you read sigils and predicted doors before the round resolves.",
+  Watcher: "Early warning: you get 30 seconds before each KING OF SPADES appearance and learn its first room only.",
   Timekeeper: "Clock control: you alone see the countdown and pass the delay puzzle key to the Decoder.",
   Decoder: "Puzzle access: you see the delay puzzle question and answer it using the Timekeeper's key.",
 };

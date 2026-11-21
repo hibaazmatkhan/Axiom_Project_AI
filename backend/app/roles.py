@@ -5,22 +5,22 @@ and snapshot by the player's role so no client receives another role's hidden
 data.
 
   pathfinder  - reveals sealed doors and sanction rooms until the next shift
-  oracle      - sees sigils, door colours and the cleanest possible futures
+  watcher     - gets a 30s KING OF SPADES alert with only its first room
   timekeeper  - sees the countdown and holds the delay puzzle key
   decoder     - sees and answers the delay puzzle question
 """
 from __future__ import annotations
 
-ROLES = ("pathfinder", "oracle", "timekeeper", "decoder")
+ROLES = ("pathfinder", "watcher", "timekeeper", "decoder")
 ROLE_LABELS = {
     "pathfinder": "Pathfinder",
-    "oracle": "Oracle",
+    "watcher": "Watcher",
     "timekeeper": "Timekeeper",
     "decoder": "Decoder",
 }
 ROLE_HINTS = {
     "pathfinder": "Reveal the wristband map once per shift to read blocked walls and sanction rooms.",
-    "oracle": "You see sigils and the clearest possible futures. Find the exit.",
+    "watcher": "You get a 30s alert before each KING OF SPADES appearance and learn its first room only. Warn the team.",
     "timekeeper": "You alone see the countdown. Queue a tier and pass the key to the Decoder.",
     "decoder": "You see the puzzle question and answer it. Ask the Timekeeper for the key.",
 }
@@ -35,16 +35,7 @@ def _futures_for(payload: dict, role: str) -> dict:
     out: dict[str, dict] = {}
     for code, room in visions.items():
         doors = room.get("doors", {})
-        if role == "oracle":
-            out[code] = {
-                "rid": room.get("rid"),
-                "sigil": room.get("sigil"),
-                "doors": {
-                    d: {"future": g.get("future"), "color": g.get("color")}
-                    for d, g in doors.items()
-                },
-            }
-        elif role == "pathfinder":
+        if role == "pathfinder":
             out[code] = {
                 "rid": room.get("rid"),
                 "doors": {
@@ -81,15 +72,8 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
             {k: v for k, v in op.items() if k in ("kind", "index", "direction", "axis")}
             for op in payload.get("ops", [])
         ]
-    elif role == "oracle":
-        base["moved"] = [
-            {"from": m.get("from"), "to": m.get("to"),
-             "code_from": m.get("code_from"), "code_to": m.get("code_to"),
-             "sigil": m.get("sigil")}
-            for m in moved
-        ]
-        base["sigils"] = sorted({m["sigil"] for m in moved if m.get("sigil")})
-        base["ops"] = payload.get("ops", [])
+    elif role == "watcher":
+        base["moved"] = []
     elif role == "timekeeper":
         base["moved"] = []
         base["timing"] = {"next_in": payload.get("next_round_in")}
@@ -107,12 +91,10 @@ def filter_arena(arena: dict, role: str, current_code: str | None = None) -> dic
         for d, door in r.get("doors", {}).items():
             doors[d] = dict(door)
         r["doors"] = doors
-        if role != "oracle":
-            r["sigil"] = None
+        r["sigil"] = None
         if not r.get("revealed"):
             r["sanction"] = None
-        if role != "oracle":
-            r["future"] = None
+        r["future"] = None
         rooms.append(r)
     out = dict(arena)
     out["rooms"] = rooms
@@ -131,4 +113,8 @@ def filter_snapshot(snapshot: dict, role: str) -> dict:
     snap["role"] = role
     snap["role_label"] = ROLE_LABELS.get(role, role)
     snap["role_hint"] = ROLE_HINTS.get(role, "")
+    if role == "watcher":
+        snap.pop("king", None)
+    else:
+        snap.pop("king_watch", None)
     return snap

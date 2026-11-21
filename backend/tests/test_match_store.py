@@ -42,7 +42,7 @@ def _summary():
                 "predictions": 5,
                 "correct": 5,
                 "attrs": {"pattern": 1},
-                "style": "oracle",
+                "style": "watcher",
             },
         ],
     }

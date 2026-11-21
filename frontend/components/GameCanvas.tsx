@@ -98,7 +98,7 @@ function arenaSignature(arena: Arena | null) {
       return `${door?.color}`;
     }).join("|");
     const open = DIRS.map((dir) => (room.open[dir] ? "1" : "0")).join("");
-    return `${room.code}:${room.bx}:${room.by}:${room.sigil}:${room.sanction}:${room.revealed}:${room.future}:${doors}:${open}`;
+    return `${room.code}:${room.bx}:${room.by}:${room.sigil}:${room.sanction}:${room.revealed}:${doors}:${open}`;
   }).join("|")}`;
 }
 

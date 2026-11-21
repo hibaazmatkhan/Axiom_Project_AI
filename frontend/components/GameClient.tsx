@@ -6,16 +6,12 @@ import WristbandMap from "./WristbandMap";
 import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
-import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, DoorColor, Sigil } from "@/lib/types";
+import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, Sigil } from "@/lib/types";
 
 const SIGILS = ["spade", "heart", "diamond", "club"] as const;
 const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
 };
-const DOOR_HEX: Record<DoorColor, string> = {
-  red: "#e23b3b", blue: "#3f7bd9", yellow: "#e8b53a", green: "#3f9f6b",
-};
-const DIRS = ["N", "E", "S", "W"] as const;
 const MAX_POINTS = 15;
 
 function formatClock(value: number) {
@@ -199,6 +195,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [secs, setSecs] = useState<number | null>(null);
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [delaySecs, setDelaySecs] = useState<number | null>(null);
+  const [kingWatchSecs, setKingWatchSecs] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [puzzleMark, setPuzzleMark] = useState("");
@@ -240,11 +237,12 @@ export default function GameClient({ room, name }: { room: string; name: string 
       setSecs(g.nextAt == null ? null : Math.max(0, (g.nextAt - performance.now()) / 1000));
       setMatchSecs(g.matchAt == null ? null : Math.max(0, (g.matchAt - performance.now()) / 1000));
       setDelaySecs(g.delayDeadlineAt == null ? null : Math.max(0, (g.delayDeadlineAt - performance.now()) / 1000));
+      setKingWatchSecs(g.kingWatch == null ? null : Math.max(0, (g.kingWatch.starts_at * 1000 - Date.now()) / 1000));
     };
     tick();
     const t = setInterval(tick, 100);
     return () => clearInterval(t);
-  }, [g.nextAt, g.matchAt, g.delayDeadlineAt]);
+  }, [g.nextAt, g.matchAt, g.delayDeadlineAt, g.kingWatch]);
 
 
   useEffect(() => {
@@ -281,7 +279,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
   );
   const alive = g.players.filter((p) => !p.eliminated);
   const teamRoster = useMemo(() => [...g.players].sort((a, b) => a.slot - b.slot), [g.players]);
-  const futureEntries = Object.entries(g.futures);
   const isLobby = g.status === "lobby";
   const isOver = g.status === "won" || g.status === "over";
 
@@ -310,6 +307,21 @@ export default function GameClient({ room, name }: { room: string; name: string 
           <span className="mono text-2xl uppercase tracking-[0.4em] text-red drop-shadow-[0_0_18px_rgba(255,0,0,0.9)]">
             King of Spades
           </span>
+        </div>
+      )}
+
+      {g.role === "watcher" && g.kingWatch && (
+        <div className="pointer-events-none absolute inset-x-0 top-20 z-[60] flex justify-center px-3 sm:top-24">
+          <div className="mono flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border border-red/70 bg-void/95 px-3 py-2 text-[9px] uppercase tracking-[0.18em] text-red shadow-hud backdrop-blur">
+            <span>King warning</span>
+            <span className="text-base tabular-nums text-bone">
+              {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
+            </span>
+            <span className="text-dim">
+              First room <span className="text-gold">{g.kingWatch.room_code ?? "--"}</span>
+              {g.kingWatch.room ? ` [${g.kingWatch.room.join(", ")}]` : ""}
+            </span>
+          </div>
         </div>
       )}
 
@@ -538,19 +550,18 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </Panel>
         )}
 
-        {(g.role === "timekeeper" || g.role === "decoder" || g.role === "oracle") && (
+        {(g.role === "timekeeper" || g.role === "decoder") && (
           <Panel>
             <div className="flex items-center justify-between">
               <span className="text-xs uppercase tracking-widest text-dim">
-                {g.role === "timekeeper" ? "Delay key" : g.role === "decoder" ? "Puzzle" : "Possible futures"}
+                {g.role === "timekeeper" ? "Delay key" : "Puzzle"}
               </span>
-            <span className="mono text-[10px] text-dim">{g.role}</span>
-          </div>
+              <span className="mono text-[10px] text-dim">{g.role}</span>
+            </div>
 
-          {g.role === "timekeeper" ? (
-            <DelayKeyPanel keyView={g.delayKey} status={g.delayStatus} />
-          ) : g.role === "decoder" ? (
-            g.delayPuzzle ? (
+            {g.role === "timekeeper" ? (
+              <DelayKeyPanel keyView={g.delayKey} status={g.delayStatus} />
+            ) : g.delayPuzzle ? (
               <DelayBoard
                 puzzle={g.delayPuzzle}
                 clock={delaySecs}
@@ -562,29 +573,36 @@ export default function GameClient({ room, name }: { room: string; name: string 
               <p className="mt-2 text-[11px] leading-relaxed text-dim">
                 Waiting for the Timekeeper to queue a puzzle.
               </p>
-            )
-          ) : futureEntries.length === 0 ? (
-            <p className="mt-2 text-[11px] text-dim">No visions this round.</p>
-          ) : (
-            <div className="scroll-thin mt-2 max-h-44 space-y-1 overflow-y-auto">
-              {futureEntries.map(([code, fr]) => (
-                <div key={code} className="flex items-center gap-2 rounded-lg bg-ink/40 px-2 py-1 text-[11px]">
-                  <span className="mono w-7 shrink-0 text-dim">{code}</span>
-                  <span className="flex flex-wrap gap-1">
-                    {DIRS.map((dir) => {
-                      const d = fr.doors?.[dir];
-                      if (!d) return null;
-                      const label = d.future ?? "?";
-                      return (
-                        <span key={dir} className={`mono ${futureTone(d.future)}`} style={d.color ? { color: DOOR_HEX[d.color] } : undefined}>
-                          {dir}:{label}
-                        </span>
-                      );
-                    })}
-                  </span>
-                </div>
-              ))}
+            )}
+          </Panel>
+        )}
+
+        {g.role === "watcher" && (
+          <Panel className="border-red/40">
+            <div className="flex items-center justify-between">
+              <span className="text-xs uppercase tracking-widest text-red">Watcher</span>
+              <span className="mono text-[10px] text-dim">
+                {g.kingWatch ? `appearance ${g.kingWatch.appearance}/${g.kingWatch.total}` : "standing by"}
+              </span>
             </div>
+            {g.kingWatch ? (
+              <div className="mt-2 space-y-1">
+                <p className="mono text-lg text-red">
+                  {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
+                </p>
+                <p className="text-[11px] leading-relaxed text-bone">
+                  FIRST ROOM{" "}
+                  <span className="mono text-gold">{g.kingWatch.room_code ?? "--"}</span>
+                  {g.kingWatch.room ? ` [${g.kingWatch.room.join(", ")}]` : ""}
+                </p>
+                <p className="text-[10px] leading-relaxed text-dim">
+                  Only the first room is revealed. Teleport rooms stay hidden.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-[11px] leading-relaxed text-dim">
+                No KING warning active. Warn the team when the signal arrives.
+              </p>
             )}
           </Panel>
         )}
@@ -1100,10 +1118,4 @@ export default function GameClient({ room, name }: { room: string; name: string 
       </div>
     </main>
   );
-}
-
-function futureTone(future?: string) {
-  if (future === "sanction") return "text-red";
-  if (future === "open") return "text-green";
-  return "text-dim";
 }
