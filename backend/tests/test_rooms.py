@@ -86,7 +86,7 @@ def test_unknown_room_socket_is_rejected():
     assert "NOPE" not in main.rooms
 
 
-def test_reservation_is_consumed_on_first_successful_join():
+def test_room_code_survives_last_disconnect():
     client = TestClient(main.app)
     code = client.post("/api/rooms").json()["code"]
     assert main.registry.get_reservation(code) is not None
@@ -96,6 +96,11 @@ def test_reservation_is_consumed_on_first_successful_join():
         assert main.registry.get_reservation(code) is None
         assert code in main.rooms
     assert code not in main.rooms
+    assert main.registry.get_reservation(code) is not None
+
+    found = client.get(f"/api/rooms/{code}")
+    assert found.status_code == 200
+    assert found.json()["status"] == "lobby"
 
 
 def test_spectator_requires_auth_and_admin(monkeypatch):

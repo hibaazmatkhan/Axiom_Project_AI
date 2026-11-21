@@ -24,7 +24,12 @@ A standalone preview lives in `avatar-pack/preview/`. It renders the five PFPs a
 
 The preview folder is included in the handoff. `node_modules/` and `dist/` are ignored.
 
-## Frontend copy
+## Future / optional Phase 5 3D-character integration (not wired)
+
+The steps below are reference material for a later 3D-character integration. The
+running app does not use `frontend/avatar-pack/`, `avatarApi`, `guestAuthFrame`,
+`avatar_router.py`, `avatar_preset_id`, or 3D character models in `GameCanvas`.
+Use the native profile routes and five copied PFP assets for the current app.
 
 Preserve this internal structure:
 
@@ -93,7 +98,7 @@ Extend `supabase_store.profile_public()` with:
 
 The Supabase `avatars` bucket must be public, or `avatar_storage.py` must be changed to return signed URLs.
 
-## Runtime links
+## Runtime links (future only)
 
 - Profile settings: render `AvatarPicker` and call `avatarClient.selectPfpPreset`, `avatarClient.uploadPfp`, `avatarClient.selectCharacter`, and `avatarClient.updateUsername`. Uploads are JSON base64, so no multipart middleware is required.
 - Lobby: show the selected PFP and 3D character beside the player name.

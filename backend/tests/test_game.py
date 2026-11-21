@@ -7,7 +7,8 @@ from contextlib import ExitStack
 from fastapi.testclient import TestClient
 
 from app.arena import DIRECTIONS, OPPOSITE, STEP
-from app.game import Player, Room, TemporaryDoor
+from app import puzzles
+from app.game import DELAY_CONFIG, PATHFINDER_REVEAL_COOLDOWN, Player, Room, TemporaryDoor
 from app.main import app, rooms
 from app.nexus import CLUE_TIERS
 from app.roles import ROLES, filter_round, role_for_slot
@@ -58,7 +59,7 @@ def test_snapshot_is_filtered_by_role():
     p = _player(room, role="oracle")
     snap = room.snapshot(p)
     assert snap["role"] == "oracle"
-    assert "rule_count" in snap and "dice" in snap
+    assert "rule_count" in snap and snap["dice"] == {}
     assert snap["you"]["room_id"] == p.room_id
 
 
@@ -76,6 +77,7 @@ def test_snapshot_hides_exit_until_a_player_discovers_it():
 def test_snapshot_hides_sealed_doors_from_arena_and_you():
     room = Room("SEALHIDE", seed=7)
     p = _player(room)
+    p.wristband_revealed = True
     room.players[p.id] = p
     start = room.arena.start_room()
     sealed = next(d for d in DIRECTIONS if start.doors[d].sealed)
@@ -89,6 +91,7 @@ def test_snapshot_hides_sealed_doors_from_arena_and_you():
 def test_wristband_marks_doorways_blocked_by_the_other_room():
     room = Room("WBLOCK", seed=7)
     p = _player(room)
+    p.wristband_revealed = True
     room.players[p.id] = p
     start = room.arena.start_room()
     door = next(d for d in DIRECTIONS if room.arena.door_open(start, d))
@@ -105,6 +108,7 @@ def test_wristband_marks_doorways_blocked_by_the_other_room():
 def test_wristband_does_not_reveal_d10_seals():
     room = Room("WBROLL", seed=7)
     p = _player(room)
+    p.wristband_revealed = True
     room.players[p.id] = p
     start = room.arena.start_room()
     door = next(d for d in DIRECTIONS if room.arena.door_open(start, d))
@@ -112,6 +116,52 @@ def test_wristband_does_not_reveal_d10_seals():
 
     snap = room.snapshot(p)
     assert snap["wristband"][start.code][door] is False
+
+
+def test_pathfinder_reveal_is_neutral_for_others_and_expires_on_shift():
+    async def scenario():
+        room = Room("PFScan", seed=7, round_seconds=60)
+        room.status = "running"
+        pathfinder = _player(room, "pf", 0, "pathfinder")
+        oracle = _player(room, "or", 1, "oracle")
+        room.players = {pathfinder.id: pathfinder, oracle.id: oracle}
+        hidden = next(r for r in room.arena.rooms if r.sanction and not r.revealed)
+        sealed = next(d for d in DIRECTIONS if room.arena.start_room().doors[d].sealed)
+
+        neutral = room.snapshot(pathfinder)
+        assert neutral["wristband"][room.arena.start_room().code][sealed] is False
+        assert neutral["wristband_sanctions"] == []
+        assert neutral["you"]["wristband_revealed"] is False
+
+        await room.reveal_wristband(oracle)
+        assert oracle.wristband_revealed is False
+
+        await room.reveal_wristband(pathfinder)
+        revealed = room.snapshot(pathfinder)
+        assert pathfinder.wristband_revealed is True
+        assert revealed["wristband"][room.arena.start_room().code][sealed] is True
+        assert hidden.code in revealed["wristband_sanctions"]
+        assert revealed["you"]["wristband_revealed"] is True
+
+        other_view = room.snapshot(oracle)
+        assert other_view["wristband_sanctions"] == []
+        assert other_view["wristband"][room.arena.start_room().code][sealed] is False
+
+        room.step_round()
+        assert pathfinder.wristband_revealed is False
+        assert pathfinder.wristband_cooldown_until > time.time()
+        expired = room.snapshot(pathfinder)
+        assert expired["wristband_sanctions"] == []
+        assert expired["wristband"][room.arena.start_room().code][sealed] is False
+
+        await room.reveal_wristband(pathfinder)
+        assert pathfinder.wristband_revealed is False
+        pathfinder.wristband_cooldown_until = time.time() - 1
+        await room.reveal_wristband(pathfinder)
+        assert pathfinder.wristband_revealed is True
+        assert PATHFINDER_REVEAL_COOLDOWN == 120.0
+
+    asyncio.run(scenario())
 
 
 def test_clicking_sealed_door_reports_sealed_without_leaking_state():
@@ -273,14 +323,16 @@ def test_filter_round_hides_data_per_role():
         "dice": {"A1": {"room": "A1", "rid": "r0", "doors": {
             "N": {"color": "red"}}}},
     }
-    nav = filter_round(payload, "navigator", None)
+    nav = filter_round(payload, "pathfinder", None)
     oracle = filter_round(payload, "oracle", None)
     keeper = filter_round(payload, "timekeeper", None)
-    arch = filter_round(payload, "archivist", None)
+    decoder = filter_round(payload, "decoder", None)
     assert "sigil" not in nav["moved"][0]
     assert oracle["moved"][0]["sigil"] == "spade"
-    assert keeper["moved"] == [] and keeper["dice"]
-    assert arch["moved"] == [] and "previous" in arch
+    assert keeper["moved"] == [] and keeper["timing"]["next_in"] == 5
+    assert "dice" not in keeper
+    assert decoder["moved"] == [] and "timing" not in decoder
+    assert "previous" not in decoder and "dice" not in decoder
 
 
 def test_role_assignment_covers_four_roles():
@@ -564,6 +616,23 @@ def test_nexus_updates_skill_between_rounds():
     assert room.nexus.team_report()["players"]
 
 
+def test_director_complexity_commits_once_per_round(monkeypatch):
+    room = Room("NXA", seed=13, round_seconds=30)
+    room.players["a"] = _player(room)
+    initial = room.complexity_override
+    monkeypatch.setattr(room.nexus, "decide", lambda *args, **kwargs: {"action": "raise_complexity"})
+    room.step_round()
+    assert room.complexity_override == initial + 1
+    assert room.nexus.complexity_level == initial + 1
+    assert room.puzzle.complexity == initial + 1
+
+    monkeypatch.setattr(room.nexus, "decide", lambda *args, **kwargs: {"action": "lower_complexity"})
+    room.step_round()
+    assert room.complexity_override == initial
+    assert room.nexus.complexity_level == initial
+    assert room.puzzle.complexity == initial
+
+
 def test_nexus_defaults_to_a_neutral_team_skill():
     room = Room("NX2", seed=3, round_seconds=30)
     p = _player(room)
@@ -600,7 +669,7 @@ def test_reconnect_restores_player():
 def test_locked_player_needs_two_helpers():
     room = Room("LOCK", seed=4, round_seconds=60)
     room.status = "running"
-    target = _player(room, "t", 0, "navigator")
+    target = _player(room, "t", 0, "pathfinder")
     target.locked = True
     helper = _player(room, "h", 1, "oracle")
     room.players = {"t": target, "h": helper}
@@ -681,3 +750,167 @@ def test_dealer_clue_is_private_to_near_player():
     snap = room.snapshot(far_player)
     pub_hidden = next(r for r in snap["arena"]["rooms"] if r["id"] == hidden[0].rid)
     assert pub_hidden["sanction"] is None and pub_hidden["revealed"] is False
+
+
+class _DelayWebSocket:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+def _delay_room(seed=37):
+    room = Room("DLY", seed=seed, round_seconds=60)
+    room.status = "running"
+    players = [
+        _player(room, "keeper", 0, "timekeeper"),
+        _player(room, "decoder", 1, "decoder"),
+        _player(room, "path", 2, "pathfinder"),
+    ]
+    for player in players:
+        player.ws = _DelayWebSocket()
+        room.players[player.id] = player
+    room.next_round_at = time.time() + 30
+    return room, players[0], players[1], players[2]
+
+
+def _message(player, kind):
+    return next(m for m in reversed(player.ws.sent) if m.get("type") == kind)
+
+
+def test_delay_puzzles_are_deterministic_and_solvable():
+    for tier in (1, 2, 3):
+        first = puzzles.generate(2026, 3, tier)
+        assert first == puzzles.generate(2026, 3, tier)
+        assert puzzles.verify(first)
+        assert len(first["question"].split()) <= 12
+        assert puzzles.check_answer(first, first["answer"])
+        wrong = (next(s for s in puzzles.SUITS if s != first["answer"])
+                 if tier == 3 else {"row": 9, "col": 9})
+        assert not puzzles.check_answer(first, wrong)
+    for tier in (1, 2, 3):
+        for seed in range(50):
+            assert puzzles.verify(puzzles.generate(seed, seed, tier))
+
+
+def test_delay_puzzle_is_private_and_success_changes_only_keeper_delta():
+    room, keeper, decoder, pathfinder = _delay_room()
+    before = room.next_round_at
+    asyncio.run(room.queue_delay(keeper, 1))
+    puzzle = _message(decoder, "puzzle")
+    key = _message(keeper, "puzzle_key")
+    answer = room.delay_puzzle["answer"]
+
+    assert puzzle["question"] and "key_text" not in puzzle
+    assert key["key_text"] and "question" not in key and "grids" not in key
+    assert not [m for m in keeper.ws.sent if m.get("type") == "puzzle"]
+    assert not [m for m in decoder.ws.sent if m.get("type") == "puzzle_key"]
+    assert not [m for m in pathfinder.ws.sent if m.get("type") in ("puzzle", "puzzle_key")]
+    assert room.delay_attempts[room.stage] == 1
+
+    asyncio.run(room.answer_delay(decoder, puzzle["puzzle_id"], answer))
+    assert room.next_round_at > before
+    assert room.delay_puzzle is None
+    assert room.delay_cooldown_until > time.time()
+    assert room.shift_delay_applied == DELAY_CONFIG["delay_s"][1]
+    assert room.shift_successes == 1
+    for player, has_delta in ((keeper, True), (decoder, False), (pathfinder, False)):
+        result = _message(player, "delay_result")
+        assert result["ok"] is True
+        assert ("delta_s" in result) is has_delta
+        assert "next_round_in" not in result
+
+
+def test_delay_failure_keeps_the_pending_shift_floor():
+    room, keeper, decoder, pathfinder = _delay_room()
+    room.next_round_at = time.time() + 4
+    asyncio.run(room.queue_delay(keeper, 2))
+    puzzle_id = room.delay_puzzle["puzzle_id"]
+
+    asyncio.run(room.answer_delay(decoder, puzzle_id, {"row": 9, "col": 9}))
+    assert room.next_round_at - time.time() >= DELAY_CONFIG["min_time_before_shift_s"] - 0.1
+    assert room.shift_delay_applied == 0
+    assert room.shift_successes == 0
+    assert _message(decoder, "delay_result")["ok"] is False
+    assert "delta_s" not in _message(decoder, "delay_result")
+    assert "delta_s" in _message(keeper, "delay_result")
+    assert "delta_s" not in _message(pathfinder, "delay_result")
+
+
+def test_delay_queue_rejects_wrong_role_bad_tier_dead_pair_and_double_answer():
+    room, keeper, decoder, pathfinder = _delay_room()
+    asyncio.run(room.queue_delay(decoder, 1))
+    assert _message(decoder, "error")["code"] == "role_unavailable"
+
+    decoder.connected = False
+    asyncio.run(room.queue_delay(keeper, 1))
+    assert _message(keeper, "error")["code"] == "delay_pair_unavailable"
+    decoder.connected = True
+
+    asyncio.run(room.queue_delay(pathfinder, 1))
+    assert _message(pathfinder, "error")["code"] == "role_unavailable"
+    asyncio.run(room.queue_delay(keeper, 9))
+    assert _message(keeper, "error")["code"] == "bad_tier"
+
+    asyncio.run(room.queue_delay(keeper, 3))
+    puzzle_id = room.delay_puzzle["puzzle_id"]
+    answer = room.delay_puzzle["answer"]
+    asyncio.run(room.answer_delay(keeper, puzzle_id, answer))
+    assert _message(keeper, "error")["code"] == "role_unavailable"
+    asyncio.run(room.answer_delay(decoder, "stale", answer))
+    assert _message(decoder, "error")["code"] == "stale_puzzle"
+
+    asyncio.run(room.answer_delay(decoder, puzzle_id, answer))
+    assert room.delay_puzzle is None
+    asyncio.run(room.answer_delay(decoder, puzzle_id, answer))
+    assert _message(decoder, "error")["code"] == "stale_puzzle"
+
+
+def test_shift_cancels_delay_without_penalty_attempt_or_cooldown():
+    room, keeper, decoder, pathfinder = _delay_room()
+    asyncio.run(room.queue_delay(keeper, 3))
+    assert room.delay_attempts[room.stage] == 1
+    room.next_round_at = time.time() - 1
+
+    room.step_round()
+    assert room.delay_puzzle is None
+    assert room.delay_deadline is None
+    assert room.delay_cooldown_until == 0.0
+    assert room._delay_attempts_left() == DELAY_CONFIG["attempts_per_stage"]
+    assert any(e["kind"] == "delay_cancelled" for e in room.events)
+    assert not [m for m in keeper.ws.sent if m.get("type") == "delay_result"]
+    assert not [m for m in decoder.ws.sent if m.get("type") == "delay_result"]
+
+
+def test_decoder_cannot_move_through_doors_while_delay_puzzle_is_open():
+    room, keeper, decoder, pathfinder = _delay_room()
+    asyncio.run(room.queue_delay(keeper, 1))
+    door = _open_door(room)
+
+    asyncio.run(room.open_door(decoder, door=door))
+    assert _message(decoder, "error")["code"] == "decoder_busy"
+    asyncio.run(room.cross_door(decoder, door=door))
+    assert _message(decoder, "error")["code"] == "decoder_busy"
+
+
+def test_delay_successes_stack_at_half_rate_and_cap_total():
+    room, keeper, decoder, pathfinder = _delay_room()
+    room.next_round_at = time.time() + 20
+
+    def solve(tier):
+        room.delay_cooldown_until = 0.0
+        room.delay_attempts[room.stage] = 0
+        asyncio.run(room.queue_delay(keeper, tier))
+        puzzle_id = room.delay_puzzle["puzzle_id"]
+        answer = room.delay_puzzle["answer"]
+        asyncio.run(room.answer_delay(decoder, puzzle_id, answer))
+        return _message(keeper, "delay_result")["delta_s"]
+
+    assert round(solve(1)) == DELAY_CONFIG["delay_s"][1]
+    assert round(solve(2)) == DELAY_CONFIG["delay_s"][2] * DELAY_CONFIG["second_success_multiplier"]
+    assert room.shift_delay_applied == 12
+    room.shift_delay_applied = DELAY_CONFIG["max_shift_delay_s"] - 1
+    assert round(solve(1)) == 1
+    assert room.shift_delay_applied == DELAY_CONFIG["max_shift_delay_s"]
+    assert round(solve(1)) == 0

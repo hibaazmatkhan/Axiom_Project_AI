@@ -36,9 +36,10 @@ players adapt again.
 | D10 door seals, two-sealed-click lockdowns and two-helper scans | Done |
 | Points economy, Sanction rooms, 15-round limit, eliminations | Done |
 | Hidden edge exit discovery and team escape win condition | Done |
-| Asymmetric information across 4 roles (Navigator / Oracle / Timekeeper / Archivist) | Done |
+| Asymmetric information across 4 roles (Pathfinder / Oracle / Timekeeper / Decoder) | Done |
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
 | Cooperative CSP role-mark puzzle with per-role private clues | Done |
+| Cooperative delay puzzle shared by the Timekeeper and Decoder | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
@@ -71,6 +72,7 @@ Convergence → The Last Room`.
 ### Configuration
 
 ```bash
+cp .env.example .env
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
 ```
@@ -104,7 +106,7 @@ python scripts/apply_migrations.py
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-python -m pytest -q         # 94 tests
+python -m pytest -q
 ```
 
 ### Frontend (Node 20+)
@@ -133,6 +135,7 @@ auto-assigned a role.
 ### Docker
 
 ```bash
+cp .env.example .env
 docker compose up --build
 # frontend → http://localhost:3000   backend → http://localhost:8000
 ```
@@ -143,7 +146,7 @@ The root `vercel.json` deploys `frontend/` and `backend/` as one Services projec
 
 For standalone frontend development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables. Run `vercel dev` at the repository root to test both services with bindings.
 
-Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and keep the backend long-lived. Rooms are in memory (`rooms` in `backend/app/main.py`), so Vercel Services must run a single long-lived backend instance or be replaced by shared state/Redis before scaling. Configure Fluid Compute/max duration for the backend service in the Vercel dashboard so WebSocket connections are not cut off by short function timeouts. The Render Blueprint uses one Docker instance (`numInstances: 1`) for the same reason. Match data is shared through Supabase.
+Before going live, authorize the Vercel domain in Firebase Auth, add its credentials to both services' environment variables, set `AXIOM_MATCH_STORE=supabase`, and keep the backend long-lived. Rooms and quick-match state are process-local (`rooms` in `backend/app/main.py` and `RoomRegistry` in `backend/app/room_registry.py`), so Vercel Services must run a single long-lived backend instance or be replaced by shared state/Redis before scaling. Configure Fluid Compute/max duration for the backend service in the Vercel dashboard so WebSocket connections are not cut off by short function timeouts. The Render Blueprint uses one Docker instance (`numInstances: 1`) for the same reason. Match data is shared through Supabase.
 
 ---
 
@@ -163,8 +166,10 @@ Before going live, authorize the Vercel domain in Firebase Auth, add its credent
 
 A doorway is passable only when both rooms have that side open. Clicking a
 door opens it for 10 seconds and shows the remaining time above the frame.
-Structural walls are hidden in the shared map; your wristband dims blocked
-doorways, while d10 seals stay hidden until a door is tried.
+Structural walls are hidden in the shared map. Wristbands stay neutral until
+the Pathfinder scans once per shift; that reveal dims blocked doorways and marks
+sanction rooms until the next grid shift, with a two-minute recharge afterwards.
+D10 seals stay hidden until a door is tried.
 
 ---
 
@@ -189,7 +194,7 @@ axiom/
 │   │   ├── auth.py         # Firebase ID token, App Check and admin guards
 │   │   ├── audit.py        # audit log and room inventory persistence
 │   │   ├── avatar_store.py # avatar validation, storage upload and cleanup
-│   │   ├── characters.py   # character avatar allowlist
+│   │   ├── room_registry.py # process-local room reservations + quick-match queue
 │   │   ├── supabase_store.py # profiles, avatars, export and deletion
 │   │   ├── repositories.py # storage abstraction protocols
 │   │   ├── db.py           # match store selection (Supabase / SQLite fallback)
@@ -199,7 +204,7 @@ axiom/
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
-│   ├── app/                # landing, lobby, login, profile, game
+│   ├── app/                # landing, lobby, login, verify-email, profile, game
 │   ├── components/         # GameCanvas (Three.js), GameClient (HUD), WristbandMap
 │   ├── lib/                # socket hook, types, api client, avatar rules
 │   ├── public/avatars/pfp/ # card PFP presets
@@ -266,7 +271,7 @@ come only from user-supplied assets.
 | possible-futures preview | **Possible Futures** (LED wall strips) |
 | AI game master | **The Dealer** (NEXUS) |
 | final room | **The Last Room** (hidden edge exit) |
-| roles | **Navigator / Oracle / Timekeeper / Archivist** |
+| roles | **Pathfinder / Oracle / Timekeeper / Decoder** |
 
 The shell uses a near-black broadcast palette with signal red, card gold and
 neon cyan. The landing page, login, lobby, profile and game HUD share the same
@@ -289,8 +294,10 @@ blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
   rate limit) — clients cannot cheat by sending state.
 - Token-bucket rate limiting on game intents.
 - The hidden rule is never serialised to any client.
-- Sigils are stripped for non-Oracle/Archivist clients; hidden d10 seal results
-  are never serialised to any client (each player sees only door colours).
+- Sigils are stripped for non-Oracle clients; hidden d10 seal results are never
+  serialised to any client (each player sees only door colours).
+- The shift countdown goes only to the Timekeeper; the Decoder gets the puzzle
+  question and the Timekeeper gets the key, never the other way around.
 
 ## Tests
 

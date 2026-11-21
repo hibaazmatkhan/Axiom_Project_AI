@@ -30,6 +30,8 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `unlock` | `target` (player id) | asks the server to scan a locked teammate free; two helpers in or beside the room are required, each spends 1 point |
 | `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it |
 | `puzzle_submit` | `assignment` with only the sender's `role` and chosen mark | contributes one role mark to the cooperative CSP puzzle |
+| `delay_queue` | `tier` (`1`/`2`/`3`) | Timekeeper only; opens one delay puzzle for the Decoder |
+| `delay_answer` | `puzzle_id`, `answer` (cell `{row, col}` or suit) | Decoder only; answers the open delay puzzle |
 | `chat` | `text` | team chat |
 | `ready` | `value` (bool) | lobby ready toggle; match starts when all connected players are ready |
 | `ping` | none | server replies `pong` |
@@ -41,7 +43,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `welcome` | `you`, `state` | to the joining / reconnecting player |
 | `state` | `state` | join/leave, lobby change, open/cross/wait/unlock, prediction |
 | `players` | `status`, `players[]` | after every accepted door open / wait / unlock |
-| `round` | role-filtered shift + `arena`, `players`, `next_round_in`, `state`, `dice`, `futures`, `pa` | the grid shifted and new d10s were rolled |
+| `round` | role-filtered shift + `arena`, `players`, `state`, `futures`, `pa`; `next_round_in` only for the Timekeeper | the grid shifted and new d10s were rolled |
 | `door_result` | `accepted`, `locked`, `door`, `color`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent; private to the acting player |
 | `door_opened` | `accepted`, `player`, `door`, `color`, `cost`, `open_until`, `message`; plus `room_code`/`target_code` only for players in either connected room | a paid doorway opened for 10s |
 | `door_closed` | `door`, `message`; plus `room_code`/`target_code` only for players in either connected room | the 10s window expired or the grid shifted |
@@ -52,13 +54,17 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `dealer_clue` | `tier`, `text` | private to a living, unlocked player near a hidden Sanction room |
 | `dealer_nudge` | `role`, `text`, `puzzle`, `round` | private role-appropriate nudge; never carries another role's puzzle mark |
 | `puzzle_result` | `correct`, `attempts`, `points`, `complete`, `marks`, `code`, `message` | result of a role-mark submission |
+| `puzzle` | `puzzle_id`, `tier`, `question`, `grids`, `highlight`, `answer_ms` | private delay puzzle question to the Decoder; never carries the key |
+| `puzzle_key` | `puzzle_id`, `tier`, `key_text`, `key_cells?` | private delay puzzle key to the Timekeeper; never carries the question |
+| `delay_status` | `state`, `cooldown_s`, `attempts_left` | private status to the Timekeeper and Decoder |
+| `delay_result` | `ok`, `message`, `delta_s` (Timekeeper only) | result of a delay answer or timeout; no countdown or delta for other roles |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
 | `elimination` | `player`, `reason` | points reached zero |
 | `prediction_result` | `correct`, `score`, `points`, `message` | after a prediction |
 | `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
 | `game_over` | `won`, `summary`, `nexus` | match ended (stored to the database) |
-| `error` | `code`, `message` | e.g. `rate_limited`, `not_adjacent`, `need_two` |
+| `error` | `code`, `message` | advisory: `rate_limited`, `not_adjacent`, `need_two`, `internal`; fatal: `invalid_username`, `username_taken`, `profile_unavailable`, `app_check_invalid`, `app_check_unavailable`, `room_not_found`, `auth_*` |
 
 ### `state`
 
@@ -75,14 +81,15 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     },
     "locked": false, "eliminated": false, "escaped": false,
     "exit_found": false, "exit_code": null,
-    "points": 15, "role": "archivist"
+    "points": 15, "role": "decoder"
   },
-  "next_round_in": 12.4, "round_seconds": 22,
+  "next_round_in": null, "round_seconds": 22,
   "match_time_left": 184.2, "match_seconds": 300,
   "min_players": 1, "rule_count": 1,
   "sanction_total": 7, "sanction_found": 0,
   "nexus": { ... }, "pa": "ROUND 3. THE GRID MOVES.",
-  "dice": { ... }, "futures": { ... },
+  "futures": { ... },
+  "delay_status": { "state": "idle", "cooldown_s": 0, "attempts_left": 2 },
   "dice_relief_rounds": 0,
   "puzzle": {
     "public": { "difficulty": "easy", "complexity": 1, "attempts": 0, "solved": false },
@@ -93,6 +100,9 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 ```
 
 `status` is `lobby`, `running`, `won` or `over`.
+`next_round_in` is populated only for the Timekeeper; every other role receives
+`null`. `delay_status` is sent only to the Timekeeper and Decoder. No player
+snapshot contains dice data.
 `pattern_type` is one of
 `rotation, reflection, translation, symbol, sequential, conditional, compound`.
 `sanction_total` and `sanction_found` are counts only. Unrevealed Sanction rooms
@@ -117,7 +127,7 @@ includes another role's mark or the full solution.
   "start_room": [2, 2],          // C3
   "rooms": [{
     "id": "r12", "code": "C3", "bx": 2, "by": 2,
-    "sigil": "spade",             // spade | heart | diamond | club (Oracle/Archivist only)
+    "sigil": "spade",             // spade | heart | diamond | club (Oracle only)
     "doors": {
       "N": { "color": "red", "temporary_open": false, "open_until": null }
     },
@@ -164,7 +174,7 @@ for the rest of the round.
 ```jsonc
 {
   "id": "p1", "name": "Hiba", "slot": 0, "color": "#ff4655",
-  "role": "archivist", "room_id": "r12", "room_code": "C3", "room": [2, 2],
+  "role": "decoder", "room_id": "r12", "room_code": "C3", "room": [2, 2],
   "points": 15, "locked": false, "eliminated": false, "escaped": false,
   "ready": false, "connected": true,
   "predictions": 0, "correct": 0, "streak": 0,
@@ -172,22 +182,25 @@ for the rest of the round.
 }
 ```
 
-### `dice`
+### Delay puzzle
 
-Keyed by room code. Every player receives their own room; the Timekeeper
-receives every room.
+The Timekeeper and Decoder solve one cooperative puzzle during a shift. The
+server config is the single source for all values: answer windows `30/40/50s`,
+success `+6/+12/+18s`, failure `-3/-6/-9s`, cooldown `45s`, `2` attempts per
+stage, maximum applied delay `+18s`, second success `0.5x`, shift bounds
+`15..60s`, penalty floor `3s` before the pending shift.
 
-```jsonc
-{
-  "C3": {
-    "room": "C3", "rid": "r12",
-    "doors": {
-      "N": { "color": "red" },
-      "E": { "color": "green" }
-    }
-  }
-}
-```
+The Timekeeper sends `delay_queue {tier}`; the server sends `puzzle` to the
+Decoder and `puzzle_key` to the Timekeeper. The Decoder sends exactly one
+`delay_answer {puzzle_id, answer}`. The server applies the resulting delta to
+the pending shift deadline, starts cooldown, then sends `delay_result`. If the
+shift fires first, the puzzle is cancelled without penalty, attempt or cooldown.
+If either role is dead or disconnected, `delay_queue` is rejected with
+`delay_pair_unavailable`; there is no fallback.
+
+`delay_result.delta_s` goes only to the Timekeeper. The Decoder and all other
+roles receive only `ok` and a Dealer message; they never receive countdown,
+delta, or the other role's payload.
 
 ### `futures` (possible futures)
 
@@ -196,9 +209,9 @@ Keyed by room code. Filtered per role:
 | role | receives |
 |---|---|
 | `oracle` | door `future` (open/sanction/exit/void) + door `color` |
-| `navigator` | only `exit`/`void` futures, otherwise `unknown` |
-| `timekeeper` | d10 pedestal colours and timing |
-| `archivist` | nothing here; the `round` payload carries `previous` (the old arena) |
+| `pathfinder` | only `exit`/`void` futures, otherwise `unknown` |
+| `timekeeper` | nothing here; the delay key and countdown arrive separately |
+| `decoder` | nothing here; the delay question arrives separately |
 
 ## Asymmetric information (O3)
 
@@ -207,13 +220,22 @@ The server filters every `round` and `state` per role (see
 
 | role | sees |
 |---|---|
-| `navigator` | which rooms moved (positions only) |
+| `pathfinder` | which rooms moved (positions only); `pathfinder_reveal` exposes blocked walls and sanction rooms until the next shift |
 | `oracle` | sigils and door colours of moved rooms + the cleanest futures |
-| `timekeeper` | d10 seal states and timing |
-| `archivist` | the previous grid configuration only |
+| `timekeeper` | the countdown and the delay puzzle key, never the puzzle question |
+| `decoder` | the delay puzzle question, never the key or countdown |
 
-Sigils are stripped from the arena for every role except the Oracle and
-Archivist; hidden d10 seal results are never serialised to any player.
+The `wristband` is neutral by default: every door reads unsealed and no
+sanction room is listed. A Pathfinder may send `{ "type": "pathfinder_reveal" }`
+once per shift while the match is running. The server answers with
+`wristband_reveal`; the reveal lasts until `step_round()` shifts the grid. At
+that shift the Pathfinder enters a 120-second cooldown. Hidden sanction room
+codes are only included as `wristband_sanctions` for an active reveal.
+`you.wristband_revealed` and `you.wristband_cooldown_remaining` expose that
+state; d10 `rolled_sealed` values are still never serialised.
+
+Sigils are stripped from the arena for every role except the Oracle; hidden d10
+seal results are never serialised to any player.
 No client ever receives another role's hidden data, and the hidden rule itself
 (`PatternEngine.rule`) is never serialised.
 
@@ -241,12 +263,12 @@ marked public omit auth.
 | GET | `/api/me` | create/read the caller's Supabase profile and stats |
 | PUT | `/api/me/profile` | update username and display name |
 | PUT | `/api/me/avatar/preset` | select a default symbol PFP (`joker`, `spade`, `club`, `heart`, `diamond`) |
-| POST | `/api/me/avatar/upload` | upload a PNG/JPEG/WEBP avatar of any size; server crops it to a square PNG |
+| POST | `/api/me/avatar/upload` | upload a PNG/JPEG/WEBP avatar up to 5 MB; server crops it to a square PNG |
 | DELETE | `/api/me/avatar` | clear the custom avatar, remove uploaded storage and restore the default symbol |
 | POST | `/api/me/mfa` | update optional MFA flag |
 | GET | `/api/me/history?limit=` | verified caller's match history |
-| GET | `/api/me/export` | verified caller's account data export |
-| DELETE | `/api/me` | verified caller's account deletion |
+| GET | `/api/me/export` | current user's account data export |
+| DELETE | `/api/me` | current user's account deletion |
 | GET | `/api/leaderboard?limit=` | public top players |
 | GET | `/api/stages` | public stage definitions |
 | GET | `/api/nexus/tune?team_skill=&cycles=` | public simulated-team tuning |

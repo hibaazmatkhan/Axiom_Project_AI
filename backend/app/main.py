@@ -457,6 +457,11 @@ async def _verify_frame_token(ws: WebSocket, token: object) -> AuthUser | None:
         return None
 
 
+async def _ws_profile_error(ws: WebSocket, code: str, message: str, close_code: int) -> None:
+    await ws.send_json({"type": "error", "code": code, "message": message})
+    await ws.close(code=close_code)
+
+
 async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: bool) -> WsIdentity | None:
     if not auth_frame_required:
         return WsIdentity(uid=None, name=name, pid=pid or None, verified=False)
@@ -479,11 +484,20 @@ async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: 
     if user is None:
         return None
 
-    profile = None
     try:
         profile = await asyncio.to_thread(supabase_store.create_or_update_profile, user)
+    except supabase_store.InvalidUsername as exc:
+        await _ws_profile_error(ws, "invalid_username", str(exc), 1008)
+        return None
+    except supabase_store.UsernameTaken as exc:
+        await _ws_profile_error(ws, "username_taken", str(exc), 1008)
+        return None
     except supabase_store.SupabaseUnavailable as exc:
         logger.warning("profile lookup failed during websocket authentication: %s", exc)
+        await _ws_profile_error(
+            ws, "profile_unavailable", "Profile storage is temporarily unavailable.", 1013,
+        )
+        return None
 
     display_name = (
         (profile or {}).get("display_name")
@@ -634,7 +648,10 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
         await room.leave(player)
         audit.room_upsert(room_id, room)
         if not any(p.connected for p in room.players.values()) and not room.spectators:
-            rooms.pop(room_id, None)
+            async with room_creation_lock:
+                if rooms.get(room_id) is room:
+                    registry.hold(room_id, room.id, room.min_players)
+                    rooms.pop(room_id, None)
             audit.room_delete(room_id)
 
 

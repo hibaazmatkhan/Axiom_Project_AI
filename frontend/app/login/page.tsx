@@ -256,10 +256,10 @@ export default function LoginPage() {
 
           <div className="mt-10 grid max-w-md grid-cols-2 gap-2">
             {[
-              ["\u2660", "Navigator", "text-blue"],
+              ["\u2660", "Pathfinder", "text-blue"],
               ["\u2665", "Oracle", "text-red"],
               ["\u2666", "Timekeeper", "text-yellow"],
-              ["\u2663", "Archivist", "text-green"],
+              ["\u2663", "Decoder", "text-green"],
             ].map(([suit, role, tone]) => (
               <div
                 key={role}

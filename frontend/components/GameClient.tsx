@@ -1,15 +1,13 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import GameCanvas from "./GameCanvas";
 import WristbandMap from "./WristbandMap";
 import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
-import type { DoorColor, PatternType } from "@/lib/types";
+import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, DoorColor, Sigil } from "@/lib/types";
 
-const PATTERN_TYPES: PatternType[] = [
-  "rotation", "reflection", "translation", "symbol", "sequential", "conditional", "compound",
-];
 const SIGILS = ["spade", "heart", "diamond", "club"] as const;
 const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
@@ -25,8 +23,12 @@ function formatClock(value: number) {
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <section className={`broadcast-panel panel-cut p-4 ${className}`}>{children}</section>;
+function Panel({ children, className = "", compact = false }: {
+  children: React.ReactNode;
+  className?: string;
+  compact?: boolean;
+}) {
+  return <section className={`broadcast-panel panel-cut ${compact ? "p-2" : "p-4"} ${className}`}>{children}</section>;
 }
 
 function Stat({ label, value, accent = "text-bone" }: { label: string; value: React.ReactNode; accent?: string }) {
@@ -54,20 +56,163 @@ function Points({ value }: { value: number }) {
   );
 }
 
+function DelayGrid({
+  grid, highlight, onPick,
+}: {
+  grid: (Sigil | null)[][];
+  highlight?: DelayCell | null;
+  onPick?: (cell: DelayCell) => void;
+}) {
+  const cols = grid[0]?.length === 4 ? "grid-cols-4" : "grid-cols-3";
+  return (
+    <div className={`mt-1 grid w-fit gap-1 ${cols}`}>
+      {grid.flatMap((row, rowIndex) => row.map((suit, colIndex) => {
+        const marked = highlight?.row === rowIndex && highlight.col === colIndex;
+        return (
+          <button
+            key={`${rowIndex}-${colIndex}`}
+            type="button"
+            disabled={!onPick}
+            onClick={() => onPick?.({ row: rowIndex, col: colIndex })}
+            className={`flex h-8 w-8 items-center justify-center rounded border text-sm transition ${
+              marked
+                ? "border-yellow bg-yellow/15 text-yellow"
+                : onPick
+                  ? "border-edge text-bone hover:border-blue hover:text-blue"
+                  : "border-edge/50 text-dim"
+            }`}
+          >
+            {suit ? SIGIL_GLYPH[suit] : "·"}
+          </button>
+        );
+      }))}
+    </div>
+  );
+}
+
+function DelayBoard({
+  puzzle, clock, onAnswer,
+}: {
+  puzzle: DelayPuzzleView;
+  clock: number | null;
+  onAnswer: (answer: DelayCell | Sigil) => void;
+}) {
+  const pct = clock == null || puzzle.answer_ms <= 0
+    ? 0
+    : Math.max(0, Math.min(100, (clock / (puzzle.answer_ms / 1000)) * 100));
+  return (
+    <div className="mt-2">
+      <p className="text-xs leading-relaxed text-bone">{puzzle.question}</p>
+      <div className="mt-2 flex items-center justify-between text-[10px] uppercase tracking-widest text-dim">
+        <span>Answer clock</span>
+        <span className="mono text-yellow">{clock == null ? "--" : `${clock.toFixed(1)}s`}</span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-void/70">
+        <div className="h-full rounded-full bg-gradient-to-r from-red to-yellow" style={{ width: `${pct}%` }} />
+      </div>
+      {puzzle.grids.before && (
+        <div className="mt-2">
+          <span className="mono text-[10px] uppercase tracking-widest text-dim">Before</span>
+          <DelayGrid grid={puzzle.grids.before} />
+        </div>
+      )}
+      {puzzle.grids.after && (
+        <div className="mt-2">
+          <span className="mono text-[10px] uppercase tracking-widest text-dim">After · tap one tile</span>
+          <DelayGrid grid={puzzle.grids.after} highlight={puzzle.highlight} onPick={onAnswer} />
+        </div>
+      )}
+      {puzzle.grids.given && (
+        <div className="mt-2">
+          <span className="mono text-[10px] uppercase tracking-widest text-dim">
+            {puzzle.tier === 2 ? "Grid · tap destination" : "Grid · marked tile"}
+          </span>
+          <DelayGrid
+            grid={puzzle.grids.given}
+            highlight={puzzle.highlight}
+            onPick={puzzle.tier === 2 ? onAnswer : undefined}
+          />
+        </div>
+      )}
+      {puzzle.tier === 3 && (
+        <div className="mt-2 grid grid-cols-4 gap-1">
+          {SIGILS.map((suit) => (
+            <button
+              key={suit}
+              type="button"
+              onClick={() => onAnswer(suit)}
+              className="rounded-lg border border-edge py-1 text-sm text-bone transition hover:border-yellow hover:text-yellow"
+              title={suit}
+            >
+              {SIGIL_GLYPH[suit]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DelayKeyPanel({
+  keyView, status,
+}: {
+  keyView: DelayKeyView | null;
+  status: DelayStatusView | null;
+}) {
+  return (
+    <div className="mt-2">
+      {status && (
+        <div className="space-y-1.5">
+          <Stat label="State" value={status.state} accent="text-yellow" />
+          <Stat label="Attempts left" value={status.attempts_left} accent="text-blue" />
+          {status.state === "cooldown" && (
+            <Stat label="Recharging" value={`${formatClock(status.cooldown_s)}`} accent="text-dim" />
+          )}
+        </div>
+      )}
+      {keyView ? (
+        <div className="mt-3 rounded-lg border border-yellow/40 bg-yellow/5 px-2 py-2">
+          <p className="text-xs leading-relaxed text-bone">{keyView.key_text}</p>
+          {keyView.key_cells && (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs text-yellow">
+              {keyView.key_cells.map((cell) => (
+                <span key={`${cell.row}-${cell.col}`} className="mono">
+                  {cell.row + 1},{cell.col + 1} · {SIGIL_GLYPH[cell.suit]}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="mt-3 text-[11px] leading-relaxed text-dim">
+          No key yet. Queue a tier and pass it to the Decoder by voice.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function GameClient({ room, name }: { room: string; name: string }) {
+  const router = useRouter();
   const g = useGameSocket(room, name);
   const [chatInput, setChatInput] = useState("");
   const [secs, setSecs] = useState<number | null>(null);
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
-  const [guessType, setGuessType] = useState<PatternType | "">("");
-  const [guessSigils, setGuessSigils] = useState<string[]>([]);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle">("none");
+  const [delaySecs, setDelaySecs] = useState<number | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [puzzleMark, setPuzzleMark] = useState("");
   const teamRef = useRef<HTMLDivElement>(null);
-  const { sendOpenDoor, sendCrossDoor, sendWait } = g;
+  const { sendOpenDoor, sendCrossDoor, sendWait, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch } = g;
 
   const me = g.me;
+  const handleExit = () => {
+    exitMatch();
+    router.push("/lobby");
+  };
+  const wristbandCooldown = g.wristbandCooldownAt == null
+    ? 0
+    : Math.max(0, (g.wristbandCooldownAt - performance.now()) / 1000);
   const myRoom = useMemo(
     () => g.arena?.rooms.find((r) => r.code === me?.room_code) ?? null,
     [g.arena, me?.room_code]
@@ -93,14 +238,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
     const tick = () => {
       setSecs(g.nextAt == null ? null : Math.max(0, (g.nextAt - performance.now()) / 1000));
       setMatchSecs(g.matchAt == null ? null : Math.max(0, (g.matchAt - performance.now()) / 1000));
+      setDelaySecs(g.delayDeadlineAt == null ? null : Math.max(0, (g.delayDeadlineAt - performance.now()) / 1000));
     };
     tick();
     const t = setInterval(tick, 100);
     return () => clearInterval(t);
-  }, [g.nextAt, g.matchAt]);
+  }, [g.nextAt, g.matchAt, g.delayDeadlineAt]);
 
-  const toggleSigil = (s: string) =>
-    setGuessSigils((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
 
   useEffect(() => {
     setPuzzleMark("");
@@ -122,14 +266,14 @@ export default function GameClient({ room, name }: { room: string; name: string 
     };
   }, [teamOpen]);
 
-  const difficultyPct = Math.round(((g.nexus.difficulty ?? 0) + 1) / 2 * 100);
+  const dealerLead = `${g.dealerClue?.text ?? ""} ${g.dealerNudge?.text ?? ""} ${g.dealerNudge?.puzzle ?? ""}`;
+  const sanctionLead = /sanction/i.test(dealerLead);
   const lockedAllies = g.players.filter(
     (p) => p.locked && !p.eliminated && p.id !== g.you
   );
   const alive = g.players.filter((p) => !p.eliminated);
   const teamRoster = useMemo(() => [...g.players].sort((a, b) => a.slot - b.slot), [g.players]);
   const futureEntries = Object.entries(g.futures);
-  const diceEntries = Object.entries(g.dice);
   const isLobby = g.status === "lobby";
   const isOver = g.status === "won" || g.status === "over";
 
@@ -222,14 +366,26 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             </div>
           )}
-          <div className="border border-edge bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
-            <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
-              Next shift
+          {g.role === "timekeeper" && (
+            <div className="border border-edge bg-void/85 px-3 py-1.5 text-center backdrop-blur sm:px-4 sm:py-2">
+              <div className="mono text-[8px] uppercase tracking-[0.18em] text-dim sm:text-[10px]">
+                Next shift
+              </div>
+              <div className={`mono text-base tabular-nums sm:text-lg ${secs != null && secs < 4 ? "text-red" : "text-bone"}`}>
+                {secs == null ? "--" : secs.toFixed(1) + "s"}
+              </div>
             </div>
-            <div className={`mono text-base tabular-nums sm:text-lg ${secs != null && secs < 4 ? "text-red" : "text-bone"}`}>
-              {secs == null ? "--" : secs.toFixed(1) + "s"}
-            </div>
-          </div>
+          )}
+          <button
+            type="button"
+            onClick={handleExit}
+            aria-label="Exit match"
+            title="Leave this match and return to lobby"
+            className="flex items-center gap-1 border border-red/40 bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.14em] text-red backdrop-blur transition hover:border-red/70 hover:bg-red/10"
+          >
+            <span aria-hidden="true">←</span>
+            Exit
+          </button>
         </div>
       </div>
 
@@ -250,6 +406,41 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="mono text-sm text-blue">{g.roleLabel}</span>
           </div>
           <p className="mt-2 text-xs leading-relaxed text-dim">{g.roleHint}</p>
+          {g.role === "pathfinder" && (
+            <button
+              type="button"
+              onClick={sendRevealWristband}
+              disabled={!g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
+              className="mt-3 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
+            >
+              {me?.wristband_revealed
+                ? "Wristband revealed · next shift"
+                : wristbandCooldown > 0
+                  ? `Scan recharging · ${formatClock(wristbandCooldown)}`
+                  : "Reveal wristband map"}
+            </button>
+          )}
+          {g.role === "timekeeper" && (
+            <div className="mt-3 border-t border-edge/40 pt-3">
+              <span className="mono text-[10px] uppercase tracking-widest text-dim">Delay queue</span>
+              <div className="mt-2 grid grid-cols-3 gap-1">
+                {([1, 2, 3] as const).map((tier) => (
+                  <button
+                    key={tier}
+                    type="button"
+                    onClick={() => sendDelayQueue(tier)}
+                    disabled={!g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
+                    className="rounded-lg border border-yellow/50 py-1.5 text-xs text-yellow transition hover:bg-yellow/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
+                  >
+                    Tier {tier}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[10px] leading-relaxed text-dim">
+                {secs == null ? "--" : `${secs.toFixed(1)}s to shift`} · {g.delayStatus?.attempts_left ?? 0} attempts left
+              </p>
+            </div>
+          )}
           <div className="mt-3">
             <Points value={me?.points ?? 0} />
           </div>
@@ -269,9 +460,17 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span className="text-xs uppercase tracking-widest text-dim">Wristband</span>
             <span className="mono text-[10px] text-dim">A1–E5</span>
           </div>
-          <WristbandMap arena={g.arena} youCode={me?.room_code ?? null} exitCode={me?.exit_code ?? null} className="mt-2" />
+          <WristbandMap
+            arena={g.arena}
+            wristband={g.wristband}
+            youCode={me?.room_code ?? null}
+            exitCode={me?.exit_code ?? null}
+            showSanctions={!!me?.wristband_revealed}
+            sanctionRooms={g.wristbandSanctions}
+            className="mt-2"
+          />
           <p className="mt-2 text-[10px] leading-relaxed text-dim">
-            Edge bars are door colours; dim bars are blocked walls. D10 seals stay hidden.
+            Edge bars are door colours. The Pathfinder scan reveals blocked walls and sanction rooms until the next shift; D10 seals stay hidden.
           </p>
         </Panel>
 
@@ -294,85 +493,55 @@ export default function GameClient({ room, name }: { room: string; name: string 
 
       {/* right column */}
       <div className="absolute right-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-72 space-y-3 overflow-y-auto pb-4 scroll-thin xl:block">
-        <Panel>
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-widest text-dim">The Dealer</span>
-            <span className="h-2 w-2 animate-pulse-glow rounded-full bg-yellow" />
-          </div>
-          <p className="mt-2 text-xs italic leading-relaxed text-bone">“{g.dealerClue?.text ?? g.pa}”</p>
-          {g.dealerNudge && (
-            <p className="mt-2 rounded-lg border border-yellow/40 bg-yellow/10 px-2 py-1 text-[11px] text-yellow">
-              Whisper · {g.dealerNudge.text}
-              {g.dealerNudge.puzzle ? ` ${g.dealerNudge.puzzle}` : ""}
-            </p>
-          )}
-          <div className="mt-3 space-y-1.5">
-            <Stat label="Team skill" value={`${Math.round((g.nexus.team_skill ?? 0) * 100)}%`} accent="text-blue" />
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-xs text-dim">Pressure</span>
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-edge/50">
-                <div className="h-full rounded-full bg-gradient-to-r from-green via-yellow to-red" style={{ width: `${difficultyPct}%` }} />
-              </div>
+        {(g.dealerClue || g.dealerNudge) && (
+          <Panel compact className={sanctionLead ? "border-yellow/60 bg-yellow/[0.06]" : ""}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="mono text-[9px] uppercase tracking-[0.18em] text-dim">Dealer</span>
+              {sanctionLead && (
+                <span className="mono rounded-full border border-yellow/50 px-2 py-0.5 text-[8px] uppercase tracking-[0.14em] text-yellow">
+                  Sanction lead
+                </span>
+              )}
             </div>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-1">
-            {g.nexus.players.map((p) => (
-              <span
-                key={p.pid}
-                title={`pattern ${Math.round((p.attrs?.pattern ?? 0) * 100)}% · cooperation ${Math.round((p.attrs?.cooperation ?? 0) * 100)}%`}
-                className="rounded-full border border-edge px-2 py-0.5 text-[10px] text-dim"
-              >
-                {p.name || p.pid} · {p.style}
+            {g.dealerClue && (
+              <p className={`mt-1.5 text-[11px] leading-snug ${sanctionLead ? "text-yellow" : "text-bone"}`}>
+                “{g.dealerClue.text}”
+              </p>
+            )}
+            {g.dealerNudge && (
+              <p className="mt-1.5 text-[10px] leading-snug text-dim">
+                Whisper · {g.dealerNudge.text}
+                {g.dealerNudge.puzzle ? ` ${g.dealerNudge.puzzle}` : ""}
+              </p>
+            )}
+          </Panel>
+        )}
+
+        {(g.role === "timekeeper" || g.role === "decoder" || g.role === "oracle") && (
+          <Panel>
+            <div className="flex items-center justify-between">
+              <span className="text-xs uppercase tracking-widest text-dim">
+                {g.role === "timekeeper" ? "Delay key" : g.role === "decoder" ? "Puzzle" : "Possible futures"}
               </span>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel>
-          <span className="text-xs uppercase tracking-widest text-dim">Movement</span>
-          <p className="mt-2 text-[11px] leading-relaxed text-dim">
-            Move the cursor to look around, click a door or press E to pay 1 point and hold it open for 10s. Walk into the open doorway to enter the next room; any living teammate can follow for free.
-          </p>
-        </Panel>
-
-        <Panel>
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-widest text-dim">
-              {g.role === "timekeeper" ? "Fate d10" : "Possible futures"}
-            </span>
             <span className="mono text-[10px] text-dim">{g.role}</span>
           </div>
 
           {g.role === "timekeeper" ? (
-            diceEntries.length === 0 ? (
-              <p className="mt-2 text-[11px] text-dim">No dice rolled yet.</p>
+            <DelayKeyPanel keyView={g.delayKey} status={g.delayStatus} />
+          ) : g.role === "decoder" ? (
+            g.delayPuzzle ? (
+              <DelayBoard
+                puzzle={g.delayPuzzle}
+                clock={delaySecs}
+                onAnswer={(answer) =>
+                  g.sendDelayAnswer(g.delayPuzzle!.puzzle_id, answer)
+                }
+              />
             ) : (
-              <div className="scroll-thin mt-2 max-h-44 space-y-1 overflow-y-auto">
-                {diceEntries.map(([code, d]) => (
-                  <div key={code} className="rounded-lg bg-ink/40 px-2 py-1 text-[11px]">
-                    <span className="mono text-dim">{code}</span>
-                    <span className="ml-2">
-                      {DIRS.map((dir) => {
-                        const dd = d.doors?.[dir];
-                        if (!dd) return null;
-                        return (
-                          <span key={dir} className="mono ml-1" style={{ color: DOOR_HEX[dd.color] }}>
-                            {dir}
-                          </span>
-                        );
-                      })}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )
-          ) : g.role === "archivist" ? (
-            <div className="mt-2">
-              <p className="text-[11px] leading-relaxed text-dim">
-                The previous grid is ghosted below. Compare it with the living walls.
+              <p className="mt-2 text-[11px] leading-relaxed text-dim">
+                Waiting for the Timekeeper to queue a puzzle.
               </p>
-              <WristbandMap arena={g.prevArena} youCode={null} className="mt-2 opacity-80" />
-            </div>
+            )
           ) : futureEntries.length === 0 ? (
             <p className="mt-2 text-[11px] text-dim">No visions this round.</p>
           ) : (
@@ -395,54 +564,9 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 </div>
               ))}
             </div>
-          )}
-        </Panel>
-
-        <Panel>
-          <span className="text-xs uppercase tracking-widest text-dim">Predict the next shift</span>
-          <p className="mt-1 text-[11px] text-dim">Correct calls delay the shift. Wrong ones hurry it.</p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {PATTERN_TYPES.map((t) => (
-              <button
-                key={t}
-                onClick={() => setGuessType((cur) => (cur === t ? "" : t))}
-                className={`rounded-full border px-2 py-0.5 text-[10px] transition ${
-                  guessType === t ? "border-blue bg-blue/15 text-blue" : "border-edge text-dim hover:text-bone"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          <div className="mt-2 grid grid-cols-4 gap-1">
-            {SIGILS.map((s) => (
-              <button
-                key={s}
-                onClick={() => toggleSigil(s)}
-                className={`rounded-lg border py-1 text-sm transition ${
-                  guessSigils.includes(s) ? "border-yellow text-yellow" : "border-edge text-dim hover:text-bone"
-                }`}
-                title={s}
-              >
-                {SIGIL_GLYPH[s]}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={() =>
-              g.sendPredict(guessType || undefined, guessSigils.length ? guessSigils : undefined)
-            }
-            disabled={!guessType && guessSigils.length === 0}
-            className="mt-3 w-full rounded-lg bg-bone py-2 text-sm font-semibold text-coal transition hover:brightness-95 disabled:opacity-40"
-          >
-            Submit prediction
-          </button>
-          {g.prediction && (
-            <p className={`mt-2 text-xs ${g.prediction.correct ? "text-green" : "text-red"}`}>
-              {g.prediction.correct ? "Correct" : "Missed"} · {Math.round(g.prediction.score * 100)}% match
-            </p>
-          )}
-        </Panel>
+            )}
+          </Panel>
+        )}
 
         <Panel>
           <div className="flex items-center justify-between">
@@ -542,10 +666,71 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   </span>
                   <span className="mono text-[9px] text-dim">A1–E5</span>
                 </div>
-                <WristbandMap arena={g.arena} wristband={g.wristband} youCode={me?.room_code ?? null} exitCode={me?.exit_code ?? null} className="mt-2" />
+                {g.role === "pathfinder" && (
+                  <button
+                    type="button"
+                    onClick={sendRevealWristband}
+                    disabled={!g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
+                    className="mt-2 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
+                  >
+                    {me?.wristband_revealed
+                      ? "Wristband revealed · next shift"
+                      : wristbandCooldown > 0
+                        ? `Scan recharging · ${formatClock(wristbandCooldown)}`
+                        : "Reveal wristband map"}
+                  </button>
+                )}
+                <WristbandMap
+                  arena={g.arena}
+                  wristband={g.wristband}
+                  youCode={me?.room_code ?? null}
+                  exitCode={me?.exit_code ?? null}
+                  showSanctions={!!me?.wristband_revealed}
+                  sanctionRooms={g.wristbandSanctions}
+                  className="mt-2"
+                />
                 <p className="mt-2 text-[10px] leading-relaxed text-dim">
-                  Edge bars are door colours. Dim bars are sealed. The grid shifts every round.
+                  Edge bars are door colours. The Pathfinder scan reveals blocked walls and sanction rooms until the next shift.
                 </p>
+              </div>
+            )}
+
+            {mobilePanel === "delay" && (
+              <div>
+                {g.role === "timekeeper" ? (
+                  <>
+                    <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Delay queue</span>
+                    <div className="mt-2 grid grid-cols-3 gap-1">
+                      {([1, 2, 3] as const).map((tier) => (
+                        <button
+                          key={tier}
+                          type="button"
+                          onClick={() => sendDelayQueue(tier)}
+                          disabled={!g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
+                          className="rounded-lg border border-yellow/50 py-1.5 text-xs text-yellow transition hover:bg-yellow/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim"
+                        >
+                          Tier {tier}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[10px] text-dim">
+                      {secs == null ? "--" : `${secs.toFixed(1)}s to shift`} · {g.delayStatus?.attempts_left ?? 0} attempts left
+                    </p>
+                    <DelayKeyPanel keyView={g.delayKey} status={g.delayStatus} />
+                  </>
+                ) : g.role === "decoder" ? (
+                  g.delayPuzzle ? (
+                    <DelayBoard
+                      puzzle={g.delayPuzzle}
+                      clock={delaySecs}
+                      onAnswer={(answer) => g.sendDelayAnswer(g.delayPuzzle!.puzzle_id, answer)}
+                    />
+                  ) : (
+                    <p className="mt-2 text-xs text-dim">Waiting for the Timekeeper to queue a puzzle.</p>
+                  )
+                ) : (
+                  <p className="mt-2 text-xs text-dim">Your role has no delay puzzle.</p>
+                )}
               </div>
             )}
 
@@ -645,9 +830,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <span>
               Pts <span className="mono text-bone">{me?.points ?? 0}</span>
             </span>
-            <span>
-              Next <span className="mono text-bone">{secs == null ? "--" : secs.toFixed(1) + "s"}</span>
-            </span>
+            {g.role === "timekeeper" && (
+              <span>
+                Next <span className="mono text-bone">{secs == null ? "--" : secs.toFixed(1) + "s"}</span>
+              </span>
+            )}
           </div>
 
           {lockedAllies.length > 0 && (
@@ -681,11 +868,19 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </div>
 
           <div className="grid grid-cols-2 gap-1">
-            {([
-              ["map", "Map"],
-              ["chat", "Chat"],
-              ["puzzle", "Marks"],
-            ] as const).map(([key, label]) => (
+            {(g.role === "timekeeper" || g.role === "decoder"
+              ? ([
+                  ["map", "Map"],
+                  ["chat", "Chat"],
+                  ["puzzle", "Marks"],
+                  ["delay", "Delay"],
+                ] as const)
+              : ([
+                  ["map", "Map"],
+                  ["chat", "Chat"],
+                  ["puzzle", "Marks"],
+                ] as const)
+            ).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
@@ -739,6 +934,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
         {g.revive && (
           <div className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
             A locked player was scanned free.
+          </div>
+        )}
+        {g.notice && (
+          <div className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur">
+            {g.notice}
           </div>
         )}
         {g.exitNotice && (

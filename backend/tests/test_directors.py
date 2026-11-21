@@ -8,6 +8,7 @@ from app.directors import (
     make_director,
 )
 from app.game import Room
+from app.nexus import MAX_COMPLEXITY, MIN_COMPLEXITY
 
 
 def test_director_subclasses_are_concrete():
@@ -30,6 +31,21 @@ def test_random_director_is_deterministic_for_a_seed():
     actions_a = [first.choose_action({"cycle": i, "solvable": True})["action"] for i in range(8)]
     actions_b = [second.choose_action({"cycle": i, "solvable": True})["action"] for i in range(8)]
     assert actions_a == actions_b
+
+
+def test_random_director_keeps_complexity_in_bounds():
+    director = RandomDirector(seed=9)
+    for i in range(30):
+        director.choose_action({"cycle": i, "solvable": True, "cycle_time_left": 8})
+        assert MIN_COMPLEXITY <= director.complexity_level <= MAX_COMPLEXITY
+
+
+def test_random_director_only_changes_complexity_for_complexity_actions():
+    director = RandomDirector(seed=10)
+    before = director.complexity_level
+    for action in ("add_hazard", "give_clue", "lower_dice", "shift_information"):
+        director.commit_action({"action": action})
+        assert director.complexity_level == before
 
 
 def test_nexus_director_delegates_to_utility_decision():

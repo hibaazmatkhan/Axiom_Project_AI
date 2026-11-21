@@ -7,24 +7,24 @@ import PageShell from "@/components/PageShell";
 import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError, api } from "@/lib/api";
+import { api } from "@/lib/api";
 import { pfpPresetUrl } from "@/lib/avatarRules";
 import { guest } from "@/lib/guest";
 
 const QUICK_MATCH_KEY = "axiom.quickMatchClientKey";
 
 const ROLES = [
-  ["\u2660", "Navigator", "Grid + shift", "text-blue"],
+  ["\u2660", "Pathfinder", "Wristband scan", "text-blue"],
   ["\u2665", "Oracle", "Sigils + futures", "text-red"],
-  ["\u2666", "Timekeeper", "Countdown", "text-yellow"],
-  ["\u2663", "Archivist", "Previous arena", "text-green"],
+  ["\u2666", "Timekeeper", "Countdown + key", "text-yellow"],
+  ["\u2663", "Decoder", "Puzzle answer", "text-green"],
 ];
 
 const ROLE_PREVIEWS: Record<string, string> = {
-  Navigator: "Live grid access: you see every room shift and call the route.",
+  Pathfinder: "Wristband scan: reveal blocked walls and sanction rooms until the next shift.",
   Oracle: "Future sight: you read sigils and predicted doors before the round resolves.",
-  Timekeeper: "Clock control: you track the countdown and call the next shift.",
-  Archivist: "Memory access: you keep the previous arena and compare what changed.",
+  Timekeeper: "Clock control: you alone see the countdown and pass the delay puzzle key to the Decoder.",
+  Decoder: "Puzzle access: you see the delay puzzle question and answer it using the Timekeeper's key.",
 };
 
 function clientKey(): string {
@@ -44,7 +44,7 @@ export default function LobbyPage() {
   const [code, setCode] = useState("");
   const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [previewRole, setPreviewRole] = useState("Navigator");
+  const [previewRole, setPreviewRole] = useState("Pathfinder");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [profileName, setProfileName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -132,24 +132,12 @@ export default function LobbyPage() {
     }
   };
 
-  const joinRoom = async () => {
+  const joinRoom = () => {
     const target = code.trim().toUpperCase();
     if (!name.trim() || !target || busy) return;
     setError(null);
     stopPolling();
-    setBusy(true);
-    try {
-      await api.getRoom(target);
-      go(target);
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) {
-        setError(`Room ${target} was not found. Check the code and try again.`);
-      } else {
-        setError(errorMessage(cause, "Could not check that room."));
-      }
-    } finally {
-      setBusy(false);
-    }
+    go(target);
   };
 
   const pollQuickMatch = async (key: string) => {

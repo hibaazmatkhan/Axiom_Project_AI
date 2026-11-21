@@ -28,12 +28,12 @@ const LOOP = [
 
 const ROLES = [
   {
-    name: "Navigator",
+    name: "Pathfinder",
     suit: "\u2660",
-    tag: "Route",
+    tag: "Scan",
     tone: "text-blue",
     border: "group-hover:border-blue/50",
-    desc: "Sees the grid and exactly which rooms shifted. Calls the route.",
+    desc: "Reveals the wristband map once per shift to read blocked walls and sanction rooms.",
   },
   {
     name: "Oracle",
@@ -46,18 +46,18 @@ const ROLES = [
   {
     name: "Timekeeper",
     suit: "\u2666",
-    tag: "Fate",
+    tag: "Clock",
     tone: "text-yellow",
     border: "group-hover:border-yellow/50",
-    desc: "Calls the countdown and the next shift.",
+    desc: "Sees the countdown alone and passes the delay puzzle key to the Decoder.",
   },
   {
-    name: "Archivist",
+    name: "Decoder",
     suit: "\u2663",
-    tag: "Memory",
+    tag: "Puzzle",
     tone: "text-green",
     border: "group-hover:border-green/50",
-    desc: "Sees the previous arena as a ghost and compares it to the living grid.",
+    desc: "Sees the delay puzzle question and solves it with the Timekeeper's key.",
   },
 ];
 
@@ -263,7 +263,7 @@ export default function Landing() {
               <SectionHeading
                 eyebrow="Four roles · one truth"
                 title="You cannot see the whole game."
-                copy="Information is asymmetric by design. The Navigator sees movement, the Oracle sees futures, the Timekeeper sees fate, and the Archivist sees what the room used to be."
+                copy="Information is asymmetric by design. The Pathfinder scans the wristband, the Oracle sees futures, the Timekeeper holds the clock and key, and the Decoder answers the delay puzzle."
               />
               <p className="mono max-w-xs text-[10px] uppercase leading-relaxed tracking-[0.2em] text-ash">
                 Every role receives a different server-filtered slice. No client can see the hidden

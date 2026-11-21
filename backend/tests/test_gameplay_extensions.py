@@ -24,12 +24,12 @@ def _player(room, pid="a", slot=0, role=None):
 
 def test_room_puzzle_is_cooperative_and_role_filtered():
     room = Room("PUZ", seed=13)
-    p = _player(room, "a", 0, "navigator")
+    p = _player(room, "a", 0, "pathfinder")
     room.players[p.id] = p
     snap = room.snapshot(p)
     assert set(room.puzzle.domains) == set(ROLES)
-    assert snap["puzzle"]["you"]["role"] == "navigator"
-    assert set(snap["puzzle"]["you"]["domain"]) == set(room.puzzle.domains["navigator"])
+    assert snap["puzzle"]["you"]["role"] == "pathfinder"
+    assert set(snap["puzzle"]["you"]["domain"]) == set(room.puzzle.domains["pathfinder"])
     assert "solution" not in snap["puzzle"]
     assert room.snapshot()["puzzle"]["you"] is None
 
@@ -47,7 +47,7 @@ def test_puzzle_submission_is_validated_rewarded_once_and_logged():
         asyncio.run(room.submit_puzzle(p, {role: wrong[role]}))
     assert all(p.points == before[p.id] for p in players.values())
     assert sum(e["kind"] == "puzzle_attempt" for e in room.events) == len(ROLES)
-    result = next(m for m in reversed(players["navigator"].ws.sent)
+    result = next(m for m in reversed(players["pathfinder"].ws.sent)
                   if m.get("type") == "puzzle_result")
     assert result["correct"] is False and "solution" not in result
 
@@ -55,8 +55,8 @@ def test_puzzle_submission_is_validated_rewarded_once_and_logged():
         asyncio.run(room.submit_puzzle(p, {role: room.puzzle.solution[role]}))
     assert all(p.points == before[p.id] + 1 for p in players.values())
     assert any(e["kind"] == "puzzle_solved" for e in room.events)
-    asyncio.run(room.submit_puzzle(players["navigator"],
-                                  {"navigator": room.puzzle.solution["navigator"]}))
+    asyncio.run(room.submit_puzzle(players["pathfinder"],
+                                  {"pathfinder": room.puzzle.solution["pathfinder"]}))
     assert all(p.points == before[p.id] + 1 for p in players.values())
     report = room.nexus.team_report()["puzzle"]
     assert report["attempts"] == 2 * len(ROLES) + 1 and report["solved"] == 1
@@ -89,19 +89,19 @@ def test_shift_information_sends_a_private_role_nudge():
     room = Room("NUDGE", seed=29, round_seconds=60)
     room.status = "running"
     oracle = _player(room, "o", 1, "oracle")
-    navigator = _player(room, "n", 0, "navigator")
-    room.players = {oracle.id: oracle, navigator.id: navigator}
+    pathfinder = _player(room, "n", 0, "pathfinder")
+    room.players = {oracle.id: oracle, pathfinder.id: pathfinder}
     room.nexus.decide = lambda *args, **kwargs: {"action": "shift_information"}
 
     asyncio.run(room.broadcast_round())
     nudges = [m for m in oracle.ws.sent if m.get("type") == "dealer_nudge"]
     if not nudges:
-        nudges = [m for m in navigator.ws.sent if m.get("type") == "dealer_nudge"]
+        nudges = [m for m in pathfinder.ws.sent if m.get("type") == "dealer_nudge"]
     assert len(nudges) == 1
-    receiver = oracle if nudges[0] in oracle.ws.sent else navigator
-    other = navigator if receiver is oracle else oracle
+    receiver = oracle if nudges[0] in oracle.ws.sent else pathfinder
+    other = pathfinder if receiver is oracle else oracle
     assert not [m for m in other.ws.sent if m.get("type") == "dealer_nudge"]
-    assert receiver.role in ("oracle", "navigator")
+    assert receiver.role in ("oracle", "pathfinder")
     assert nudges[0]["text"]
     assert "solution" not in nudges[0] and "sanction" not in nudges[0]["text"]
     assert room.nexus.puzzle_metrics()["info_nudges"] == 1

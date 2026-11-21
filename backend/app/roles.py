@@ -4,25 +4,25 @@ No single player sees the full picture. The server filters every round payload
 and snapshot by the player's role so no client receives another role's hidden
 data.
 
-  navigator   - sees the grid and exactly which rooms shifted
+  pathfinder  - reveals sealed doors and sanction rooms until the next shift
   oracle      - sees sigils, door colours and the cleanest possible futures
-  timekeeper  - sees timing
-  archivist   - sees the previous grid configuration
+  timekeeper  - sees the countdown and holds the delay puzzle key
+  decoder     - sees and answers the delay puzzle question
 """
 from __future__ import annotations
 
-ROLES = ("navigator", "oracle", "timekeeper", "archivist")
+ROLES = ("pathfinder", "oracle", "timekeeper", "decoder")
 ROLE_LABELS = {
-    "navigator": "Navigator",
+    "pathfinder": "Pathfinder",
     "oracle": "Oracle",
     "timekeeper": "Timekeeper",
-    "archivist": "Archivist",
+    "decoder": "Decoder",
 }
 ROLE_HINTS = {
-    "navigator": "You see the grid and which rooms shifted. Call the route.",
+    "pathfinder": "Reveal the wristband map once per shift to read blocked walls and sanction rooms.",
     "oracle": "You see sigils and the clearest possible futures. Find the exit.",
-    "timekeeper": "You see the timing. Call the countdown.",
-    "archivist": "You see the previous grid. Compare it with the living one.",
+    "timekeeper": "You alone see the countdown. Queue a tier and pass the key to the Decoder.",
+    "decoder": "You see the puzzle question and answer it. Ask the Timekeeper for the key.",
 }
 
 
@@ -44,12 +44,7 @@ def _futures_for(payload: dict, role: str) -> dict:
                     for d, g in doors.items()
                 },
             }
-        elif role == "timekeeper":
-            out[code] = {
-                "rid": room.get("rid"),
-                "doors": {d: {} for d in doors},
-            }
-        elif role == "navigator":
+        elif role == "pathfinder":
             out[code] = {
                 "rid": room.get("rid"),
                 "doors": {
@@ -57,7 +52,6 @@ def _futures_for(payload: dict, role: str) -> dict:
                     for d, g in doors.items()
                 },
             }
-        # archivist receives the previous arena instead of visions
     return out
 
 
@@ -77,7 +71,7 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
         "pa": payload.get("pa", ""),
         "futures": _futures_for(payload, role),
     }
-    if role == "navigator":
+    if role == "pathfinder":
         base["moved"] = [
             {"from": m.get("from"), "to": m.get("to"),
              "code_from": m.get("code_from"), "code_to": m.get("code_to")}
@@ -99,12 +93,8 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
     elif role == "timekeeper":
         base["moved"] = []
         base["timing"] = {"next_in": payload.get("next_round_in")}
-        base["dice"] = payload.get("dice", {})
-    elif role == "archivist":
-        base["moved"] = []
-        base["previous"] = prev_arena
     else:
-        base["moved"] = moved
+        base["moved"] = []
     return base
 
 
@@ -117,7 +107,7 @@ def filter_arena(arena: dict, role: str, current_code: str | None = None) -> dic
         for d, door in r.get("doors", {}).items():
             doors[d] = dict(door)
         r["doors"] = doors
-        if role not in ("oracle", "archivist"):
+        if role != "oracle":
             r["sigil"] = None
         if not r.get("revealed"):
             r["sanction"] = None
@@ -137,9 +127,7 @@ def filter_snapshot(snapshot: dict, role: str) -> dict:
     current = (snap.get("you") or {}).get("room_code")
     if "arena" in snap:
         snap["arena"] = filter_arena(snap["arena"], role, current)
-    if role != "timekeeper":
-        dice = snap.get("dice") or {}
-        snap["dice"] = {current: dice[current]} if current in dice else {}
+    snap["dice"] = {}
     snap["role"] = role
     snap["role_label"] = ROLE_LABELS.get(role, role)
     snap["role_hint"] = ROLE_HINTS.get(role, "")

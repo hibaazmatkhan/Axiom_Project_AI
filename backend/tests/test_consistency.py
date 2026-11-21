@@ -65,13 +65,14 @@ def test_each_role_receives_a_distinct_information_slice():
             "N": {"color": "red"}}}},
     }
     views = {r: filter_round(payload, r, {"old": True}) for r in ROLES}
-    assert "sigil" not in views["navigator"]["moved"][0]
+    assert "sigil" not in views["pathfinder"]["moved"][0]
     assert views["oracle"]["moved"][0]["sigil"] == "spade"
-    assert views["timekeeper"]["moved"] == [] and views["timekeeper"]["dice"]
-    assert views["archivist"]["moved"] == [] and views["archivist"]["previous"]
-    assert "spade" not in str(views["navigator"])
+    assert views["timekeeper"]["moved"] == [] and views["timekeeper"]["timing"]["next_in"] == 5
+    assert views["decoder"]["moved"] == [] and "timing" not in views["decoder"]
+    assert "previous" not in views["decoder"]
+    assert "spade" not in str(views["pathfinder"])
     assert "spade" not in str(views["timekeeper"])
-    assert "spade" not in str(views["archivist"])
+    assert "spade" not in str(views["decoder"])
 
 
 def test_reachability_check_does_not_advance_the_live_pattern_sequence():

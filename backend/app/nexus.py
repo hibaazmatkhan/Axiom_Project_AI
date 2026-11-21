@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -21,7 +22,7 @@ from sklearn.cluster import KMeans
 from .roles import ROLES
 
 ATTRIBUTES = ("exploration", "risk", "cooperation", "pattern", "puzzle", "leadership")
-PLAY_STYLES = ("Scout", "Gambler", "Anchor", "Analyst", "Solver", "Navigator")
+PLAY_STYLES = ("Scout", "Gambler", "Anchor", "Analyst", "Solver", "Pathfinder")
 STYLE_PROTOTYPES = np.array([
     [0.9, 0.2, 0.2, 0.2, 0.2, 0.2],
     [0.2, 0.9, 0.2, 0.2, 0.2, 0.2],
@@ -79,10 +80,11 @@ ACTION_DIFFICULTY_DELTA = {
     "shift_information": -0.1,
     "hold": 0.0,
 }
+MIN_COMPLEXITY = 1
 MAX_COMPLEXITY = 3
 DICE_RELIEF_ROUNDS = 2
 ROLE_NUDGES = {
-    "navigator": "Navigator: read the wristband map before calling a route.",
+    "pathfinder": "Pathfinder: reveal the wristband map before calling a route.",
     "oracle": "Oracle: compare one sigil you can see with the coloured doors.",
     "timekeeper": "Timekeeper: call the countdown before the next shift.",
     "archivist": "Archivist: compare last round's grid with the living one.",
@@ -95,6 +97,16 @@ UTILITY_WEIGHTS = {
 }
 TARGET_BAND_HALF_WIDTH = 0.2
 STUCK_THRESHOLD = 2.0
+
+
+def commit_bounded_action(director: Any, action: str) -> None:
+    delta = ACTION_DIFFICULTY_DELTA.get(action, 0.0)
+    director.difficulty = float(max(-1.0, min(1.0, director.difficulty + delta)))
+    level = int(getattr(director, "complexity_level", MIN_COMPLEXITY))
+    if action == "raise_complexity":
+        director.complexity_level = min(MAX_COMPLEXITY, max(MIN_COMPLEXITY, level) + 1)
+    elif action == "lower_complexity":
+        director.complexity_level = max(MIN_COMPLEXITY, level - 1)
 
 
 def band_error(team_skill: float, difficulty: float) -> float:
@@ -209,7 +221,7 @@ class Nexus:
         self.events: list[dict] = []
         self.team_skill = 0.5
         self.difficulty = 0.0  # -1 easy .. +1 hard
-        self.complexity_level = 0
+        self.complexity_level = MIN_COMPLEXITY
         self.last_action: dict | None = None
         self.log: list[dict] = []
         self._centroids: np.ndarray | None = None
@@ -237,7 +249,8 @@ class Nexus:
             self.puzzle_generated += 1
             self.puzzle_difficulty = str(data.get("difficulty", "easy"))
             try:
-                self.puzzle_complexity = max(1, min(3, int(data.get("complexity", 1))))
+                self.puzzle_complexity = max(MIN_COMPLEXITY, min(MAX_COMPLEXITY,
+                                                                 int(data.get("complexity", 1))))
             except (TypeError, ValueError):
                 self.puzzle_complexity = 1
             return
@@ -494,7 +507,7 @@ class Nexus:
                     score += 1.2
             if name == "raise_complexity" and self.complexity_level >= MAX_COMPLEXITY:
                 score -= 1.5
-            if name == "lower_complexity" and self.complexity_level <= 0:
+            if name == "lower_complexity" and self.complexity_level <= MIN_COMPLEXITY:
                 score -= 1.5
             if cycle_time_left < 2.0 and name in ("raise_complexity", "add_hazard"):
                 score -= 0.1
@@ -509,27 +522,27 @@ class Nexus:
         if action == "shift_information":
             self.last_action["nudge"] = self.role_nudge(cycle, ROLES)
         self.log.append({"cycle": cycle, **self.last_action})
-
-        delta = ACTION_DIFFICULTY_DELTA.get(action, 0.0)
-        self.difficulty = float(max(-1.0, min(1.0, self.difficulty + delta)))
-        self.apply_action_effects(action)
         return self.last_action
 
     def apply_action_effects(self, action: str) -> None:
-        """Apply bounded, reversible actuator state changes."""
         if action == "raise_complexity":
-            self.complexity_level = min(MAX_COMPLEXITY, self.complexity_level + 1)
+            self.complexity_level = min(MAX_COMPLEXITY,
+                                        max(MIN_COMPLEXITY, self.complexity_level) + 1)
         elif action == "lower_complexity":
-            self.complexity_level = max(0, self.complexity_level - 1)
-        elif action == "lower_dice":
-            self.dice_relief_rounds = DICE_RELIEF_ROUNDS
+            self.complexity_level = max(MIN_COMPLEXITY, self.complexity_level - 1)
+
+    def commit_action(self, action: dict | str) -> None:
+        kind = action.get("action") if isinstance(action, dict) else str(action)
+        commit_bounded_action(self, str(kind))
 
     def choose_action(self, team_state: dict) -> dict:
-        return self.decide(
+        action = self.decide(
             int(team_state.get("cycle", 0)),
             bool(team_state.get("solvable", True)),
             float(team_state.get("cycle_time_left", 0.0)),
         )
+        self.commit_action(action)
+        return action
 
     @staticmethod
     def role_nudge(cycle: int, available_roles) -> dict:
@@ -573,6 +586,8 @@ class Nexus:
         nx.team_skill = team_skill
         path = []
         for c in range(cycles):
-            act = nx.decide(c, solvable=True, cycle_time_left=5)
+            act = nx.choose_action({
+                "cycle": c, "solvable": True, "cycle_time_left": 5,
+            })
             path.append((act["action"], round(nx.difficulty, 2)))
         return {"team_skill": team_skill, "final_difficulty": round(nx.difficulty, 2), "path": path}

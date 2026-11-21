@@ -72,7 +72,7 @@ def test_ws_auth_frame_verifies_token_and_profile(monkeypatch):
     assert calls == ["id-token"]
 
 
-def test_ws_verified_flag_uses_token_even_when_profile_lookup_fails(monkeypatch, caplog):
+def test_ws_profile_unavailable_sends_error_and_closes(monkeypatch, caplog):
     monkeypatch.setattr(main, "verify_token", lambda token: _user())
 
     def unavailable(_user):
@@ -84,8 +84,45 @@ def test_ws_verified_flag_uses_token_even_when_profile_lookup_fails(monkeypatch,
     with caplog.at_level("WARNING"):
         identity = asyncio.run(main._ws_identity(ws, "Player", "", True))
 
-    assert identity is not None and identity.verified is True
+    assert identity is None
+    assert ws.sent[0]["code"] == "profile_unavailable"
+    assert ws.sent[0]["message"] == "Profile storage is temporarily unavailable."
+    assert ws.closed == [1013]
     assert "profile lookup failed during websocket authentication" in caplog.text
+
+
+def test_ws_profile_invalid_username_sends_error_and_closes(monkeypatch):
+    monkeypatch.setattr(main, "verify_token", lambda token: _user())
+
+    def invalid(_user):
+        raise main.supabase_store.InvalidUsername("bad username")
+
+    monkeypatch.setattr(main.supabase_store, "create_or_update_profile", invalid)
+    ws = FakeWebSocket([{"type": "auth", "token": "id-token"}])
+
+    identity = asyncio.run(main._ws_identity(ws, "Player", "", True))
+
+    assert identity is None
+    assert ws.sent[0]["code"] == "invalid_username"
+    assert ws.sent[0]["message"] == "bad username"
+    assert ws.closed == [1008]
+
+
+def test_ws_profile_username_taken_sends_error_and_closes(monkeypatch):
+    monkeypatch.setattr(main, "verify_token", lambda token: _user())
+
+    def taken(_user):
+        raise main.supabase_store.UsernameTaken("username already used")
+
+    monkeypatch.setattr(main.supabase_store, "create_or_update_profile", taken)
+    ws = FakeWebSocket([{"type": "auth", "token": "id-token"}])
+
+    identity = asyncio.run(main._ws_identity(ws, "Player", "", True))
+
+    assert identity is None
+    assert ws.sent[0]["code"] == "username_taken"
+    assert ws.sent[0]["message"] == "username already used"
+    assert ws.closed == [1008]
 
 
 def test_ws_rejects_non_auth_first_frame():

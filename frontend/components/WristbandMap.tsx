@@ -20,12 +20,16 @@ export default function WristbandMap({
   wristband = null,
   youCode,
   exitCode = null,
+  showSanctions = false,
+  sanctionRooms = null,
   className = "",
 }: {
   arena: Arena | null;
   wristband?: Wristband | null;
   youCode: string | null;
   exitCode?: string | null;
+  showSanctions?: boolean;
+  sanctionRooms?: string[] | null;
   className?: string;
 }) {
   if (!arena) return null;
@@ -45,19 +49,23 @@ export default function WristbandMap({
         if (!room) return <div key={i} className="aspect-square" />;
         const isYou = room.code === youCode;
         const isExit = room.code === exitCode;
+        const sanctioned = showSanctions && (
+          sanctionRooms
+            ? sanctionRooms.includes(room.code)
+            : !!room.revealed && (room.sanction ?? 0) > 0
+        );
         return (
           <div
             key={room.id ?? i}
             className={`relative aspect-square rounded-[5px] border bg-ink/70 ${
               isYou ? "border-yellow shadow-[0_0_12px_-2px_rgba(232,181,58,0.8)]" : isExit ? "border-yellow/70" : "border-edge/70"
             }`}
-            title={`${room.code}${room.revealed && room.sanction ? ` · sanction ${room.sanction}` : ""}`}
+            title={`${room.code}${sanctioned ? ` · sanction ${room.sanction ?? ""}` : ""}`}
           >
             {DIRS.map((d) => {
               const door = room.doors[d];
-              const open = room.open?.[d];
               const color = DOOR_HEX[door.color] ?? "#6f7680";
-              const sealed = wristband ? !!wristband[room.code]?.[d] : !open;
+              const sealed = wristband ? !!wristband[room.code]?.[d] : false;
               const style: React.CSSProperties = { background: color, opacity: sealed ? 0.18 : 1 };
               const pos =
                 d === "N" ? "left-1 right-1 top-0 h-[3px]"
@@ -81,7 +89,7 @@ export default function WristbandMap({
                 exit
               </span>
             )}
-            {room.revealed && (room.sanction ?? 0) > 0 && (
+            {sanctioned && (
               <span className="absolute right-0.5 top-0.5 h-1 w-1 rounded-full bg-red" />
             )}
           </div>

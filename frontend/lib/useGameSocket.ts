@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, CrossEvent, DealerClue, DealerNudge, Dice, Direction, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Snapshot, Status, Visions, Wristband, You,
+  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Visions, Wristband, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -40,6 +40,8 @@ const EMPTY_NEXUS: NexusReport = {
 const FATAL_ERRORS = new Set([
   "auth_required", "auth_invalid", "auth_timeout", "auth_unavailable",
   "admin_required", "room_full", "game_started", "server_full",
+  "invalid_username", "username_taken", "profile_unavailable",
+  "app_check_invalid", "app_check_unavailable", "room_not_found",
 ]);
 
 function socketUrl(room: string, name: string, pid: string) {
@@ -69,10 +71,13 @@ export function useGameSocket(room: string, name: string) {
   const [attempts, setAttempts] = useState(0);
   const [restored, setRestored] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [you, setYou] = useState<string | null>(null);
   const [arena, setArena] = useState<Arena | null>(null);
   const [prevArena, setPrevArena] = useState<Arena | null>(null);
   const [wristband, setWristband] = useState<Wristband | null>(null);
+  const [wristbandSanctions, setWristbandSanctions] = useState<string[]>([]);
+  const [wristbandCooldownAt, setWristbandCooldownAt] = useState<number | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [status, setStatus] = useState<Status>("lobby");
   const [round, setRound] = useState(0);
@@ -92,7 +97,11 @@ export function useGameSocket(room: string, name: string) {
   const [roleLabel, setRoleLabel] = useState("Assigning role");
   const [roleHint, setRoleHint] = useState("Waiting for the Dealer to assign your role.");
   const [me, setMe] = useState<You | null>(null);
-  const [dice, setDice] = useState<Dice>({});
+  const [delayPuzzle, setDelayPuzzle] = useState<DelayPuzzleView | null>(null);
+  const [delayKey, setDelayKey] = useState<DelayKeyView | null>(null);
+  const [delayStatus, setDelayStatus] = useState<DelayStatusView | null>(null);
+  const [delayResult, setDelayResult] = useState<DelayResultView | null>(null);
+  const [delayDeadlineAt, setDelayDeadlineAt] = useState<number | null>(null);
   const [futures, setFutures] = useState<Visions>({});
   const [transition, setTransition] = useState<RoundTransition>({
     id: 0, round: 0, moved: [], sigils: [], patternType: null, previous: null,
@@ -116,6 +125,7 @@ export function useGameSocket(room: string, name: string) {
   const [sanctionFound, setSanctionFound] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const youRef = useRef<string | null>(null);
+  const exitingRef = useRef(false);
 
   useEffect(() => {
     if (!dealerClue) return;
@@ -136,6 +146,18 @@ export function useGameSocket(room: string, name: string) {
   }, [puzzleResult]);
 
   useEffect(() => {
+    if (!delayResult) return;
+    const timer = window.setTimeout(() => setDelayResult(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [delayResult]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
     let disposed = false;
     let attempts = 0;
     let reconnectTimer: number | null = null;
@@ -147,6 +169,9 @@ export function useGameSocket(room: string, name: string) {
     const apply = (s: Snapshot) => {
       setArena(s.arena);
       setWristband(s.wristband ?? null);
+      setWristbandSanctions(s.wristband_sanctions ?? []);
+      const cooldown = Number(s.you?.wristband_cooldown_remaining ?? 0);
+      setWristbandCooldownAt(cooldown > 0 ? performance.now() + cooldown * 1000 : null);
       setPlayers(s.players);
       setMe(s.you);
       if (s.you?.id) youRef.current = s.you.id;
@@ -168,14 +193,14 @@ export function useGameSocket(room: string, name: string) {
       setRole(s.role);
       setRoleLabel(s.role_label);
       setRoleHint(s.role_hint);
-      setDice(s.dice ?? {});
+      setDelayStatus(s.delay_status ?? null);
       setFutures(s.futures ?? {});
       setPuzzle(s.puzzle ?? null);
       setNextAt(s.next_round_in != null ? performance.now() + s.next_round_in * 1000 : null);
     };
 
     const scheduleReconnect = () => {
-      if (disposed || fatalClose) return;
+      if (disposed || fatalClose || exitingRef.current) return;
       const delay = Math.min(15000, 1000 * 2 ** attempts);
       attempts += 1;
       setAttempts(attempts);
@@ -213,14 +238,18 @@ export function useGameSocket(room: string, name: string) {
         hadConnected = true;
         void (async () => {
           let idToken: string | null = null;
+          let authReady = false;
           try {
-            idToken = (await getFirebaseAuth().currentUser?.getIdToken()) ?? null;
+            const auth = getFirebaseAuth();
+            await auth.authStateReady();
+            authReady = true;
+            idToken = (await auth.currentUser?.getIdToken()) ?? null;
           } catch {
             idToken = null;
           }
           const appCheck = await appCheckToken();
           if (ws.readyState !== WebSocket.OPEN) return;
-          if (!idToken) guest.clearAvatar();
+          if (!idToken && authReady) guest.clearAvatar();
           ws.send(JSON.stringify({
             type: "auth",
             token: idToken,
@@ -281,7 +310,6 @@ export function useGameSocket(room: string, name: string) {
           }));
           setRound(tv.round);
           if (tv.pa) setPa(tv.pa);
-          if (tv.dice) setDice(tv.dice);
           if (tv.futures) setFutures(tv.futures);
           if (tv.next_round_in != null) setNextAt(performance.now() + tv.next_round_in * 1000);
           if (tv.state) apply(tv.state);
@@ -344,6 +372,21 @@ export function useGameSocket(room: string, name: string) {
             code: m.code ? String(m.code) : undefined,
             message: m.message ? String(m.message) : undefined,
           });
+        } else if (m.type === "puzzle") {
+          setDelayPuzzle(m as DelayPuzzleView);
+          setDelayKey(null);
+          setDelayResult(null);
+          setDelayDeadlineAt(performance.now() + Number(m.answer_ms || 0));
+        } else if (m.type === "puzzle_key") {
+          setDelayKey(m as DelayKeyView);
+        } else if (m.type === "delay_status") {
+          setDelayStatus(m as DelayStatusView);
+        } else if (m.type === "delay_result") {
+          setDelayResult(m as DelayResultView);
+          setDelayPuzzle(null);
+          setDelayKey(null);
+          setDelayDeadlineAt(null);
+          setNotice(String(m.message ?? (m.ok ? "The Dealer bought time." : "The Dealer took time back.")));
         } else if (m.type === "revive") {
           setRevive({ player: m.player, by: m.by, points: m.points });
         } else if (m.type === "elimination") {
@@ -360,11 +403,16 @@ export function useGameSocket(room: string, name: string) {
         } else if (m.type === "game_over") {
           setGameOver({ won: m.won, summary: m.summary });
           setStatus(m.won ? "won" : "over");
+        } else if (m.type === "wristband_reveal") {
+          setNotice(String(m.message ?? "Wristband revealed until the next shift."));
         } else if (m.type === "error") {
-          setError(m.message || m.code);
+          const message = m.message || m.code || "That action could not be completed.";
           if (FATAL_ERRORS.has(m.code)) {
+            setError(message);
             fatalClose = true;
             ws.close();
+          } else {
+            setNotice(message);
           }
         }
       };
@@ -404,14 +452,41 @@ export function useGameSocket(room: string, name: string) {
     (role: Role, value: string) => send({ type: "puzzle_submit", assignment: { [role]: value } }),
     [send],
   );
+  const sendRevealWristband = useCallback(
+    () => send({ type: "pathfinder_reveal" }),
+    [send],
+  );
+  const sendDelayQueue = useCallback(
+    (tier: 1 | 2 | 3) => send({ type: "delay_queue", tier }),
+    [send],
+  );
+  const sendDelayAnswer = useCallback(
+    (puzzleId: string, answer: { row: number; col: number } | Sigil) =>
+      send({ type: "delay_answer", puzzle_id: puzzleId, answer }),
+    [send],
+  );
+  const exitMatch = useCallback(() => {
+    exitingRef.current = true;
+    try {
+      sessionStorage.removeItem(`axiom_pid_${room}`);
+    } catch {}
+    const ws = wsRef.current;
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
+    }
+    wsRef.current = null;
+    setConnected(false);
+  }, [room]);
 
   return {
-    connected, attempts, restored, error, you, me, arena, prevArena, wristband, players, status, round, maxRounds, stage,
+    connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
-    roleHint, dice, futures, transition, prediction, doorEvent, cross,
+    roleHint, futures, transition, prediction, doorEvent, cross,
     hazard, revive, eliminated, chat, exitNotice, gameOver,
     dealerClue, dealerNudge, puzzle, puzzleResult, sanctionTotal, sanctionFound,
+    delayPuzzle, delayKey, delayStatus, delayResult, delayDeadlineAt,
     sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat,
-    sendPuzzleMark,
+    sendPuzzleMark, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch,
   };
 }

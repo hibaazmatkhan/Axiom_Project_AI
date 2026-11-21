@@ -1,6 +1,6 @@
 export type DoorColor = "red" | "blue" | "yellow" | "green";
 export type Sigil = "spade" | "heart" | "diamond" | "club";
-export type Role = "navigator" | "oracle" | "timekeeper" | "archivist";
+export type Role = "pathfinder" | "oracle" | "timekeeper" | "decoder";
 export type Direction = "N" | "E" | "S" | "W";
 export type PatternType =
   | "rotation" | "reflection" | "translation"
@@ -30,6 +30,38 @@ export type PuzzleResult = {
   message?: string;
 };
 export type DealerNudge = { role: Role; text: string; puzzle?: string; round: number };
+
+export type DelayTier = 1 | 2 | 3;
+export type DelayCell = { row: number; col: number };
+export type DelayKeyCell = DelayCell & { suit: Sigil };
+export type DelayPuzzleView = {
+  puzzle_id: string;
+  tier: DelayTier;
+  question: string;
+  grids: {
+    before?: Sigil[][];
+    after?: Sigil[][];
+    given?: (Sigil | null)[][];
+  };
+  highlight: DelayCell | null;
+  answer_ms: number;
+};
+export type DelayKeyView = {
+  puzzle_id: string;
+  tier: DelayTier;
+  key_text: string;
+  key_cells?: DelayKeyCell[];
+};
+export type DelayStatusView = {
+  state: "idle" | "cooldown" | "solving";
+  cooldown_s: number;
+  attempts_left: number;
+};
+export type DelayResultView = {
+  ok: boolean;
+  delta_s?: number;
+  message?: string;
+};
 
 export type CrossEvent = {
   id: number;
@@ -79,6 +111,8 @@ export type You = {
   exit_code: string | null;
   points: number;
   role: Role;
+  wristband_revealed?: boolean;
+  wristband_cooldown_remaining?: number;
 };
 
 export type Player = {
@@ -121,14 +155,6 @@ export type NexusReport = {
   last_action: { action: string; utility: number; alternatives: Record<string, number> } | null;
 };
 
-export type DiceDoor = { color: DoorColor };
-export type DiceRoom = {
-  room: string;
-  rid: string;
-  doors: Partial<Record<Direction, DiceDoor>>;
-};
-export type Dice = Record<string, DiceRoom>;
-
 export type VisionDoor = {
   future?: string;
   color?: DoorColor;
@@ -152,6 +178,7 @@ export type Snapshot = {
   max_stage: number;
   arena: Arena;
   wristband?: Wristband;
+  wristband_sanctions?: string[];
   players: Player[];
   you: You | null;
   next_round_in: number | null;
@@ -164,12 +191,12 @@ export type Snapshot = {
   sanction_found: number;
   nexus: NexusReport;
   pa: string;
-  dice: Dice;
   futures: Visions;
   role: Role;
   role_label: string;
   role_hint: string;
   puzzle?: PuzzleSnapshot;
+  delay_status?: DelayStatusView;
 };
 
 export type MovedRoom = {
@@ -191,7 +218,6 @@ export type RoundView = {
   ops?: { kind: string; index?: number; direction?: number; axis?: string }[];
   sigils?: Sigil[];
   timing?: { next_in: number };
-  dice?: Dice;
   futures?: Visions;
   previous?: Arena;
   state?: Snapshot;

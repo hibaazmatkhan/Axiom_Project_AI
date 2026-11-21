@@ -5,11 +5,12 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from .nexus import (
-    ACTION_DIFFICULTY_DELTA,
     CLUE_TIERS,
     DIRECTOR_ACTIONS,
+    MIN_COMPLEXITY,
     Nexus,
     band_error,
+    commit_bounded_action,
 )
 
 
@@ -35,6 +36,10 @@ class Director(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def commit_action(self, action: dict | str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def make_clue(self, player_id: str, tier: int, now: float, stage: int,
                   skill: float | None = None) -> dict | None:
         raise NotImplementedError
@@ -53,17 +58,19 @@ class StaticDirector(Director):
         self.events: list[dict] = []
         self.team_skill = 0.5
         self.difficulty = 0.0
-        self.complexity_level = 0
+        self.complexity_level = MIN_COMPLEXITY
         self.last_action: dict | None = None
         self.log: list[dict] = []
         self.clue_count = 0
 
     def choose_action(self, team_state: dict) -> dict:
-        return self.decide(
+        action = self.decide(
             int(team_state.get("cycle", 0)),
             bool(team_state.get("solvable", True)),
             float(team_state.get("cycle_time_left", 0.0)),
         )
+        self.commit_action(action)
+        return action
 
     def ingest(self, event: dict) -> None:
         self._observer.ingest(event)
@@ -90,6 +97,9 @@ class StaticDirector(Director):
         }
         self.log.append({"cycle": cycle, **self.last_action})
         return self.last_action
+
+    def commit_action(self, action: dict | str) -> None:
+        return None
 
     def clue_chance(self, skill: float | None = None) -> float:
         return 0.0
@@ -121,17 +131,19 @@ class RandomDirector(Director):
         self.events: list[dict] = []
         self.team_skill = 0.5
         self.difficulty = 0.0
-        self.complexity_level = 0
+        self.complexity_level = MIN_COMPLEXITY
         self.last_action: dict | None = None
         self.log: list[dict] = []
         self.clue_count = 0
 
     def choose_action(self, team_state: dict) -> dict:
-        return self.decide(
+        action = self.decide(
             int(team_state.get("cycle", 0)),
             bool(team_state.get("solvable", True)),
             float(team_state.get("cycle_time_left", 0.0)),
         )
+        self.commit_action(action)
+        return action
 
     def ingest(self, event: dict) -> None:
         self._observer.ingest(event)
@@ -158,13 +170,11 @@ class RandomDirector(Director):
             "terms": {},
         }
         self.log.append({"cycle": cycle, **self.last_action})
-        delta = ACTION_DIFFICULTY_DELTA.get(action, 0.0)
-        self.difficulty = float(max(-1.0, min(1.0, self.difficulty + delta)))
-        if delta > 0:
-            self.complexity_level += 1
-        elif delta < 0:
-            self.complexity_level = max(0, self.complexity_level - 1)
         return self.last_action
+
+    def commit_action(self, action: dict | str) -> None:
+        kind = action.get("action") if isinstance(action, dict) else str(action)
+        commit_bounded_action(self, str(kind))
 
     def clue_chance(self, skill: float | None = None) -> float:
         return 1.0
@@ -193,13 +203,6 @@ class RandomDirector(Director):
 
 
 class NexusDirector(Nexus, Director):
-    def choose_action(self, team_state: dict) -> dict:
-        return self.decide(
-            int(team_state.get("cycle", 0)),
-            bool(team_state.get("solvable", True)),
-            float(team_state.get("cycle_time_left", 0.0)),
-        )
-
     def team_report(self) -> dict:
         report = super().team_report()
         report["director"] = "nexus"

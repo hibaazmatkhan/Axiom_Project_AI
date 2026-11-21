@@ -27,12 +27,15 @@ import { emailActionCodeSettings, getFirebaseAuth, getGoogleProvider } from "@/l
 import {
   EmailAuthProvider,
   TotpMultiFactorGenerator,
+  getMultiFactorResolver,
   multiFactor,
   reauthenticateWithCredential,
   reauthenticateWithPopup,
   sendEmailVerification,
   signOut,
+  type MultiFactorError,
   type MultiFactorInfo,
+  type MultiFactorResolver,
   type TotpSecret,
 } from "firebase/auth";
 
@@ -59,6 +62,9 @@ function ProfilePageContent() {
   const [mfaSecret, setMfaSecret] = useState<TotpSecret | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaBusy, setMfaBusy] = useState(false);
+  const [reauthResolver, setReauthResolver] = useState<MultiFactorResolver | null>(null);
+  const [reauthCode, setReauthCode] = useState("");
+  const [reauthAction, setReauthAction] = useState<(() => Promise<void>) | null>(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [cropSource, setCropSource] = useState<File | null>(null);
 
@@ -216,16 +222,18 @@ function ProfilePageContent() {
   };
 
   const deleteAccountData = async () => {
-    if (busy) return;
+    if (busy || reauthResolver) return;
     if (!window.confirm("Delete your stored profile, history, models and avatars?")) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await ensureRecentAuth();
-      await api.deleteAccount();
-      await signOut(getFirebaseAuth());
-      window.location.href = "/";
+      const pending = await ensureRecentAuth(async () => {
+        await api.deleteAccount();
+        await signOut(getFirebaseAuth());
+        window.location.href = "/";
+      });
+      if (pending) setBusy(false);
     } catch (cause) {
       setError(authErrorMessage(cause));
       setBusy(false);
@@ -266,20 +274,24 @@ function ProfilePageContent() {
   };
 
   const startMfa = async () => {
-    if (!user || mfaBusy) return;
+    if (!user || mfaBusy || reauthResolver) return;
     setMfaBusy(true);
     setError(null);
     setNotice(null);
+    let pending = false;
     try {
-      await ensureRecentAuth();
-      const session = await multiFactor(user).getSession();
-      const secret = await TotpMultiFactorGenerator.generateSecret(session);
-      setMfaSecret(secret);
-      setMfaCode("");
+      pending = await ensureRecentAuth(async () => {
+        const current = getFirebaseAuth().currentUser;
+        if (!current) throw new Error("Your session ended. Sign in again to continue.");
+        const session = await multiFactor(current).getSession();
+        const secret = await TotpMultiFactorGenerator.generateSecret(session);
+        setMfaSecret(secret);
+        setMfaCode("");
+      });
     } catch (cause) {
       setError(authErrorMessage(cause));
     } finally {
-      setMfaBusy(false);
+      if (!pending) setMfaBusy(false);
     }
   };
 
@@ -306,34 +318,87 @@ function ProfilePageContent() {
     }
   };
 
-  const ensureRecentAuth = async () => {
-    if (!user) return;
-    if (user.providerData.some((provider) => provider.providerId === "google.com")) {
-      await reauthenticateWithPopup(user, getGoogleProvider());
-      return;
+  const ensureRecentAuth = async (action: () => Promise<void>) => {
+    if (!user) return false;
+    try {
+      if (user.providerData.some((provider) => provider.providerId === "google.com")) {
+        await reauthenticateWithPopup(user, getGoogleProvider());
+      } else {
+        if (!user.email) throw new Error("Reauthentication is not available for this account.");
+        const password = window.prompt("Confirm your password to change security settings.");
+        if (!password) throw new Error("Password confirmation is required.");
+        await reauthenticateWithCredential(
+          user, EmailAuthProvider.credential(user.email, password),
+        );
+      }
+      await action();
+      return false;
+    } catch (cause) {
+      const code = (cause as { code?: string })?.code;
+      if (code !== "auth/multi-factor-auth-required") throw cause;
+      try {
+        setReauthResolver(getMultiFactorResolver(getFirebaseAuth(), cause as MultiFactorError));
+        setReauthCode("");
+        setReauthAction(() => action);
+        setError(null);
+        setNotice("Enter your authenticator code to confirm this security change.");
+        return true;
+      } catch {
+        throw cause;
+      }
     }
-    if (!user.email) throw new Error("Reauthentication is not available for this account.");
-    const password = window.prompt("Confirm your password to change security settings.");
-    if (!password) throw new Error("Password confirmation is required.");
-    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
   };
 
-  const disableMfa = async (factor: MultiFactorInfo) => {
-    if (!user || mfaBusy) return;
+  const resolveReauth = async () => {
+    if (!reauthResolver || !reauthAction || mfaBusy) return;
     setMfaBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await ensureRecentAuth();
-      await multiFactor(user).unenroll(factor);
-      await api.setMfa(false).catch(() => undefined);
-      setMfaFactors(multiFactor(user).enrolledFactors);
-      setMfaSecret(null);
-      setNotice("Second factor removed.");
+      const factor = reauthResolver.hints.find((hint) => hint.factorId === "totp");
+      if (!factor) throw new Error("This project currently supports authenticator-app MFA.");
+      await reauthResolver.resolveSignIn(
+        TotpMultiFactorGenerator.assertionForSignIn(factor.uid, reauthCode.trim()),
+      );
+      const action = reauthAction;
+      setReauthResolver(null);
+      setReauthCode("");
+      setReauthAction(null);
+      await action();
     } catch (cause) {
       setError(authErrorMessage(cause));
     } finally {
       setMfaBusy(false);
+    }
+  };
+
+  const cancelReauth = () => {
+    setReauthResolver(null);
+    setReauthCode("");
+    setReauthAction(null);
+    setError(null);
+  };
+
+  const disableMfa = async (factor: MultiFactorInfo) => {
+    if (!user || mfaBusy || reauthResolver) return;
+    setMfaBusy(true);
+    setError(null);
+    setNotice(null);
+    let pending = false;
+    try {
+      pending = await ensureRecentAuth(async () => {
+        const current = getFirebaseAuth().currentUser;
+        if (!current) throw new Error("Your session ended. Sign in again to continue.");
+        await multiFactor(current).unenroll(factor);
+        await api.setMfa(false).catch(() => undefined);
+        setMfaFactors(multiFactor(current).enrolledFactors);
+        setMfaSecret(null);
+        setNotice("Second factor removed.");
+      });
+    } catch (cause) {
+      setError(authErrorMessage(cause));
+    } finally {
+      if (!pending) setMfaBusy(false);
     }
   };
 
@@ -696,6 +761,41 @@ function ProfilePageContent() {
                   TOTP
                 </span>
               </div>
+
+              {reauthResolver && (
+                <div className="mt-4 space-y-3 border border-yellow/40 bg-yellow/[0.04] p-3">
+                  <p className="text-xs leading-relaxed text-dim">
+                    Confirm this security change with your authenticator code.
+                  </p>
+                  <input
+                    value={reauthCode}
+                    onChange={(event) => setReauthCode(event.target.value.replace(/\s/g, ""))}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={8}
+                    placeholder="000000"
+                    className="mono w-full border border-bone/15 bg-void/70 px-3 py-2.5 text-center text-lg tracking-[0.35em] text-bone outline-none focus:border-gold/70"
+                  />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={resolveReauth}
+                      disabled={mfaBusy || reauthCode.trim().length < 6}
+                      className="border border-gold bg-gold px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-void transition hover:border-bone hover:bg-bone disabled:opacity-40"
+                    >
+                      {mfaBusy ? "Verifying…" : "Verify code"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelReauth}
+                      disabled={mfaBusy}
+                      className="border border-bone/20 px-4 py-2.5 text-[10px] uppercase tracking-[0.16em] text-dim transition hover:text-bone disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {mfaFactors.length > 0 ? (
                 <div className="mt-4 space-y-2">

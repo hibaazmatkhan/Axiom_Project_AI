@@ -20,7 +20,7 @@ async def main():
         welcome = json.loads(await ws.recv())
         conns.append((ws, welcome["state"]["role"]))
     roles = [r for _, r in conns]
-    assert sorted(roles) == ["archivist", "navigator", "oracle", "timekeeper"], roles
+    assert sorted(roles) == ["decoder", "oracle", "pathfinder", "timekeeper"], roles
 
     for ws, _ in conns:
         await ws.send(json.dumps({"type": "ready", "value": True}))
@@ -41,15 +41,17 @@ async def main():
         await ws.close()
 
     assert len(got) == 4, f"only {sorted(got)} received a round"
-    assert got["navigator"]["moved"], "navigator saw no moved rooms"
-    assert "sigil" not in got["navigator"]["moved"][0], "navigator leaked a sigil"
+    assert got["pathfinder"]["moved"], "pathfinder saw no moved rooms"
+    assert "sigil" not in got["pathfinder"]["moved"][0], "pathfinder leaked a sigil"
     assert got["oracle"]["sigils"], "oracle saw no sigils"
     assert got["timekeeper"]["timing"]["next_in"] >= 0, "timekeeper saw no timing"
-    assert got["archivist"]["previous"], "archivist saw no previous layout"
-    assert "arena" in got["navigator"], "round carried no arena"
+    assert "dice" not in got["timekeeper"], "timekeeper saw dice"
+    assert "timing" not in got["decoder"], "decoder saw the countdown"
+    assert "previous" not in got["decoder"], "decoder saw a previous layout"
+    assert "arena" in got["pathfinder"], "round carried no arena"
 
-    print("round:", got["navigator"]["round"], "pattern:", got["navigator"]["pattern_type"])
-    print("moved rooms:", len(got["navigator"]["moved"]), "has arena:", "arena" in got["navigator"])
+    print("round:", got["pathfinder"]["round"], "pattern:", got["pathfinder"]["pattern_type"])
+    print("moved rooms:", len(got["pathfinder"]["moved"]), "has arena:", "arena" in got["pathfinder"])
     print("roles filtered:", sorted(got))
     print("TRANSITION OK")
 

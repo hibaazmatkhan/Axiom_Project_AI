@@ -88,7 +88,7 @@ class SimulatedPlayer:
 
         t = now
         events = [{"t": t, "player": self.pid, "kind": "join",
-                   "data": {"name": self.pid, "role": "navigator"}}]
+                   "data": {"name": self.pid, "role": "pathfinder"}}]
         t += self.last_stuck
         move_count = max(1, round(params["exploration"] * 4))
         for _ in range(move_count):
@@ -364,6 +364,10 @@ class Experiment:
             state["relief"] = max(0, state["relief"] - 1)
             state["assist"] = max(0, state["assist"] - 1)
             applied = _apply_simulated_action(action, arena, state, seed, cycle)
+            director.ingest({
+                "t": now, "player": None, "kind": "dice_relief",
+                "data": {"rounds": state["relief"]},
+            })
             if not arena.solvable():
                 solvability_violations += 1
             rows.append({

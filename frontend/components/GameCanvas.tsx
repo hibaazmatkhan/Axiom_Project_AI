@@ -943,7 +943,7 @@ export default function GameCanvas(props: Props) {
         if (nextZ < -bound) { nextZ = -bound; freeVel.z = 0; }
         freePos = { x: nextX, z: nextZ };
         if (crossLatch && t - crossLatchAt > CROSS_STATE_TIMEOUT) crossLatch = null;
-        const nearDoor = nearOpenDoor(freePos, propsRef.current.you, t);
+        const nearDoor = nearOpenDoor(freePos, propsRef.current.you, Date.now());
         if (nearDoor !== crossLatch) {
           crossLatch = nearDoor;
           if (nearDoor) crossLatchAt = t;

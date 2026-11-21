@@ -92,6 +92,9 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
     lower_complexity / add_hazard / give_clue / lower_dice / shift_information /
     hold` and may rebuild hidden rules, seal or reopen a door, seed a Sanction
     room, grant dice relief, nudge one role, offer a clue or hold.
+    `decide()` only selects and logs an action; `commit_action()` updates director
+    state once with bounded `1..3` complexity; `_apply_director()` applies the
+    environment effect and dice relief is mirrored through `dice_relief` events.
     `NexusDirector` uses skill fit, progress, cooperation balance and
     frustration; `StaticDirector` and `RandomDirector` are evaluation baselines.
 
@@ -120,8 +123,9 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
    ingests it.
 4. When the round timer expires, every active pattern engine applies its rule.
 5. A time-expanded reachability check confirms the exit is still reachable (O6).
- 6. The Dealer decides the next action and may raise pressure, seed a Sanction
-    room, grant dice relief, nudge one role or offer a clue.
+ 6. The Dealer decides the next action, commits its bounded director state once,
+    then applies the environment effect: raise pressure, seed a Sanction room,
+    grant dice relief, nudge one role or offer a clue.
 
 7. New d10s are rolled, new possible futures are generated, and each client
    receives only the information its role may see (O3).
@@ -140,21 +144,23 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `backend/app/simulation.py` | Simulated players, seeded experiment runner, search benchmark |
 | `backend/app/experiment_charts.py` | CSV-driven evaluation charts |
 | `backend/app/stages.py` | Seven stage definitions and per-stage rules |
-| `backend/app/roles.py` | Navigator/Oracle/Timekeeper/Archivist + per-role filtering |
-| `backend/app/game.py` | Rooms, round state machine, points, locks, revives, reconnect |
+| `backend/app/roles.py` | Pathfinder/Oracle/Timekeeper/Decoder + per-role filtering |
+| `backend/app/puzzles.py` | Seeded delay puzzles, solver checks and public/key views |
+| `backend/app/game.py` | Rooms, round state machine, points, locks, revives, delay puzzles, reconnect |
 | `backend/app/auth.py` | Firebase ID token, App Check and admin dependency guards |
 | `backend/app/audit.py` | Audit log and live room inventory persistence |
 | `backend/app/avatar_store.py` | Default symbol PFPs, legacy normalization, avatar validation, Supabase Storage upload and cleanup |
 | `backend/app/supabase_store.py` | Profiles, avatars, export and account deletion |
 | `backend/app/repositories.py` | Storage abstraction protocols |
 | `backend/app/db.py` | Match store selection: Supabase production store with SQLite fallback |
+| `backend/app/room_registry.py` | Process-local room reservations and quick-match queue |
 | `backend/app/main.py` | FastAPI HTTP API + WebSocket endpoint |
 | `frontend/app/page.tsx` | Landing page |
 | `frontend/app/lobby/page.tsx` | Lobby / room create & join with read-only avatar preview |
 | `frontend/app/login/page.tsx` | Accounts |
 | `frontend/app/profile/page.tsx` | Profile, avatars, history, leaderboard |
 | `frontend/components/GameCanvas.tsx` | Three.js first-person cube room, animated doors, physics-like walking/crossing, teammates |
-| `frontend/components/GameClient.tsx` | HUD: points, doors, futures, locks, exit notices, chat |
+| `frontend/components/GameClient.tsx` | HUD: points, doors, futures, delay puzzle, locks, exit notices, chat |
 | `frontend/components/WristbandMap.tsx` | 5×5 wristband map with door-colour edges and private sealed-door state |
 | `frontend/lib/avatarRules.ts` | Client-side default symbol PFPs, fallback assignment and upload validation |
 | `frontend/lib/useGameSocket.ts` | WebSocket state machine |
@@ -176,7 +182,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | Experiment runner | `simulation.py` 900 seeded matches, CSV metrics and mean/std summary |
 | Evaluation charts | `experiment_charts.py` A*/BFS, difficulty, rule discovery and cluster plots |
 | Evaluation report | `docs/NEXUS_Evaluation.md` methodology, retained artifacts and results |
-| Adaptive difficulty | `nexus.py` + `game.py` timing, door openings and hazards |
+| Adaptive difficulty | `nexus.py` decide/commit split + `game.py` timing, complexity bounds, door openings and hazards |
 
 ## Theme and naming
 
@@ -195,7 +201,7 @@ loaded only from user-supplied assets.
 | possible-futures preview | **Possible Futures** (LED wall strips) |
 | AI game master | **The Dealer** (NEXUS) |
 | final room | **The Last Room** (hidden edge exit) |
-| roles | **Navigator / Oracle / Timekeeper / Archivist** |
+| roles | **Pathfinder / Oracle / Timekeeper / Decoder** |
 
 ## Palette
 

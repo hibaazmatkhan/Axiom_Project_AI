@@ -89,6 +89,20 @@ class RoomRegistry:
             return
         self._reservations.setdefault(reservation.code, reservation)
 
+    def hold(self, code: str, room_id: str, min_players: int) -> Reservation:
+        self.prune()
+        normalized = str(code).strip().upper()
+        now = self._now()
+        reservation = Reservation(
+            room_id=room_id,
+            code=normalized,
+            min_players=min_players,
+            created_at=now,
+            expires_at=now + self.reservation_ttl,
+        )
+        self._reservations[normalized] = reservation
+        return reservation
+
     def queue(
         self,
         client_key: str,

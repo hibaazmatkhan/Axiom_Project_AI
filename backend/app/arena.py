@@ -10,7 +10,7 @@ so the wristband map must be re-read every round.
 
 Connectivity is a room graph. A doorway is passable only when both rooms have
 that door open; some doors are sealed (void). A* over the room graph is used by
-the Navigator and by the director to keep the exit reachable.
+the Pathfinder and by the director to keep the exit reachable.
 """
 from __future__ import annotations
 

@@ -14,6 +14,7 @@ from app.nexus import (
     DICE_RELIEF_ROUNDS,
     DIRECTOR_ACTIONS,
     MAX_COMPLEXITY,
+    MIN_COMPLEXITY,
     ROLE_NUDGES,
     Nexus,
     PlayerModel,
@@ -82,11 +83,11 @@ def test_strong_team_raises_difficulty_weak_team_lowers():
     strong = Nexus(seed=1)
     strong.team_skill = 0.95
     for c in range(8):
-        strong.decide(c, solvable=True, cycle_time_left=5)
+        strong.choose_action({"cycle": c, "solvable": True, "cycle_time_left": 5})
     weak = Nexus(seed=1)
     weak.team_skill = 0.05
     for c in range(8):
-        weak.decide(c, solvable=True, cycle_time_left=5)
+        weak.choose_action({"cycle": c, "solvable": True, "cycle_time_left": 5})
     assert strong.difficulty > weak.difficulty
     assert strong.difficulty > 0 and weak.difficulty < 0
 
@@ -116,7 +117,7 @@ def test_clustering_assigns_styles():
 
 def test_join_event_records_player_name():
     nx = Nexus(seed=4)
-    nx.ingest({"player": "p1", "kind": "join", "data": {"name": "Hiba", "role": "navigator"}})
+    nx.ingest({"player": "p1", "kind": "join", "data": {"name": "Hiba", "role": "pathfinder"}})
     assert nx.models["p1"].name == "Hiba"
     assert nx.models["p1"].public()["name"] == "Hiba"
 
@@ -240,13 +241,15 @@ def test_lower_dice_sets_bounded_relief_without_hidden_state():
     action = nx.decide(1, solvable=True, cycle_time_left=8)
     assert action["action"] == "lower_dice"
     assert action["dice_relief"]["rounds"] == DICE_RELIEF_ROUNDS
-    assert nx.dice_relief_rounds == DICE_RELIEF_ROUNDS
-    assert nx.team_report()["dice_relief_rounds"] == DICE_RELIEF_ROUNDS
+    assert nx.dice_relief_rounds == 0
+    nx.commit_action(action)
+    assert nx.dice_relief_rounds == 0
     assert "roll" not in str(action) and "sanction" not in str(action)
 
     nx.ingest({"t": 1, "player": None, "kind": "dice_relief",
                "data": {"rounds": DICE_RELIEF_ROUNDS + 10}})
     assert nx.dice_relief_rounds == DICE_RELIEF_ROUNDS
+    assert nx.team_report()["dice_relief_rounds"] == DICE_RELIEF_ROUNDS
 
 
 def test_shift_information_produces_a_role_appropriate_nudge():
@@ -262,9 +265,9 @@ def test_shift_information_produces_a_role_appropriate_nudge():
 def test_complexity_actuators_are_bounded_and_reversible():
     assert "lower_complexity" in DIRECTOR_ACTIONS
     nx = Nexus(seed=42)
-    nx.complexity_level = 0
+    nx.complexity_level = MIN_COMPLEXITY
     nx.apply_action_effects("raise_complexity")
-    assert nx.complexity_level == 1
+    assert nx.complexity_level == MIN_COMPLEXITY + 1
     for _ in range(MAX_COMPLEXITY + 3):
         nx.apply_action_effects("raise_complexity")
     assert nx.complexity_level == MAX_COMPLEXITY
@@ -272,10 +275,24 @@ def test_complexity_actuators_are_bounded_and_reversible():
     assert nx.complexity_level == MAX_COMPLEXITY - 1
     for _ in range(MAX_COMPLEXITY):
         nx.apply_action_effects("lower_complexity")
-    assert nx.complexity_level == 0
+    assert nx.complexity_level == MIN_COMPLEXITY
     for _ in range(20):
-        nx.decide(1, solvable=True, cycle_time_left=8)
-        assert 0 <= nx.complexity_level <= MAX_COMPLEXITY
+        nx.choose_action({"cycle": 1, "solvable": True, "cycle_time_left": 8})
+        assert MIN_COMPLEXITY <= nx.complexity_level <= MAX_COMPLEXITY
+
+
+def test_decide_commits_state_only_once():
+    nx = Nexus(seed=44)
+    nx.utility_terms = lambda action: {
+        "skill_fit": 5.0 if action == "raise_complexity" else 0.0,
+        "progress": 0.0, "cooperation_balance": 0.0, "frustration": 0.0,
+    }
+    before = (nx.difficulty, nx.complexity_level)
+    action = nx.decide(1, solvable=True, cycle_time_left=8)
+    assert (nx.difficulty, nx.complexity_level) == before
+    nx.commit_action(action)
+    assert nx.difficulty > before[0]
+    assert nx.complexity_level == before[1] + 1
 
 
 def test_puzzle_metrics_are_exposed_in_team_report():

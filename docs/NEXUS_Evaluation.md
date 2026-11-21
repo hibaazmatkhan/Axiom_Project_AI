@@ -27,11 +27,12 @@ retained under `backend/experiments/results/`.
 Each simulated match uses a fresh changing-maze timeline generated from the same
 seed. Simulated players emit movement, prediction, sharing and lock events; the
 director consumes those events, extracts player attributes, clusters styles and
-chooses an action. The selected action is applied to the simulated environment:
-complexity changes seal or reopen a solvable door, hazards seed sanction rooms,
-`lower_dice` grants bounded d10 relief, and clue/information actions grant a
-bounded prediction assist. Director state and difficulty are therefore coupled
-to the environment under evaluation, not merely recorded.
+chooses an action, commits bounded director state once, then applies the selected
+action to the simulated environment: complexity changes seal or reopen a solvable
+door, hazards seed sanction rooms, `lower_dice` grants bounded d10 relief, and
+clue/information actions grant a bounded prediction assist. Dice relief is
+mirrored back into the director through `dice_relief` events, so director state
+and difficulty stay coupled to the environment under evaluation.
 
 ## Metrics
 

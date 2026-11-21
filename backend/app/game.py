@@ -37,7 +37,7 @@ from .directors import Director, NexusDirector
 from .knowledge import KnowledgeBase, LEVEL_DIFFICULTIES
 from .nexus import DICE_RELIEF_ROUNDS, MAX_COMPLEXITY, Nexus
 from .roles import ROLES, filter_arena, filter_round, filter_snapshot, filter_visions
-from . import audit, fate, db
+from . import audit, fate, db, puzzles
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,19 @@ START_POINTS = fate.START_POINTS
 MAX_ROUNDS = fate.MAX_ROUNDS
 DOOR_COST = fate.DOOR_COST
 DOOR_OPEN_SECONDS = 10.0
+PATHFINDER_REVEAL_COOLDOWN = 120.0
+DELAY_CONFIG = {
+    "answer_ms": {1: 30000, 2: 40000, 3: 50000},
+    "delay_s": {1: 6, 2: 12, 3: 18},
+    "penalty_s": {1: -3, 2: -6, 3: -9},
+    "cooldown_s": 45,
+    "attempts_per_stage": 2,
+    "max_shift_delay_s": 18,
+    "second_success_multiplier": 0.5,
+    "min_shift_s": 15,
+    "max_shift_s": 60,
+    "min_time_before_shift_s": 3,
+}
 WAIT_COST = fate.WAIT_COST
 REVIVE_COST = fate.REVIVE_COST
 
@@ -94,6 +107,8 @@ class Player:
     last_room_id: str | None = None
     last_door: str | None = None
     entered_round: int = 0
+    wristband_revealed: bool = False
+    wristband_cooldown_until: float = 0.0
     ws: WebSocket | None = field(default=None, repr=False)
     bucket_at: float = 0.0
     bucket_n: int = 0
@@ -163,6 +178,13 @@ class Room:
         self.info_nudges: dict[str, int] = {}
         self.max_rounds = MAX_ROUNDS
         self.next_round_at: float | None = None
+        self.delay_puzzle: dict | None = None
+        self.delay_deadline: float | None = None
+        self.delay_cooldown_until = 0.0
+        self.delay_puzzle_counter = 0
+        self.delay_attempts: dict[int, int] = {}
+        self.shift_delay_applied = 0.0
+        self.shift_successes = 0
         self.events: list[dict] = []
         self.prev_arena: dict | None = None
         self.pa = "THE LAST ROOM. FIND THE HIDDEN EXIT."
@@ -283,8 +305,9 @@ class Room:
     def _roll_shift_seconds(self) -> float:
         base = self.round_override if self.round_override is not None else self.round_seconds
         if base <= 0:
-            return base
-        return round(self.rng.uniform(base * 0.8, base * 1.2), 1)
+            return DELAY_CONFIG["min_shift_s"]
+        rolled = self.rng.uniform(base * 0.8, base * 1.2)
+        return round(max(DELAY_CONFIG["min_shift_s"], min(DELAY_CONFIG["max_shift_s"], rolled)), 1)
 
     def _temporary_for(self, room: ArenaRoom, d: str) -> TemporaryDoor | None:
         target = self.arena.door_target(room, d)
@@ -306,9 +329,12 @@ class Room:
                     pub_room["open"][d] = True
         return pub
 
-    def wristband_public(self) -> dict:
+    def wristband_public(self, revealed: bool = False) -> dict:
         return {
-            room.code: {d: not self.arena.door_open(room, d) for d in DIRECTIONS}
+            room.code: {
+                d: not self.arena.door_open(room, d) if revealed else False
+                for d in DIRECTIONS
+            }
             for room in self.arena.rooms
         }
 
@@ -385,25 +411,34 @@ class Room:
             "room_code": room.code if room else None,
             "room": [room.bx, room.by] if room else None,
             "doors": doors, "locked": p.locked, "eliminated": p.eliminated,
-            "escaped": p.escaped, "points": p.points, "role": p.role,
+            "escaped": p.escaped,             "points": p.points, "role": p.role,
+            "wristband_revealed": p.wristband_revealed,
+            "wristband_cooldown_remaining": max(0.0, p.wristband_cooldown_until - time.time()),
             "exit_found": p.exit_found,
             "exit_code": self.arena.exit_room().code if p.exit_found else None,
         }
 
     def snapshot(self, for_player: Player | None = None) -> dict:
+        role = for_player.role if for_player else "unassigned"
         remaining = None
-        if self.status == "running" and self.next_round_at is not None:
+        if role == "timekeeper" and self.status == "running" and self.next_round_at is not None:
             remaining = max(0.0, self.next_round_at - time.time())
         match_remaining = None
         if self.status == "running" and self.match_deadline is not None:
             match_remaining = max(0.0, self.match_deadline - time.time())
-        role = for_player.role if for_player else "unassigned"
+        wristband_revealed = bool(
+            for_player and for_player.role == "pathfinder" and for_player.wristband_revealed
+        )
         snap = {
             "room": self.id, "status": self.status, "round": self.round,
             "max_rounds": self.max_rounds,
             "stage": self.stage, "stage_name": stage_config(self.stage)["name"],
             "max_stage": MAX_STAGE,
-            "arena": self.arena_public(), "wristband": self.wristband_public(),
+            "arena": self.arena_public(),
+            "wristband": self.wristband_public(wristband_revealed),
+            "wristband_sanctions": [
+                room.code for room in self.arena.rooms if wristband_revealed and room.sanction
+            ],
             "players": self.players_public(),
             "you": self.you_public(for_player) if for_player else None,
             "next_round_in": remaining, "round_seconds": self.round_seconds,
@@ -411,13 +446,15 @@ class Room:
             "min_players": self.min_players, "rule_count": len(self.engines),
             "sanction_total": self.sanction_total, "sanction_found": self.sanction_found,
             "nexus": self._nexus_report(), "pa": self.pa,
-            "dice": self.dice, "futures": filter_visions(self.visions, role),
+            "dice": {}, "futures": filter_visions(self.visions, role),
             "dice_relief_rounds": self.dice_relief_rounds,
             "puzzle": {
                 "public": self.puzzle.public() if self.puzzle else {},
                 "you": self.puzzle.role_view(role) if self.puzzle and role in self.puzzle.domains else None,
             },
         }
+        if role in ("timekeeper", "decoder"):
+            snap["delay_status"] = self._delay_status()
         return filter_snapshot(snap, role)
 
     async def send(self, player: Player, payload: dict) -> None:
@@ -628,6 +665,10 @@ class Room:
             await self.predict(player, msg)
         elif kind in ("puzzle_submit", "solve_puzzle"):
             await self.submit_puzzle(player, msg.get("assignment"))
+        elif kind == "delay_queue":
+            await self.queue_delay(player, msg.get("tier"))
+        elif kind == "delay_answer":
+            await self.answer_delay(player, msg.get("puzzle_id"), msg.get("answer"))
         elif kind == "ready":
             player.ready = bool(msg.get("value"))
             self._audit_room()
@@ -635,8 +676,182 @@ class Room:
             await self.maybe_start()
         elif kind == "chat":
             await self.team_chat(player, msg.get("text"))
+        elif kind in ("pathfinder_reveal", "reveal_wristband"):
+            await self.reveal_wristband(player)
         elif kind == "ping":
             await self.send(player, {"type": "pong"})
+
+    async def reveal_wristband(self, player: Player) -> None:
+        if self.status != "running" or player.eliminated or player.escaped:
+            await self.send(player, {
+                "type": "error", "code": "unavailable",
+                "message": "The wristband scan is unavailable.",
+            })
+            return
+        if player.role != "pathfinder":
+            await self.send(player, {
+                "type": "error", "code": "role_unavailable",
+                "message": "Only the Pathfinder can scan the wristband.",
+            })
+            return
+        if player.wristband_revealed:
+            await self.send(player, {
+                "type": "error", "code": "already_revealed",
+                "message": "The wristband is already revealed until the next shift.",
+            })
+            return
+        remaining = player.wristband_cooldown_until - time.time()
+        if remaining > 0:
+            await self.send(player, {
+                "type": "error", "code": "cooldown",
+                "message": f"Wristband scan recharges in {int(remaining)}s.",
+            })
+            return
+        player.wristband_revealed = True
+        self.log(player.id, "wristband_reveal", {"until": "next_shift"})
+        await self.send(player, {
+            "type": "wristband_reveal", "active": True,
+            "message": "WRISTBAND REVEALED — READ IT BEFORE THE NEXT SHIFT.",
+        })
+        await self.broadcast_state()
+
+    def _delay_pair(self):
+        keeper = next((p for p in self.players.values()
+                       if p.role == "timekeeper" and p.connected and not p.eliminated and not p.escaped), None)
+        decoder = next((p for p in self.players.values()
+                        if p.role == "decoder" and p.connected and not p.eliminated and not p.escaped), None)
+        return keeper, decoder
+
+    def _delay_attempts_left(self) -> int:
+        used = self.delay_attempts.get(self.stage, 0)
+        return max(0, DELAY_CONFIG["attempts_per_stage"] - used)
+
+    def _delay_status(self) -> dict:
+        now = time.time()
+        if self.delay_puzzle is not None:
+            state = "solving"
+            cooldown_s = 0.0
+        elif self.delay_cooldown_until > now:
+            state = "cooldown"
+            cooldown_s = self.delay_cooldown_until - now
+        else:
+            state = "idle"
+            cooldown_s = 0.0
+        return {
+            "state": state, "cooldown_s": round(cooldown_s, 1),
+            "attempts_left": self._delay_attempts_left(),
+        }
+
+    async def _send_delay_status(self) -> None:
+        status = self._delay_status()
+        keeper, decoder = self._delay_pair()
+        for player in (keeper, decoder):
+            if player is not None:
+                await self.send(player, {"type": "delay_status", **status})
+
+    async def queue_delay(self, player: Player, tier) -> None:
+        if self.status != "running" or player.eliminated or player.escaped:
+            await self.send(player, {"type": "error", "code": "unavailable",
+                                     "message": "The delay puzzle is unavailable."})
+            return
+        if player.role != "timekeeper":
+            await self.send(player, {"type": "error", "code": "role_unavailable",
+                                     "message": "Only the Timekeeper can queue a delay."})
+            return
+        keeper, decoder = self._delay_pair()
+        if keeper is None or decoder is None:
+            await self.send(player, {
+                "type": "error", "code": "delay_pair_unavailable",
+                "message": "The Timekeeper and Decoder must both be alive and connected.",
+            })
+            return
+        try:
+            tier = int(tier)
+        except (TypeError, ValueError):
+            tier = 0
+        if tier not in DELAY_CONFIG["answer_ms"]:
+            await self.send(player, {"type": "error", "code": "bad_tier",
+                                     "message": "Choose tier 1, 2 or 3."})
+            return
+        if self.delay_puzzle is not None:
+            await self.send(player, {"type": "error", "code": "puzzle_open",
+                                     "message": "A puzzle is already open."})
+            return
+        if self.delay_cooldown_until > time.time():
+            await self.send(player, {"type": "error", "code": "cooldown",
+                                     "message": "The delay puzzle is recharging."})
+            return
+        if self._delay_attempts_left() <= 0:
+            await self.send(player, {"type": "error", "code": "no_attempts",
+                                     "message": "No delay attempts remain this stage."})
+            return
+        self.delay_puzzle_counter += 1
+        puzzle = puzzles.generate(self.seed, self.delay_puzzle_counter, tier)
+        self.delay_puzzle = puzzle
+        self.delay_deadline = time.time() + DELAY_CONFIG["answer_ms"][tier] / 1000
+        self.delay_attempts[self.stage] = self.delay_attempts.get(self.stage, 0) + 1
+        self.log(player.id, "delay_queue", {"tier": tier, "puzzle_id": puzzle["puzzle_id"]})
+        await self.send(decoder, {
+            "type": "puzzle",
+            **puzzles.public_view(puzzle, DELAY_CONFIG["answer_ms"][tier]),
+        })
+        await self.send(keeper, {"type": "puzzle_key", **puzzles.key_view(puzzle)})
+        await self._send_delay_status()
+
+    async def answer_delay(self, player: Player, puzzle_id, answer) -> None:
+        if self.status != "running" or player.eliminated or player.escaped:
+            return
+        if player.role != "decoder":
+            await self.send(player, {"type": "error", "code": "role_unavailable",
+                                     "message": "Only the Decoder can answer the puzzle."})
+            return
+        if self.delay_puzzle is None or puzzle_id != self.delay_puzzle["puzzle_id"]:
+            await self.send(player, {"type": "error", "code": "stale_puzzle",
+                                     "message": "That puzzle is no longer open."})
+            return
+        if self.delay_deadline is not None and time.time() >= self.delay_deadline:
+            await self._finish_delay(False)
+            return
+        await self._finish_delay(puzzles.check_answer(self.delay_puzzle, answer))
+
+    def _apply_delay(self, tier: int, ok: bool) -> float:
+        if self.next_round_at is None:
+            return 0.0
+        now = time.time()
+        before = max(0.0, self.next_round_at - now)
+        if ok:
+            amount = DELAY_CONFIG["delay_s"][tier]
+            if self.shift_successes:
+                amount *= DELAY_CONFIG["second_success_multiplier"]
+            amount = min(amount, max(0.0, DELAY_CONFIG["max_shift_delay_s"] - self.shift_delay_applied))
+            after = min(DELAY_CONFIG["max_shift_s"], before + amount)
+            after = max(DELAY_CONFIG["min_shift_s"], after)
+            self.shift_delay_applied += max(0.0, after - before)
+            self.shift_successes += 1
+        else:
+            after = before + DELAY_CONFIG["penalty_s"][tier]
+            after = max(DELAY_CONFIG["min_time_before_shift_s"], after)
+            after = min(DELAY_CONFIG["max_shift_s"], after)
+        self.next_round_at = now + after
+        return round(after - before, 3)
+
+    async def _finish_delay(self, ok: bool) -> None:
+        puzzle = self.delay_puzzle
+        if puzzle is None:
+            return
+        delta = self._apply_delay(puzzle["tier"], bool(ok))
+        self.delay_puzzle = None
+        self.delay_deadline = None
+        self.delay_cooldown_until = time.time() + DELAY_CONFIG["cooldown_s"]
+        self.log(None, "delay_result", {"ok": bool(ok), "delta_s": delta})
+        self.pa = "THE DEALER BUYS TIME." if ok else "THE DEALER TAKES TIME BACK."
+        for player in list(self.players.values()):
+            result = {"type": "delay_result", "ok": bool(ok), "message": self.pa}
+            if player.role == "timekeeper":
+                result["delta_s"] = delta
+            await self.send(player, result)
+        await self._send_delay_status()
+        await self.broadcast_state()
 
     # ---- movement / doors ---------------------------------------------------
     def _visible_exit_code(self, player: Player) -> str | None:
@@ -703,6 +918,12 @@ class Room:
 
     async def open_door(self, player: Player, door=None, color=None) -> None:
         if self.status != "running" or player.escaped or player.eliminated:
+            return
+        if self.delay_puzzle and player.role == "decoder":
+            await self.send(player, {
+                "type": "error", "code": "decoder_busy",
+                "message": "Answer the puzzle before moving through a door.",
+            })
             return
         if player.locked:
             await self.send(player, {
@@ -781,6 +1002,12 @@ class Room:
 
     async def cross_door(self, player: Player, door=None) -> None:
         if self.status != "running" or player.escaped or player.eliminated:
+            return
+        if self.delay_puzzle and player.role == "decoder":
+            await self.send(player, {
+                "type": "error", "code": "decoder_busy",
+                "message": "Answer the puzzle before moving through a door.",
+            })
             return
         if player.locked:
             await self.send(player, {
@@ -1039,6 +1266,20 @@ class Room:
     # ---- rounds -------------------------------------------------------------
     def step_round(self) -> dict:
         self.prev_arena = self.arena_public()
+        if self.delay_puzzle is not None:
+            puzzle_id = self.delay_puzzle["puzzle_id"]
+            used = self.delay_attempts.get(self.stage, 0)
+            self.delay_attempts[self.stage] = max(0, used - 1)
+            self.delay_puzzle = None
+            self.delay_deadline = None
+            self.log(None, "delay_cancelled", {"puzzle_id": puzzle_id})
+        for player in self.players.values():
+            if player.wristband_revealed:
+                player.wristband_revealed = False
+                player.wristband_cooldown_until = time.time() + PATHFINDER_REVEAL_COOLDOWN
+                self.log(player.id, "wristband_reveal_expired", {
+                    "cooldown_seconds": PATHFINDER_REVEAL_COOLDOWN,
+                })
         self.open_doors.clear()
         moved: list[dict] = []
         ops: list[dict] = []
@@ -1048,6 +1289,8 @@ class Room:
             ops.extend(res["ops"])
         repairs = self.arena.ensure_connected()
         self.round += 1
+        self.shift_delay_applied = 0.0
+        self.shift_successes = 0
         self._audit_room()
         for player in self.players.values():
             player.sealed_strikes = 0
@@ -1071,6 +1314,7 @@ class Room:
         solvable = self.arena.solvable() and reachable_after_changes(
             self.arena, self.engines, START_ROOM, None, horizon=3)
         action = self.nexus.decide(self.round, solvable, self.shift_seconds)
+        self.nexus.commit_action(action)
         self._apply_director(action)
         self._recompute_sanctions()
         self.log(None, "round", {
@@ -1107,8 +1351,6 @@ class Room:
             delta = 1 if kind == "raise_complexity" else -1
             target = max(1, min(MAX_COMPLEXITY, self._puzzle_complexity() + delta))
             self.complexity_override = target
-            if hasattr(self.nexus, "complexity_level"):
-                self.nexus.complexity_level = target
             self._load_stage()
             self.puzzle = self._new_puzzle()
             self.log(None, "complexity", {"level": target, "rules": len(self.engines)})
@@ -1212,12 +1454,9 @@ class Room:
             view["state"] = self.snapshot(p)
             view["arena"] = filter_arena(payload["arena"], p.role, current)
             view["players"] = payload["players"]
-            view["next_round_in"] = payload["next_round_in"]
             view["pa"] = self.pa
             if p.role == "timekeeper":
-                view["dice"] = payload["dice"]
-            else:
-                view["dice"] = {current: payload["dice"].get(current, {})} if current else {}
+                view["next_round_in"] = payload["next_round_in"]
             await self.send(p, view)
         for player_id, clue in self.pending_clues:
             p = self.players.get(player_id)
@@ -1287,6 +1526,12 @@ class Room:
                     await self._check_endings()
                     if self.status == "running":
                         await self._expire_match()
+                if (self.status == "running" and self.delay_puzzle is not None
+                        and self.delay_deadline is not None
+                        and time.time() >= self.delay_deadline):
+                    await self._finish_delay(False)
+                if self.status != "running":
+                    continue
                 if (self.status == "running" and self.next_round_at is not None
                         and time.time() >= self.next_round_at):
                     await self.broadcast_round()

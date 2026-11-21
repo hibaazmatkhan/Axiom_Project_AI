@@ -63,7 +63,7 @@ def test_complexity_scales_constraints_and_domains():
     assert all(value in ("spade", "heart", "diamond", "club")
                for values in easy.domains.values() for value in values)
     with pytest.raises(ValueError):
-        generate_puzzle(1, roles=("navigator",))
+        generate_puzzle(1, roles=("pathfinder",))
 
 
 def test_solver_finds_all_solutions_with_forward_checking():
