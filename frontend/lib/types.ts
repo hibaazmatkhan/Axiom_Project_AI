@@ -7,7 +7,7 @@ export type PatternType =
   | "symbol" | "sequential" | "conditional" | "compound";
 export type Status = "lobby" | "running" | "won" | "over";
 export type DealerClue = { id: number; tier: 1 | 2; text: string };
-export type PuzzleView = { role: Role; domain: string[]; clues: string[] };
+export type PuzzleView = { role: Role; domain: string[]; clues: string[]; mark?: string | null };
 export type PuzzleSnapshot = {
   public: {
     seed?: number;
@@ -17,6 +17,7 @@ export type PuzzleSnapshot = {
     constraints?: number;
     attempts?: number;
     solved?: boolean;
+    marks?: number;
   };
   you: PuzzleView | null;
 };
@@ -30,6 +31,7 @@ export type PuzzleResult = {
   message?: string;
 };
 export type DealerNudge = { role: Role; text: string; puzzle?: string; round: number };
+export type NoteLine = { id: number; from: string; color: string; text: string };
 
 export type DelayTier = 1 | 2 | 3;
 export type DelayCell = { row: number; col: number };
@@ -148,6 +150,7 @@ export type You = {
   role: Role;
   wristband_revealed?: boolean;
   wristband_cooldown_remaining?: number;
+  prediction_cooldown_remaining?: number;
 };
 
 export type Player = {
@@ -226,6 +229,7 @@ export type Snapshot = {
   sanction_found: number;
   nexus: NexusReport;
   pa: string;
+  notes?: NoteLine[];
   futures: Visions;
   role: Role;
   role_label: string;
@@ -249,6 +253,7 @@ export type RoundView = {
   type: "round";
   round: number;
   pattern_type: PatternType | null;
+  pattern_types?: PatternType[] | null;
   active: boolean;
   pa: string;
   moved?: MovedRoom[];

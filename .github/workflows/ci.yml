@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+      - name: NEXUS experiment smoke
+        run: python -m experiments.run_experiment --seeds 2 --cycles 2 --no-charts --output-dir ${{ runner.temp }}/axiom-experiment
       - name: Avatar pack tests
         working-directory: avatar-pack/backend
         run: python -m pytest -q
@@ -33,6 +35,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
+      - run: npm test
       - run: npm run build
       - name: Avatar pack typecheck
         run: ./node_modules/.bin/tsc -p ../avatar-pack/tsconfig.json

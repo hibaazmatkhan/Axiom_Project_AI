@@ -13,6 +13,7 @@ const nextConfig = {
     FIREBASE_APP_CHECK_SITE_KEY: process.env.FIREBASE_APP_CHECK_SITE_KEY,
     SITE_URL: process.env.SITE_URL,
     WS_URL: process.env.WS_URL,
+    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? process.env.WS_URL,
   },
 };
 export default nextConfig;

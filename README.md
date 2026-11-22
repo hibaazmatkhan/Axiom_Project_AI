@@ -65,12 +65,20 @@ Convergence → The Last Room`.
   room are required).
 - Points at zero eliminate you. The match ends when the **30-minute** match timer
   expires, or early if the team escapes or everyone is eliminated.
+- Shifts run through seven stages from 32s to 20s with ±10% jitter, clamped to
+  18–45s. Delay puzzle answer windows are 12/15/18s by tier; Dealer clues
+  recharge after 12s for the team and 30s per player, capped at four per stage.
 - KING OF SPADES is not a player role: five 180-second appearances begin at
-  0:30, 3:30, 6:30, 9:30 and 12:30. Each visits five rooms and eliminates anyone
-  inside the room it occupies.
+  2:00, 7:00, 12:00, 17:00 and 22:00. Each visits five non-exit rooms and
+  eliminates anyone inside the room it occupies.
 - The Watcher receives a private alert 30 seconds before each appearance with
   only that session's first room. The four teleport rooms stay hidden from the
   Watcher.
+- The HUD includes shared team notes, a prediction panel with a 2-second
+  cooldown, and per-role intel for moved rooms, sigils and the previous layout.
+- Sound effects are generated locally and played with Howler.js (MIT):
+  footsteps, doors, lockdowns, KING warnings and a KING proximity drone. Use the
+  **Sound on/off** control in the top bar to mute.
 
 ---
 
@@ -131,7 +139,7 @@ only verified accounts persist ranked match data. Open the game URL in up to
 auto-assigned a role.
 
 > For a real match set the backend env `MIN_PLAYERS=4`. For quick demos set
-> `ROUND_SECONDS=8` and optionally `MATCH_SECONDS=120`. The match timer starts
+> `ROUND_SECONDS=18` and optionally `MATCH_SECONDS=120`. The match timer starts
 > when the round begins; the whole living team must reach the exit before it
 > expires or everyone left alive is eliminated. Players press **Ready up**;
 > the match starts when all connected players are ready.
@@ -165,10 +173,9 @@ Before going live, authorize the Vercel domain in Firebase Auth, add its credent
 | Click / tap a door in the room | open it for 10 seconds (−1 point) |
 | `W A S D` toward an open doorway | cross into the next room (free) |
 | `E` / `Enter` while facing a door | open it for 10 seconds (−1 point) |
-| `Space` | wait (spends 1 point) |
-| Click into the arena, then move the mouse | look around in first person |
-| `Esc` | stop mouse look |
-| Drag on touch screens | look around in first person |
+| `Space` | wait (spends 1 point; disabled for ghosts) |
+| Drag to look / click a door | look around in first person / open a door |
+| Drag to look / click a door (touch) | look around in first person / open a door |
 | Chat | coordinate the four roles |
 
 A doorway is passable only when both rooms have that side open. Clicking a
@@ -179,6 +186,68 @@ sanction rooms until the next grid shift, with a two-minute recharge afterwards.
 D10 seals stay hidden until a door is tried.
 
 ---
+
+## Design and asset plan (WP1)
+
+- Visual identity: black/white cube rooms, red KING hazard, four coloured doors,
+  gold watcher alerts, bone/ink typography.
+- Assets: Howler.js Web Audio cues are generated at runtime; avatar presets and
+  character portraits live in `avatar-pack/public/avatars/`; no external game
+  textures are required.
+- Desktop HUD wireframe:
+
+```text
+┌──────────────────────────────────────────────┐
+│ room · round · clock · score · sound         │
+│                                              │
+│                first-person arena            │
+│                                              │
+│ chat / notes / intel tab strip               │
+└──────────────────────────────────────────────┘
+```
+
+- Mobile HUD wireframe:
+
+```text
+┌──────────────────────────┐
+│ room · round · sound     │
+│                          │
+│     first-person arena   │
+│                          │
+│ chat | notes | prediction| intel
+└──────────────────────────┘
+```
+
+- Accessibility: keyboard and pointer alternatives for doors, large high-contrast
+  timers, text equivalents for audio cues, and ghost-mode copy that states which
+  controls remain active.
+
+## Delivery and operations (WP8)
+
+- Branching: keep `main` deployable; use `feat/`, `fix/` and `docs/` branches with
+  squash merges. GitHub Issues are the task board; branch protection should
+  require CI and one reviewer when the repository is hosted on GitHub.
+- Deployment: Vercel hosts `frontend/`, Render hosts the FastAPI backend with one
+  instance. Set frontend `BACKEND_URL`, `WS_URL` and `NEXT_PUBLIC_WS_URL`, plus
+  backend `ALLOWED_ORIGINS`, `FRONTEND_URL` and Supabase/Firebase secrets.
+- Monitoring contract: `GET /health` reports `ok`, `status`, uptime, room count
+  and player count. Alert on non-200, backend restart loops, socket reconnect
+  storms and p95 RTT above 250 ms.
+- Local load and latency probe against a running backend:
+
+```bash
+cd backend
+./venv/bin/python tests/load_probe.py --clients 4 --url ws://localhost:8000
+./venv/bin/python tests/match_smoke.py
+```
+
+- Playtest record template: date, build/seed, four roles, round count, KING
+  appearances, delay attempts, reconnect events, p95 RTT, escape result, three
+  observed problems and one prioritised fix.
+- Final report shell: problem and AI goals, PEAS/agent model, architecture,
+  deception and information asymmetry, NEXUS evaluation results, demo storyboard
+  (lobby → shift → delay puzzle → KING warning → escape), testing evidence, known
+  limitations, and contribution log.
 
 ## Repository layout
 

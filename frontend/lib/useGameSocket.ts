@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, KingWatchView, NexusReport, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Wristband, You,
+  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, KingWatchView, NexusReport, NoteLine, PatternType, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Wristband, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -12,6 +12,7 @@ export type RoundTransition = {
   moved: { from: [number, number]; to: [number, number]; code_from: string; code_to: string }[];
   sigils: string[];
   patternType: string | null;
+  patternTypes: PatternType[] | null;
   previous: Arena | null;
 };
 
@@ -32,7 +33,7 @@ export type DoorEvent = {
 
 export type HazardEvent = { player: string; room_code: string; penalty: number; points: number };
 export type ReviveEvent = { player: string; by: string[]; points: Record<string, number> };
-export type EliminationEvent = { player: string; reason: string };
+export type EliminationEvent = { id: number; player: string; reason: string };
 
 const EMPTY_NEXUS: NexusReport = {
   team_skill: 0, difficulty: 0, complexity_level: 0, players: [], last_action: null,
@@ -48,7 +49,7 @@ function socketUrl(room: string, name: string, pid: string) {
   const origin = window.location.origin;
   let base: URL;
   try {
-    const configured = process.env.WS_URL?.trim();
+    const configured = process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.WS_URL?.trim();
     base = new URL(configured || origin, origin);
     if (!/^(ws|wss|http|https):$/.test(base.protocol)) throw new Error("Invalid WS URL");
   } catch {
@@ -103,9 +104,11 @@ export function useGameSocket(room: string, name: string) {
   const [delayResult, setDelayResult] = useState<DelayResultView | null>(null);
   const [delayDeadlineAt, setDelayDeadlineAt] = useState<number | null>(null);
   const [transition, setTransition] = useState<RoundTransition>({
-    id: 0, round: 0, moved: [], sigils: [], patternType: null, previous: null,
+    id: 0, round: 0, moved: [], sigils: [], patternType: null, patternTypes: null, previous: null,
   });
-  const [prediction, setPrediction] = useState<{ correct: boolean; score: number; message: string } | null>(null);
+  const [prediction, setPrediction] = useState<{
+    id: number; correct: boolean; score: number; points: number; message: string;
+  } | null>(null);
   const [doorEvent, setDoorEvent] = useState<DoorEvent | null>(null);
   const [cross, setCross] = useState<CrossEvent>({
     id: 0, door: null, from: null, to: null, cost: 0, player: null,
@@ -117,6 +120,7 @@ export function useGameSocket(room: string, name: string) {
   const [kingWatch, setKingWatch] = useState<KingWatchView | null>(null);
   const [kingEvent, setKingEvent] = useState<KingEvent | null>(null);
   const [chat, setChat] = useState<ChatLine[]>([]);
+  const [notes, setNotes] = useState<NoteLine[]>([]);
   const [exitNotice, setExitNotice] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<{ won: boolean; summary: any } | null>(null);
   const [dealerClue, setDealerClue] = useState<DealerClue | null>(null);
@@ -192,6 +196,7 @@ export function useGameSocket(room: string, name: string) {
       setMatchAt(s.match_time_left != null ? performance.now() + s.match_time_left * 1000 : null);
       setNexus(s.nexus ?? EMPTY_NEXUS);
       setPa(s.pa ?? "");
+      setNotes(s.notes ?? []);
       setRole(s.role);
       setRoleLabel(s.role_label);
       setRoleHint(s.role_hint);
@@ -309,6 +314,7 @@ export function useGameSocket(room: string, name: string) {
             })),
             sigils: tv.sigils ?? [],
             patternType: tv.pattern_type,
+            patternTypes: tv.pattern_types ?? null,
             previous: tv.previous ?? null,
           }));
           setRound(tv.round);
@@ -392,7 +398,9 @@ export function useGameSocket(room: string, name: string) {
         } else if (m.type === "revive") {
           setRevive({ player: m.player, by: m.by, points: m.points });
         } else if (m.type === "elimination") {
-          setEliminated({ player: m.player, reason: m.reason });
+          setEliminated((prev) => ({
+            id: (prev?.id ?? 0) + 1, player: m.player, reason: m.reason,
+          }));
         } else if (m.type === "king_watch") {
           setKingWatch(m as KingWatchView);
           setNotice("KING WARNING: FIRST ROOM REVEALED TO THE WATCHER.");
@@ -430,7 +438,15 @@ export function useGameSocket(room: string, name: string) {
             ? "THE KING OF SPADES TOOK YOU."
             : "THE KING OF SPADES TOOK A PLAYER.");
         } else if (m.type === "prediction_result") {
-          setPrediction({ correct: m.correct, score: m.score, message: m.message });
+          setPrediction((prev) => ({
+            id: (prev?.id ?? 0) + 1,
+            correct: !!m.correct, score: Number(m.score) || 0,
+            points: Number(m.points) || 0, message: String(m.message ?? ""),
+          }));
+        } else if (m.type === "notes") {
+          setNotes((current) => [...current, {
+            id: Number(m.id) || 0, from: m.from, color: m.color, text: m.text,
+          }].slice(-40));
         } else if (m.type === "exit_found") {
           setExitNotice(m.message ?? "EXIT SIGHTED. TELL YOUR TEAM.");
         } else if (m.type === "time_up") {
@@ -486,6 +502,7 @@ export function useGameSocket(room: string, name: string) {
   );
   const sendReady = useCallback((value: boolean) => send({ type: "ready", value }), [send]);
   const sendChat = useCallback((text: string) => send({ type: "chat", text }), [send]);
+  const sendNotes = useCallback((text: string) => send({ type: "notes", text }), [send]);
   const sendPuzzleMark = useCallback(
     (role: Role, value: string) => send({ type: "puzzle_submit", assignment: { [role]: value } }),
     [send],
@@ -521,10 +538,10 @@ export function useGameSocket(room: string, name: string) {
     connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
     roleHint, transition, prediction, doorEvent, cross,
-    hazard, revive, eliminated, king, kingWatch, kingEvent, chat, exitNotice, gameOver,
+    hazard, revive, eliminated, king, kingWatch, kingEvent, chat, notes, exitNotice, gameOver,
     dealerClue, dealerNudge, puzzle, puzzleResult, sanctionTotal, sanctionFound,
     delayPuzzle, delayKey, delayStatus, delayResult, delayDeadlineAt,
-    sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat,
+    sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat, sendNotes,
     sendPuzzleMark, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch,
   };
 }
