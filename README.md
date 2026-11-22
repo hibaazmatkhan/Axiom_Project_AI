@@ -40,7 +40,7 @@ players adapt again.
 | The Dealer: six-attribute player model, k-means clustering, utility-based adaptation | Done |
 | Cooperative CSP role-mark puzzle with per-role private clues | Done |
 | Cooperative delay puzzle shared by the Timekeeper and Decoder | Done |
-| Non-player KING OF SPADES: five 180s appearances, five rooms each, kills occupants; Watcher gets first-room alerts | Done |
+| Non-player KING OF SPADES: five 180s appearances, five rooms each, kills occupants; Watcher gets the full private schedule | Done |
 | Guaranteed solvability via time-expanded reachability checks | Done |
 | Firebase Auth accounts, email verification, password reset, Google, guest, optional TOTP MFA | Done |
 | Supabase public profiles + match history, statistics and Dealer model persistence | Done |
@@ -62,7 +62,8 @@ Convergence → The Last Room`.
 - Wait: **−1**. Sanction room: **−1…−8** depending on the room.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
 - Scan a locked teammate free: **−1** per helper (two helpers in or beside the
-  room are required).
+  room are required). A non-locked teammate can also escort a locked player out
+  of the room, which unlocks them for free.
 - Points at zero eliminate you. The match ends when the **30-minute** match timer
   expires, or early if the team escapes or everyone is eliminated.
 - Shifts run through seven stages from 32s to 20s with ±10% jitter, clamped to
@@ -71,10 +72,12 @@ Convergence → The Last Room`.
 - KING OF SPADES is not a player role: five 180-second appearances begin at
   2:00, 7:00, 12:00, 17:00 and 22:00. Each visits five non-exit rooms and
   eliminates anyone inside the room it occupies.
-- The Watcher receives a private alert 30 seconds before each appearance with
-  only that session's first room. The four teleport rooms stay hidden from the
-  Watcher.
-- The HUD includes shared team notes in the right sidebar.
+- The Watcher receives the full private KING schedule: all five appearances,
+  every teleport room and a 30-second warning. Live KING events stay hidden from
+  that role.
+- The HUD includes shared team notes in the right sidebar and no chat bar; remote
+  avatars move smoothly from throttled pose updates. The exit room renders a black
+  exit door on its edge wall once discovered.
 - Sound effects are generated locally and played with Howler.js (MIT):
   footsteps, doors, lockdowns, KING warnings and a KING proximity drone. Use the
   **Sound on/off** control in the top bar to mute.
@@ -173,10 +176,10 @@ Before going live, authorize the Vercel domain in Firebase Auth, set Firebase/Su
 | `W A S D` toward an open doorway | cross into the next room (free) |
 | `E` / `Enter` while facing a door | open it for 10 seconds (−1 point) |
 | `Space` | wait (spends 1 point; disabled for ghosts) |
-| Click canvas, then move mouse | lock the cursor and look around without dragging |
+| Click the arena canvas | blur any focused HUD input and lock the cursor; mouse look works without dragging |
 | Click a door / tap a door (touch) | open a door; touch users can still drag to look |
 | `Esc` | release the locked cursor |
-| Chat | coordinate the four roles |
+| Notes | coordinate the four roles through shared team notes |
 
 A doorway is passable only when both rooms have that side open. Clicking a
 door opens it for 10 seconds and shows the remaining time above the frame.
@@ -202,7 +205,7 @@ D10 seals stay hidden until a door is tried.
 │                                              │
 │                first-person arena            │
 │                                              │
-│ chat / notes / intel tab strip               │
+│ notes / intel tab strip                      │
 └──────────────────────────────────────────────┘
 ```
 
@@ -214,7 +217,7 @@ D10 seals stay hidden until a door is tried.
 │                          │
 │     first-person arena   │
 │                          │
-│ chat | notes | prediction| intel
+│ notes | intel | marks | delay
 └──────────────────────────┘
 ```
 
@@ -373,8 +376,8 @@ blue `#5aa7ff`, yellow `#f4c542`, green `#58d68d`.
 - The hidden rule is never serialised to any client.
 - Sigils are stripped from every client; hidden d10 seal results are never
   serialised to any client (each player sees only door colours).
-- Active KING positions and teleports are hidden from the Watcher; only that
-  role receives the 30-second first-room alert.
+- Live KING positions and teleport events are hidden from the Watcher; only that
+  role receives the full private schedule and warning.
 - The shift countdown goes only to the Timekeeper; the Decoder gets the puzzle
   question and the Timekeeper gets the key, never the other way around.
 

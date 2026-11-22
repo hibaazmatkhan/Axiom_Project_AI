@@ -3,9 +3,13 @@ const LEGACY_AVATAR_KEY = "axiom_guest_avatar";
 
 export const guest = {
   get: (): string => {
-    if (typeof window === "undefined") return "";
+    if (typeof window === "undefined") return "Guest";
     window.localStorage.removeItem(LEGACY_AVATAR_KEY);
-    return window.localStorage.getItem(NAME_KEY) ?? "";
+    const stored = window.localStorage.getItem(NAME_KEY)?.trim();
+    if (stored) return stored;
+    const next = `Guest${Math.floor(1000 + Math.random() * 9000)}`;
+    window.localStorage.setItem(NAME_KEY, next);
+    return next;
   },
   set: (name: string) => {
     if (typeof window === "undefined") return;

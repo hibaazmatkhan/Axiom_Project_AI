@@ -26,13 +26,14 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `choose_gate` | `door` | alias of `open_door` |
 | `cross_door` | `door` | walk through an active temporary doorway; no extra cost |
 | `move` | `door`, or `dx`,`dy`, or `color` | legacy alias of `open_door`; `dx/dy` is mapped to the matching direction |
+| `pose` | `x`, `z`, `yaw`, `moving` | continuous local player motion for smooth remote avatars; not rate-limited like gameplay intents |
 | `wait` | none | spends 1 point |
 | `unlock` | `target` (player id) | asks the server to scan a locked teammate free; two helpers in or beside the room are required, each spends 1 point |
 | `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it; 2-second per-player cooldown |
 | `puzzle_submit` | `assignment` with only the sender's `role` and chosen mark | contributes one role mark to the cooperative CSP puzzle |
 | `delay_queue` | `tier` (`1`/`2`/`3`) | Timekeeper only; opens one delay puzzle for the Decoder |
 | `delay_answer` | `puzzle_id`, `answer` (cell `{row, col}` or suit) | Decoder only; answers the open delay puzzle |
-| `chat` | `text` | team chat |
+| `chat` | `text` | legacy team chat; server still accepts it but the web HUD no longer exposes chat |
 | `notes` | `text` | shared team notes; aliases: `notes_send` |
 | `ready` | `value` (bool) | lobby ready toggle; match starts when all connected players are ready |
 | `ping` | none | server replies `pong` |
@@ -48,7 +49,9 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `door_result` | `accepted`, `locked`, `door`, `color`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent; private to the acting player |
 | `door_opened` | `accepted`, `player`, `door`, `color`, `cost`, `open_until`, `message`; plus `room_code`/`target_code` only for players in either connected room | a paid doorway opened for 10s |
 | `door_closed` | `door`, `message`; plus `room_code`/`target_code` only for players in either connected room | the 10s window expired or the grid shifted |
-| `room_entered` | `player`, `door`, `from`, `to`, `cost` | a player physically crossed an open doorway |
+| `room_entered` | `player`, `door`, `from`, `to`, `cost` | a player physically crossed an open doorway; escorted locked teammates emit this too |
+| `player_move` | `player`, `room_code`, `x`, `z`, `yaw`, `moving` | throttled local pose for smooth remote avatars; sent to players in other rooms only |
+| `player_left` | `player`, `name`, `message` | a player disconnected or left the arena |
 | `exit_found` | `room_code`, `message` | private to a player who entered the exit or saw it through an active doorway |
 | `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a second sealed door in one round and is locked |
 | `hazard` | `player`, `room_code`, `penalty`, `points` | a Sanction room drained points |
@@ -61,7 +64,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `delay_result` | `ok`, `message`, `delta_s` (Timekeeper only) | result of a delay answer or timeout; no countdown or delta for other roles |
 | `revive` | `player`, `by[]`, `points{}` | two teammates scanned a locked player free |
 | `elimination` | `player`, `reason` | points reached zero or KING OF SPADES eliminated the player |
-| `king_watch` | `id`, `appearance`, `total`, `in_seconds`, `starts_at`, `room_code`, `room` | private 30-second Watcher alert with only that session's first room |
+| `king_watch` | `id`, `appearance`, `total`, `in_seconds`, `starts_at`, `ends_at`, `room_code`, `room`, `room_remaining`, `appearances[]` | private Watcher-only full schedule with all five appearances and all five rooms each |
 | `king_spawn` | `king` | non-player KING OF SPADES appeared for a 180s window; not sent to the Watcher |
 | `king_teleport` | `king` | KING OF SPADES moved to the next of five rooms; hidden from the Watcher |
 | `king_despawn` | `id`, `appearance`, `king` | KING OF SPADES window ended or match finished; hidden from the Watcher |
@@ -70,7 +73,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
 | `notes` | `id`, `from`, `color`, `text` | shared team note; the last 40 are replayed in `state.notes` |
-| `game_over` | `won`, `summary`, `nexus` | match ended (stored to the database) |
+| `game_over` | `won`, `reason`, `summary`, `nexus` | match ended; `reason` is personalized for loss vs. escape |
 | `error` | `code`, `message` | advisory: `rate_limited`, `not_adjacent`, `need_two`, `prediction_cooldown`, `internal`; fatal: `invalid_username`, `username_taken`, `profile_unavailable`, `app_check_invalid`, `app_check_unavailable`, `room_not_found`, `auth_*` |
 
 ### `state`
@@ -229,7 +232,7 @@ Keyed by room code. Filtered per role:
 | role | receives |
 |---|---|
 | `pathfinder` | only `exit`/`void` futures, otherwise `unknown` |
-| `watcher` | nothing here; KING first-room warnings arrive separately |
+| `watcher` | nothing here; full KING schedule warnings arrive separately |
 | `timekeeper` | nothing here; the delay key and countdown arrive separately |
 | `decoder` | nothing here; the delay question arrives separately |
 
@@ -241,7 +244,7 @@ The server filters every `round` and `state` per role (see
 | role | sees |
 |---|---|
 | `pathfinder` | which rooms moved (positions only); `pathfinder_reveal` exposes blocked walls and sanction rooms until the next shift |
-| `watcher` | 30-second warning before each KING session: time remaining and first room only; sigils attached to moved rooms; no active KING state and no teleport rooms |
+| `watcher` | full KING schedule: all five appearances and every teleport room, plus a 30-second warning; sigils attached to moved rooms; no other roles' private data |
 | `timekeeper` | the countdown and the delay puzzle key, never the puzzle question |
 | `decoder` | the delay puzzle question and the previous filtered layout, never the key or countdown |
 
@@ -255,10 +258,10 @@ codes are only included as `wristband_sanctions` for an active reveal.
 state; d10 `rolled_sealed` values are still never serialised.
 
 Sigils are stripped from the arena for every role; hidden d10 seal results are
-never serialised to any player. Active KING position and teleport events are
-stripped from the Watcher, which receives only the private first-room warning.
-No client ever receives another role's hidden data, and the hidden rule itself
-(`PatternEngine.rule`) is never serialised.
+never serialised to any player. Live KING spawn, teleport, despawn and kill events
+are not sent to the Watcher; the Watcher receives only its private full-schedule
+warning containing every KING room. No client ever receives another role's hidden
+data, and the hidden rule itself (`PatternEngine.rule`) is never serialised.
 
 ## Economy (server constants)
 

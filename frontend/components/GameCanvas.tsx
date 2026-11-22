@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { playSound, unlockAudio } from "@/lib/audio";
-import type { Arena, CrossEvent, Direction, Door, DoorColor, KingEvent, KingView, Player, You } from "@/lib/types";
+import type { Arena, CrossEvent, Direction, Door, DoorColor, KingEvent, KingView, Player, Pose, You } from "@/lib/types";
 
 type DoorEventView = {
   id: number;
@@ -27,8 +27,11 @@ type Props = {
   kingEvent: KingEvent | null;
   elimination: { id: number; player: string; reason: string } | null;
   ghost: boolean;
+  poses: Record<string, Pose>;
+  exitWall: Direction[];
   onOpenDoor: (dir: Direction) => void;
   onCrossDoor: (dir: Direction) => void;
+  onPose: (pose: Pose) => void;
 };
 
 type ShiftMove = {
@@ -655,6 +658,24 @@ export default function GameCanvas(props: Props) {
         );
       }
 
+      if (roomYou.exit_code && roomYou.room_code === roomYou.exit_code) {
+        for (const dir of propsRef.current.exitWall) {
+          const exitDoor = new THREE.Group();
+          const panel = new THREE.Mesh(
+            new THREE.PlaneGeometry(DW, DH),
+            new THREE.MeshStandardMaterial({
+              color: 0x000000, emissive: 0x000000, emissiveIntensity: 0,
+              roughness: 0.18, metalness: 0.05, side: THREE.DoubleSide,
+            }),
+          );
+          panel.position.set(0, DH / 2, T / 2 + 0.02);
+          panel.userData.exitDoor = true;
+          exitDoor.add(panel);
+          orientTo(exitDoor, dir);
+          parent.add(exitDoor);
+        }
+      }
+
       const room = arena?.rooms.find((r) => r.code === roomYou.room_code);
 
       if (roomYou.room_code && roomYou.room_code === roomYou.exit_code) {
@@ -729,6 +750,7 @@ export default function GameCanvas(props: Props) {
         const label = makeLabel(p.name || "?", p.locked ? "#e23b3b" : "#f4f1ea", 1.1);
         label.position.y = 1.6;
         g.add(label);
+        g.userData.remotePlayer = p.id;
         parent.add(g);
       });
 
@@ -1034,6 +1056,10 @@ export default function GameCanvas(props: Props) {
 
     const onPointerDown = (e: PointerEvent) => {
       if (activePointerId !== null || (e.pointerType === "mouse" && e.button !== 0)) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== renderer.domElement && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(active.tagName)) {
+        active.blur();
+      }
       unlockAudio();
       e.preventDefault();
       if (e.pointerType === "mouse" && !isPointerLocked()) {
@@ -1155,6 +1181,7 @@ export default function GameCanvas(props: Props) {
     const clock = new THREE.Clock();
     const scratchPos = new THREE.Vector3();
     const desiredVel = new THREE.Vector3();
+    let lastPoseSentAt = 0;
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
@@ -1261,6 +1288,16 @@ export default function GameCanvas(props: Props) {
         camera.rotation.set(pitch, yaw, lean, "YXZ");
       }
 
+      if (!propsRef.current.ghost && currentYou && !currentYou.eliminated && t - lastPoseSentAt >= 66) {
+        lastPoseSentAt = t;
+        propsRef.current.onPose({
+          x: Math.max(-H, Math.min(H, camera.position.x)),
+          z: Math.max(-H, Math.min(H, camera.position.z)),
+          yaw: camera.rotation.y,
+          moving: Math.hypot(freeVel.x, freeVel.z) > 0.25 || !!crossAnim,
+        });
+      }
+
       const slideEase = 1 - Math.exp(-dt * 8);
       for (const slide of doorSlides) {
         const target = slide.baseX + (slide.open ? slide.span * 0.95 : 0);
@@ -1287,6 +1324,18 @@ export default function GameCanvas(props: Props) {
         if (c.userData.beacon) {
           const mesh = c as THREE.Mesh;
           if (mesh.geometry instanceof THREE.RingGeometry) mesh.scale.setScalar(1 + Math.sin(t / 700) * 0.05);
+        }
+        if (c.userData.remotePlayer) {
+          const id = c.userData.remotePlayer as string;
+          const target = propsRef.current.poses[id]
+            ?? propsRef.current.players.find((p) => p.id === id)?.pose;
+          if (target) {
+            const ease = 1 - Math.exp(-dt * 12);
+            c.position.x += (Math.max(-H, Math.min(H, target.x)) - c.position.x) * ease;
+            c.position.z += (Math.max(-H, Math.min(H, target.z)) - c.position.z) * ease;
+            c.rotation.y += shortestAngle(c.rotation.y, target.yaw) * ease;
+            c.position.y = target.moving ? Math.abs(Math.sin(t / 105)) * 0.035 : 0;
+          }
         }
         if (c.userData.led) {
           const mesh = c as THREE.Mesh;

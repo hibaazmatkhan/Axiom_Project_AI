@@ -250,12 +250,11 @@ function DelayKeyPanel({
 export default function GameClient({ room, name }: { room: string; name: string }) {
   const router = useRouter();
   const g = useGameSocket(room, name);
-  const [chatInput, setChatInput] = useState("");
   const [secs, setSecs] = useState<number | null>(null);
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [delaySecs, setDelaySecs] = useState<number | null>(null);
   const [kingWatchSecs, setKingWatchSecs] = useState<number | null>(null);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes" | "intel" | "puzzle" | "delay">("none");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "notes" | "intel" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -393,8 +392,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
         kingEvent={g.kingEvent}
         elimination={g.eliminated}
         ghost={ghost}
+        poses={g.poses}
+        exitWall={me?.exit_wall ?? []}
         onOpenDoor={sendOpenDoor}
         onCrossDoor={sendCrossDoor}
+        onPose={g.sendPose}
       />
 
       {kingStrikeAt > 0 && (
@@ -416,8 +418,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
             </span>
             <span className="text-dim">
-              First room <span className="text-gold">{g.kingWatch.room_code ?? "--"}</span>
-              {g.kingWatch.room ? ` [${g.kingWatch.room.join(", ")}]` : ""}
+              Now <span className="text-gold">{g.kingWatch.room_code ?? "--"}</span>
+              {" · "}
+              {g.kingWatch.appearances
+                .map((item) => `#${item.appearance} ${item.rooms.map((room) => room.room_code ?? "--").join("→")}`)
+                .join(" | ")}
             </span>
           </div>
         </div>
@@ -427,7 +432,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
         <div className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 xl:bottom-24">
           <p className="mono rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
             {ghost
-              ? "Ghost · chat and role intel stay live · movement and doors are disabled"
+              ? "Ghost · role intel and notes stay live · movement and doors are disabled"
               : "Click to lock cursor · mouse to look · click a door to open · WASD to walk · Esc releases"}
           </p>
         </div>
@@ -732,13 +737,15 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 <p className="mono text-lg text-red">
                   {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
                 </p>
-                <p className="text-[11px] leading-relaxed text-bone">
-                  FIRST ROOM{" "}
-                  <span className="mono text-gold">{g.kingWatch.room_code ?? "--"}</span>
-                  {g.kingWatch.room ? ` [${g.kingWatch.room.join(", ")}]` : ""}
-                </p>
+                <div className="space-y-1">
+                  {g.kingWatch.appearances.map((item) => (
+                    <p key={item.appearance} className="text-[10px] leading-relaxed text-bone">
+                      #{item.appearance} · {item.rooms.map((room) => room.room_code ?? "--").join(" → ")}
+                    </p>
+                  ))}
+                </div>
                 <p className="text-[10px] leading-relaxed text-dim">
-                  Only the first room is revealed. Teleport rooms stay hidden.
+                  All five appearances and every teleport room are revealed to the watcher.
                 </p>
               </div>
             ) : (
@@ -816,37 +823,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
             </p>
           )}
         </Panel>
-      </div>
-
-      {/* bottom chat */}
-      <div className="absolute bottom-4 left-1/2 z-20 hidden w-[min(560px,90vw)] -translate-x-1/2 xl:block">
-        <div className="hud rounded-2xl p-3">
-          <div className="scroll-thin mb-2 max-h-24 space-y-1 overflow-y-auto">
-            {g.chat.map((c, i) => (
-              <p key={i} className="text-xs">
-                <span style={{ color: c.color }} className="font-medium">{c.from}</span>
-                <span className="text-dim"> · {c.text}</span>
-              </p>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && chatInput.trim()) { g.sendChat(chatInput); setChatInput(""); }
-              }}
-              placeholder="Message your team…"
-              className="flex-1 rounded-lg border border-edge bg-ink/60 px-3 py-2 text-sm outline-none focus:border-blue"
-            />
-            <button
-              onClick={() => { if (chatInput.trim()) { g.sendChat(chatInput); setChatInput(""); } }}
-              className="rounded-lg border border-edge px-4 text-sm text-dim transition hover:border-blue hover:text-bone"
-            >
-              Send
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* mobile command deck */}
@@ -928,49 +904,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 ) : (
                   <p className="mt-2 text-xs text-dim">Your role has no delay puzzle.</p>
                 )}
-              </div>
-            )}
-
-            {mobilePanel === "chat" && (
-              <div>
-                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Team chat</span>
-                <div className="scroll-thin mt-2 max-h-36 space-y-1 overflow-y-auto">
-                  {g.chat.length === 0 && <p className="text-xs text-dim">No messages yet.</p>}
-                  {g.chat.map((line, index) => (
-                    <p key={index} className="text-xs">
-                      <span style={{ color: line.color }} className="font-medium">
-                        {line.from}
-                      </span>
-                      <span className="text-dim"> · {line.text}</span>
-                    </p>
-                  ))}
-                </div>
-                <div className="mt-2 flex gap-2">
-                  <input
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && chatInput.trim()) {
-                        g.sendChat(chatInput);
-                        setChatInput("");
-                      }
-                    }}
-                    placeholder="Message your team…"
-                    className="min-w-0 flex-1 rounded-lg border border-edge bg-ink/60 px-3 py-2 text-sm outline-none focus:border-blue"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (chatInput.trim()) {
-                        g.sendChat(chatInput);
-                        setChatInput("");
-                      }
-                    }}
-                    className="rounded-lg border border-edge px-3 text-xs text-dim transition hover:border-blue hover:text-bone"
-                  >
-                    Send
-                  </button>
-                </div>
               </div>
             )}
 
@@ -1111,7 +1044,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               WAIT
             </button>
             <span className="text-[9px] leading-tight text-dim">
-              {ghost ? "Ghosts can watch and chat, but cannot act." : "Tap a door to open it for 10s, then walk in."}
+              {ghost ? "Ghosts can watch and keep notes, but cannot act." : "Tap a door to open it for 10s, then walk in."}
             </span>
           </div>
 
@@ -1119,7 +1052,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
             {(g.role === "timekeeper" || g.role === "decoder"
               ? ([
                   ["map", "Map"],
-                  ["chat", "Chat"],
                   ["notes", "Notes"],
                   ["intel", "Intel"],
                   ["puzzle", "Marks"],
@@ -1127,7 +1059,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 ] as const)
               : ([
                   ["map", "Map"],
-                  ["chat", "Chat"],
                   ["notes", "Notes"],
                   ["intel", "Intel"],
                   ["puzzle", "Marks"],
@@ -1198,13 +1129,18 @@ export default function GameClient({ room, name }: { room: string; name: string 
             {g.exitNotice}
           </div>
         )}
+        {g.playerLeft && (
+          <div className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur">
+            {g.playerLeft.message}
+          </div>
+        )}
       </div>
 
       {/* status overlays */}
       {me?.locked && g.status === "running" && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 -translate-y-1/2 text-center">
           <p className="inline-block rounded-2xl border border-red/60 bg-ink/90 px-6 py-3 text-sm text-red backdrop-blur">
-            You are locked in. Two teammates in or beside this room must scan you free.
+            You are locked in. A teammate can lead you out, or two teammates in or beside this room can scan you free.
           </p>
         </div>
       )}
@@ -1263,6 +1199,9 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <h2 className="mt-2 text-2xl font-semibold">
               {g.status === "won" ? "Every living player reached the exit." : "The Last Room claims you."}
             </h2>
+            <p className="mt-2 text-xs uppercase tracking-[0.14em] text-red">
+              {g.gameOver?.reason ?? ""}
+            </p>
             <p className="mt-2 text-sm text-dim">
               {g.gameOver?.summary
                 ? `${g.gameOver.summary.rounds} rounds · ${g.gameOver.summary.eliminated} eliminated · team skill ${Math.round((g.gameOver.summary.team_skill ?? 0) * 100)}%`
@@ -1291,7 +1230,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       {ghost && (
         <div className="pointer-events-none absolute inset-x-0 top-28 z-30 flex justify-center px-3 sm:top-32">
           <p className="rounded-full border border-red/60 bg-ink/90 px-4 py-2 text-center text-[11px] text-red backdrop-blur">
-            GHOST MODE · chat and role intel remain live · movement, doors and puzzles are disabled
+            GHOST MODE · notes and role intel remain live · movement, doors and puzzles are disabled
           </p>
         </div>
       )}

@@ -5,7 +5,7 @@ and snapshot by the player's role so no client receives another role's hidden
 data.
 
   pathfinder  - reveals sealed doors and sanction rooms until the next shift
-  watcher     - gets a 30s KING OF SPADES alert with only its first room
+  watcher     - gets the full KING OF SPADES schedule and live alerts only for the watcher
   timekeeper  - sees the countdown and holds the delay puzzle key
   decoder     - sees and answers the delay puzzle question
 """
@@ -20,7 +20,7 @@ ROLE_LABELS = {
 }
 ROLE_HINTS = {
     "pathfinder": "Reveal the wristband map once per shift to read blocked walls and sanction rooms.",
-    "watcher": "You get a 30s alert before each KING OF SPADES appearance and learn its first room only. Warn the team.",
+    "watcher": "You see the full KING OF SPADES schedule, including every appearance and teleport room. Warn the team.",
     "timekeeper": "You alone see the countdown. Queue a tier and pass the key to the Decoder.",
     "decoder": "You see the puzzle question and answer it. Ask the Timekeeper for the key.",
 }
@@ -117,8 +117,7 @@ def filter_snapshot(snapshot: dict, role: str) -> dict:
     snap["role"] = role
     snap["role_label"] = ROLE_LABELS.get(role, role)
     snap["role_hint"] = ROLE_HINTS.get(role, "")
-    if role == "watcher":
-        snap.pop("king", None)
-    else:
+    snap.pop("king", None)
+    if role != "watcher":
         snap.pop("king_watch", None)
     return snap

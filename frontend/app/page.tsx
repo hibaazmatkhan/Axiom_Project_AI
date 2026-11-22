@@ -41,7 +41,7 @@ const ROLES = [
     tag: "Warning",
     tone: "text-red",
     border: "group-hover:border-red/50",
-    desc: "Gets 30 seconds before each KING OF SPADES appearance and only its first room.",
+    desc: "Sees the full KING OF SPADES schedule, including every appearance and teleport room.",
   },
   {
     name: "Timekeeper",
@@ -187,7 +187,7 @@ export default function Landing() {
                     </div>
                     <div className="mt-1 flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-gold" />
-                      <span className="mono text-xs text-bone">9 pts</span>
+                      <span className="mono text-xs text-bone">25 pts</span>
                     </div>
                   </div>
                   <div className="border border-gold/40 bg-gold/10 px-3 py-2 text-right">

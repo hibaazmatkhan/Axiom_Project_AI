@@ -16,7 +16,7 @@ strips on the walls previewing possible futures.
    Browser ─── HTTP ──▶ │  landing · lobby · login · profile · game    │
                        │  Three.js first-person cube room · HUD ·     │
                          │  wristband map · door animations · alerts · │
-                        │  locks/revives · chat                        │
+                         │  locks/revives · notes                       │
                        └───────────────┬──────────────────────────────┘
                                        │  WebSocket (intents ↓ / state ↑)
                        ┌───────────────▼──────────────────────────────┐
@@ -105,8 +105,9 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
     1800-second timer expires, or when nobody is left; there is no round cap.
     KING OF SPADES is a non-player hazard with five 180-second appearances
     beginning at 120/420/720/1020/1320 seconds, each teleporting through five rooms
-    and eliminating occupants. The Watcher gets a private 30-second alert with
-    only that appearance's first room; teleport rooms stay hidden.
+    and eliminating occupants. The Watcher gets the entire private schedule,
+    including the 30-second alert and every teleport room; live KING events stay
+    hidden from that role.
 
 ## Door semantics
 
@@ -165,7 +166,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
 | `frontend/app/login/page.tsx` | Accounts |
 | `frontend/app/profile/page.tsx` | Profile, avatars, history, leaderboard |
 | `frontend/components/GameCanvas.tsx` | Three.js first-person cube room, animated doors, physics-like walking/crossing, teammates |
-| `frontend/components/GameClient.tsx` | HUD: points, doors, Watcher alerts, delay puzzle, locks, exit notices, chat |
+| `frontend/components/GameClient.tsx` | HUD: points, doors, Watcher schedule, delay puzzle, locks, exit notices, team notes |
 | `frontend/components/WristbandMap.tsx` | 5×5 wristband map with door-colour edges and private sealed-door state |
 | `frontend/lib/avatarRules.ts` | Client-side default symbol PFPs, fallback assignment and upload validation |
 | `frontend/lib/useGameSocket.ts` | WebSocket state machine |

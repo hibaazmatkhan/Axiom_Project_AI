@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, KingWatchView, NexusReport, NoteLine, PatternType, Player, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Wristband, You,
+  Arena, CrossEvent, DealerClue, DealerNudge, DelayKeyView, DelayPuzzleView, DelayResultView, DelayStatusView, Direction, KingEvent, KingView, KingWatchView, NexusReport, NoteLine, PatternType, Player, PlayerLeftEvent, PlayerMoveEvent, Pose, PuzzleResult, PuzzleSnapshot, Role, RoundView, Sigil, Snapshot, Status, Wristband, You,
 } from "./types";
 import { appCheckToken, getFirebaseAuth } from "./firebase";
 import { guest } from "./guest";
@@ -15,8 +15,6 @@ export type RoundTransition = {
   patternTypes: PatternType[] | null;
   previous: Arena | null;
 };
-
-export type ChatLine = { from: string; color: string; text: string };
 
 export type DoorEvent = {
   id: number;
@@ -119,13 +117,14 @@ export function useGameSocket(room: string, name: string) {
   const [hazard, setHazard] = useState<HazardEvent | null>(null);
   const [revive, setRevive] = useState<ReviveEvent | null>(null);
   const [eliminated, setEliminated] = useState<EliminationEvent | null>(null);
+  const [poses, setPoses] = useState<Record<string, Pose>>({});
+  const [playerLeft, setPlayerLeft] = useState<PlayerLeftEvent | null>(null);
   const [king, setKing] = useState<KingView | null>(null);
   const [kingWatch, setKingWatch] = useState<KingWatchView | null>(null);
   const [kingEvent, setKingEvent] = useState<KingEvent | null>(null);
-  const [chat, setChat] = useState<ChatLine[]>([]);
   const [notes, setNotes] = useState<NoteLine[]>([]);
   const [exitNotice, setExitNotice] = useState<string | null>(null);
-  const [gameOver, setGameOver] = useState<{ won: boolean; summary: any } | null>(null);
+  const [gameOver, setGameOver] = useState<{ won: boolean; reason: string; summary: any } | null>(null);
   const [dealerClue, setDealerClue] = useState<DealerClue | null>(null);
   const [dealerNudge, setDealerNudge] = useState<DealerNudge | null>(null);
   const [puzzle, setPuzzle] = useState<PuzzleSnapshot | null>(null);
@@ -167,6 +166,12 @@ export function useGameSocket(room: string, name: string) {
   }, [notice]);
 
   useEffect(() => {
+    if (!playerLeft) return;
+    const timer = window.setTimeout(() => setPlayerLeft(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [playerLeft]);
+
+  useEffect(() => {
     let disposed = false;
     let attempts = 0;
     let reconnectTimer: number | null = null;
@@ -182,6 +187,10 @@ export function useGameSocket(room: string, name: string) {
       const cooldown = Number(s.you?.wristband_cooldown_remaining ?? 0);
       setWristbandCooldownAt(cooldown > 0 ? performance.now() + cooldown * 1000 : null);
       setPlayers(s.players);
+      const liveIds = new Set(s.players.map((p) => p.id));
+      setPoses((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => liveIds.has(id)),
+      ));
       setMe(s.you);
       if (s.you?.id) youRef.current = s.you.id;
       setStatus(s.status);
@@ -404,9 +413,27 @@ export function useGameSocket(room: string, name: string) {
           setEliminated((prev) => ({
             id: (prev?.id ?? 0) + 1, player: m.player, reason: m.reason,
           }));
+        } else if (m.type === "player_move") {
+          const event = m as PlayerMoveEvent;
+          const pose: Pose = {
+            x: Number(event.x) || 0,
+            z: Number(event.z) || 0,
+            yaw: Number(event.yaw) || 0,
+            moving: !!event.moving,
+          };
+          setPoses((current) => ({ ...current, [event.player]: pose }));
+          setPlayers((current) => current.map((p) =>
+            p.id === event.player ? { ...p, pose } : p,
+          ));
+        } else if (m.type === "player_left") {
+          setPlayerLeft({
+            player: String(m.player ?? ""),
+            name: String(m.name ?? "A player"),
+            message: String(m.message ?? "A player left the arena."),
+          });
         } else if (m.type === "king_watch") {
           setKingWatch(m as KingWatchView);
-          setNotice("KING WARNING: FIRST ROOM REVEALED TO THE WATCHER.");
+          setNotice("KING WARNING: FULL SCHEDULE REVEALED TO THE WATCHER.");
         } else if (m.type === "king_spawn") {
           const view = m.king as KingView | null;
           setKing(view);
@@ -455,10 +482,12 @@ export function useGameSocket(room: string, name: string) {
         } else if (m.type === "time_up") {
           setMatchAt(null);
           setPa(m.message ?? "TIME EXPIRED. THE TEAM WAS ELIMINATED.");
-        } else if (m.type === "chat") {
-          setChat((c) => [...c, { from: m.from, color: m.color, text: m.text }].slice(-60));
         } else if (m.type === "game_over") {
-          setGameOver({ won: m.won, summary: m.summary });
+          setGameOver({
+            won: !!m.won,
+            reason: String(m.reason ?? "The match ended."),
+            summary: m.summary,
+          });
           setStatus(m.won ? "won" : "over");
         } else if (m.type === "wristband_reveal") {
           setNotice(String(m.message ?? "Wristband revealed until the next shift."));
@@ -504,7 +533,7 @@ export function useGameSocket(room: string, name: string) {
     [send]
   );
   const sendReady = useCallback((value: boolean) => send({ type: "ready", value }), [send]);
-  const sendChat = useCallback((text: string) => send({ type: "chat", text }), [send]);
+  const sendPose = useCallback((pose: Pose) => send({ type: "pose", ...pose }), [send]);
   const sendNotes = useCallback((text: string) => send({ type: "notes", text }), [send]);
   const sendPuzzleMark = useCallback(
     (role: Role, value: string) => send({ type: "puzzle_submit", assignment: { [role]: value } }),
@@ -541,10 +570,10 @@ export function useGameSocket(room: string, name: string) {
     connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
     roleHint, transition, prediction, doorEvent, cross,
-    hazard, revive, eliminated, king, kingWatch, kingEvent, chat, notes, exitNotice, gameOver,
+    hazard, revive, eliminated, poses, playerLeft, king, kingWatch, kingEvent, notes, exitNotice, gameOver,
     dealerClue, dealerNudge, puzzle, puzzleResult, sanctionTotal, sanctionFound,
     delayPuzzle, delayKey, delayStatus, delayResult, delayDeadlineAt,
-    sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendChat, sendNotes,
+    sendOpenDoor, sendCrossDoor, sendWait, sendUnlock, sendPredict, sendReady, sendPose, sendNotes,
     sendPuzzleMark, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch,
   };
 }

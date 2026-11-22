@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import re
 import time
@@ -117,6 +118,12 @@ class Player:
     wristband_revealed: bool = False
     wristband_cooldown_until: float = 0.0
     prediction_cooldown_until: float = 0.0
+    pose_x: float = 0.0
+    pose_z: float = 0.0
+    pose_yaw: float = 0.0
+    pose_moving: bool = False
+    pose_sent_at: float = 0.0
+    death_reason: str | None = None
     ws: WebSocket | None = field(default=None, repr=False)
     bucket_at: float = 0.0
     bucket_n: int = 0
@@ -130,6 +137,10 @@ class Player:
             "correct": self.correct, "predictions": self.predictions, "streak": self.streak,
             "points": self.points, "locked": self.locked, "eliminated": self.eliminated,
             "waits": self.waits, "revives": self.revives,
+            "pose": {
+                "x": self.pose_x, "z": self.pose_z, "yaw": self.pose_yaw,
+                "moving": self.pose_moving,
+            },
         }
 
     def allow(self, now: float) -> bool:
@@ -196,6 +207,7 @@ class Room:
         self.events: list[dict] = []
         self.prev_arena: dict | None = None
         self.pa = "THE LAST ROOM. FIND THE HIDDEN EXIT."
+        self.end_reason: str | None = None
         self.sanction_total = 0
         self.sanction_found = 0
         self.pending_clues: list[tuple[str, dict]] = []
@@ -223,6 +235,7 @@ class Room:
         self.king_spawn_at: list[float] = []
         self.king_plans: list[dict] = []
         self.king_alerted: set[int] = set()
+        self.king_watch_schedule_sent = False
         self._king_rng = random.Random(self.seed ^ 0x4B494E47)
 
     # ---- stage / rules ---------------------------------------------------
@@ -426,12 +439,13 @@ class Room:
             "room_code": room.code if room else None,
             "room": [room.bx, room.by] if room else None,
             "doors": doors, "locked": p.locked, "eliminated": p.eliminated,
-            "escaped": p.escaped,             "points": p.points, "role": p.role,
+            "escaped": p.escaped, "points": p.points, "role": p.role,
             "wristband_revealed": p.wristband_revealed,
             "wristband_cooldown_remaining": max(0.0, p.wristband_cooldown_until - time.time()),
             "prediction_cooldown_remaining": max(0.0, p.prediction_cooldown_until - time.time()),
             "exit_found": p.exit_found,
             "exit_code": self.arena.exit_room().code if p.exit_found else None,
+            "exit_wall": self.arena.exit_wall_directions() if p.exit_found else [],
         }
 
     def snapshot(self, for_player: Player | None = None) -> dict:
@@ -656,6 +670,10 @@ class Room:
         player.disconnected_at = time.time()
         self.log(player.id, "disconnect")
         self._audit_room()
+        await self.broadcast({
+            "type": "player_left", "player": player.id,
+            "name": player.name, "message": f"{player.name} left the arena.",
+        }, exclude=player.id)
         await self.broadcast_state()
 
     def purge_disconnected(self) -> None:
@@ -669,11 +687,14 @@ class Room:
     # ---- input --------------------------------------------------------------
     async def handle(self, player: Player, msg: dict) -> None:
         now = time.monotonic()
+        kind = msg.get("type")
+        if kind in ("pose", "player_move"):
+            await self.update_pose(player, msg)
+            return
         if not player.allow(now):
             await self.send(player, {"type": "error", "code": "rate_limited",
                                      "message": "Slow down."})
             return
-        kind = msg.get("type")
         if kind in ("open_door", "choose_door", "choose_gate"):
             await self.open_door(player, door=msg.get("door"), color=msg.get("color"))
         elif kind == "cross_door":
@@ -709,6 +730,36 @@ class Room:
             await self.reveal_wristband(player)
         elif kind == "ping":
             await self.send(player, {"type": "pong"})
+
+    async def update_pose(self, player: Player, msg: dict) -> None:
+        if self.status != "running" or player.eliminated or player.escaped:
+            return
+        now = time.monotonic()
+        if now - player.pose_sent_at < 0.05:
+            return
+        try:
+            x = float(msg.get("x"))
+            z = float(msg.get("z"))
+            yaw = float(msg.get("yaw"))
+        except (TypeError, ValueError):
+            return
+        if not all(math.isfinite(v) for v in (x, z, yaw)):
+            return
+        room = self.arena.room_by_id(player.room_id)
+        if room is None:
+            return
+        player.pose_x = max(-3.2, min(3.2, x))
+        player.pose_z = max(-3.2, min(3.2, z))
+        player.pose_yaw = math.atan2(math.sin(yaw), math.cos(yaw))
+        player.pose_moving = bool(msg.get("moving"))
+        player.pose_sent_at = now
+        await self.broadcast({
+            "type": "player_move", "player": player.id,
+            "room_code": room.code,
+            "x": player.pose_x, "z": player.pose_z,
+            "yaw": player.pose_yaw, "moving": player.pose_moving,
+        }, exclude=player.id)
+        await self.broadcast_admin()
 
     async def reveal_wristband(self, player: Player) -> None:
         if self.status != "running" or player.eliminated or player.escaped:
@@ -960,7 +1011,7 @@ class Room:
         if player.locked:
             await self.send(player, {
                 "type": "door_result", "accepted": False, "locked": True,
-                "message": "You are locked. Two teammates must scan you free.",
+                "message": "You are locked. A teammate can lead you out, or two teammates can scan you free.",
             })
             return
         now = time.monotonic()
@@ -1044,7 +1095,7 @@ class Room:
         if player.locked:
             await self.send(player, {
                 "type": "door_result", "accepted": False, "locked": True,
-                "message": "You are locked. Two teammates must scan you free.",
+                "message": "You are locked. A teammate can lead you out, or two teammates can scan you free.",
             })
             return
         now = time.monotonic()
@@ -1102,6 +1153,29 @@ class Room:
             "type": "room_entered", "player": player.id, "door": door,
             "from": room.code, "to": target.code, "cost": 0,
         })
+
+        escorted = [
+            p for p in self.players.values()
+            if p.id != player.id and p.locked and p.connected
+            and not p.eliminated and not p.escaped and p.room_id == room.rid
+        ]
+        for ally in escorted:
+            ally.locked = False
+            ally.revives += 1
+            ally.last_room_id = room.rid
+            ally.entered_round = self.round
+            ally.room_id = target.rid
+            ally.pose_x = player.pose_x
+            ally.pose_z = player.pose_z
+            ally.pose_yaw = player.pose_yaw
+            self.log(ally.id, "escorted", {"by": player.id, "room": target.code})
+            await self.broadcast({
+                "type": "revive", "player": ally.id, "by": [player.id], "points": {},
+            })
+            await self.broadcast({
+                "type": "room_entered", "player": ally.id, "door": door,
+                "from": room.code, "to": target.code, "cost": 0,
+            })
 
         if fate.reveal(self.arena, target) and target.sanction:
             player.points -= target.sanction
@@ -1214,27 +1288,73 @@ class Room:
             for i in range(KING_APPEARANCES)
         ]
         self.king_alerted = set()
+        self.king_watch_schedule_sent = False
+
+    def _king_room_windows(self, room_ids: list[str], starts_at: float) -> list[dict]:
+        windows: list[dict] = []
+        for index, rid in enumerate(room_ids):
+            code, pos = self._king_room_view(rid)
+            windows.append({
+                "index": index + 1,
+                "room_code": code,
+                "room": pos,
+                "from": starts_at + index * KING_TELEPORT_SECONDS,
+                "until": starts_at + min(
+                    KING_APPEARANCE_SECONDS,
+                    (index + 1) * KING_TELEPORT_SECONDS,
+                ),
+            })
+        return windows
 
     def king_watch_public(self, now: float | None = None) -> dict | None:
+        if self.status != "running" or not self.king_plans:
+            return None
         current = time.time() if now is None else now
-        for index in range(self.king_appearance, len(self.king_plans)):
+        plans = self.king_plans[:KING_APPEARANCES]
+        appearances: list[dict] = []
+        for index, plan in enumerate(plans):
             if index >= len(self.king_spawn_at):
                 break
             starts_at = self.king_spawn_at[index]
-            if not (starts_at - KING_WATCH_LEAD_SECONDS <= current < starts_at):
-                continue
-            plan = self.king_plans[index]
-            code, pos = self._king_room_view(plan["room_ids"][0])
-            return {
-                "id": f"king-{plan['appearance']}",
+            windows = self._king_room_windows(plan["room_ids"], starts_at)
+            appearances.append({
                 "appearance": plan["appearance"],
-                "total": KING_APPEARANCES,
-                "in_seconds": max(0.0, starts_at - current),
                 "starts_at": starts_at,
-                "room_code": code,
-                "room": pos,
-            }
-        return None
+                "ends_at": starts_at + KING_APPEARANCE_SECONDS,
+                "in_seconds": max(0.0, starts_at - current),
+                "rooms": windows,
+            })
+        if not appearances:
+            return None
+        active_index = next(
+            (i for i, item in enumerate(appearances)
+             if item["starts_at"] <= current < item["ends_at"]),
+            None,
+        )
+        if active_index is None:
+            active_index = next(
+                (i for i, item in enumerate(appearances) if current < item["starts_at"]),
+                len(appearances) - 1,
+            )
+        current_appearance = appearances[active_index]
+        windows = current_appearance["rooms"]
+        current_window = next(
+            (window for window in windows
+             if window["from"] <= current < window["until"]),
+            windows[0] if windows else None,
+        )
+        return {
+            "id": f"king-{current_appearance['appearance']}",
+            "appearance": current_appearance["appearance"],
+            "total": KING_APPEARANCES,
+            "in_seconds": current_appearance["in_seconds"],
+            "starts_at": current_appearance["starts_at"],
+            "ends_at": current_appearance["ends_at"],
+            "room_code": (current_window or {}).get("room_code"),
+            "room": (current_window or {}).get("room"),
+            "room_remaining": max(0.0, (current_window or {}).get("until", current) - current),
+            "appearances": appearances,
+        }
 
     async def _broadcast_king(self, payload: dict) -> None:
         for player in list(self.players.values()):
@@ -1246,10 +1366,16 @@ class Room:
         if self.status != "running":
             return
         view = self.king_watch_public(now)
-        if view is None or view["appearance"] in self.king_alerted:
+        if view is None:
             return
-        self.king_alerted.add(view["appearance"])
-        self.log(None, "king_watch", {"appearance": view["appearance"], "watch": view})
+        appearance = view["appearance"]
+        if self.king_watch_schedule_sent and appearance in self.king_alerted:
+            return
+        initial_schedule = not self.king_watch_schedule_sent
+        self.king_watch_schedule_sent = True
+        if not initial_schedule:
+            self.king_alerted.add(appearance)
+        self.log(None, "king_watch", {"appearance": appearance, "watch": view})
         for player in list(self.players.values()):
             if (player.connected and player.role == "watcher"
                     and not player.eliminated and not player.escaped):
@@ -1391,6 +1517,8 @@ class Room:
         player.eliminated = True
         player.locked = False
         player.points = max(0, player.points)
+        player.death_reason = reason
+        self.end_reason = reason
         self.log(player.id, "eliminated", {"reason": reason})
         await self.broadcast({"type": "elimination", "player": player.id, "reason": reason})
         await self.broadcast(self.players_message())
@@ -1407,6 +1535,7 @@ class Room:
         in_exit = [p for p in living if p.room_id == exit_room.rid]
         if len(in_exit) == len(living):
             self.pa = "THE EXIT IS OPEN. THE TEAM ESCAPED."
+            self.end_reason = "The team reached the exit."
             for p in living:
                 p.escaped = True
             await self.finish(won=True)
@@ -1417,11 +1546,13 @@ class Room:
         self.match_deadline = None
         self.next_round_at = None
         self.pa = "TIME EXPIRED. THE TEAM WAS ELIMINATED."
+        self.end_reason = "The match timer expired."
         living = [p for p in self.players.values() if not p.eliminated]
         for p in living:
             p.eliminated = True
             p.locked = False
             p.points = max(0, p.points)
+            p.death_reason = "The match timer expired."
             self.log(p.id, "eliminated", {"reason": "match timer expired"})
         await self.broadcast({"type": "time_up", "message": self.pa})
         for p in living:
@@ -1526,8 +1657,16 @@ class Room:
             self.next_round_at = time.time() + self.shift_seconds
             self.pa = "THE LAST ROOM IS OPEN. FIND THE HIDDEN EXIT."
             await self.broadcast_state()
+            await self._update_king_watch(time.time())
 
     # ---- rounds -------------------------------------------------------------
+    def _protected_room_ids(self) -> set[str]:
+        protected = {self.arena.exit_room().rid}
+        for player in self.players.values():
+            if player.locked and not player.eliminated and not player.escaped:
+                protected.add(player.room_id)
+        return protected
+
     def step_round(self) -> dict:
         self.prev_arena = self.arena_public()
         if self.delay_puzzle is not None:
@@ -1547,8 +1686,19 @@ class Room:
         self.open_doors.clear()
         moved: list[dict] = []
         ops: list[dict] = []
+        protected = self._protected_room_ids()
+        before_positions = {room.rid: (room.bx, room.by) for room in self.arena.rooms}
         for engine in self.engines:
+            trial = self.arena.clone()
             res = engine.apply(self.arena)
+            unsafe = any(
+                rid in protected and before_positions[rid] != (room.bx, room.by)
+                for room in self.arena.rooms
+                for rid in [room.rid]
+            )
+            if unsafe:
+                self.arena = trial
+                continue
             moved.extend(res["moved"])
             ops.extend(res["ops"])
         repairs = self.arena.ensure_connected()
@@ -1780,8 +1930,18 @@ class Room:
         except Exception:
             logger.exception("failed to persist match")
         self.log(None, "won" if won else "over", {"round": self.round})
-        await self.broadcast({"type": "game_over", "won": won, "summary": summary,
-                              "nexus": report})
+        for player in list(self.players.values()):
+            if not player.connected:
+                continue
+            if won:
+                reason = "All living players reached the exit."
+            else:
+                reason = player.death_reason or self.end_reason or "The team failed to reach the exit."
+            await self.send(player, {
+                "type": "game_over", "won": won, "reason": reason,
+                "summary": summary, "nexus": report,
+            })
+        await self.broadcast_admin()
 
     async def _loop(self) -> None:
         try:

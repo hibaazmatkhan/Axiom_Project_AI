@@ -181,6 +181,19 @@ class Arena:
     def is_exit(self, room: Room) -> bool:
         return (room.bx, room.by) == self.exit_at
 
+    def exit_wall_directions(self) -> list[str]:
+        bx, by = self.exit_at
+        walls: list[str] = []
+        if bx == 0:
+            walls.append(W)
+        if bx == self.size - 1:
+            walls.append(E)
+        if by == 0:
+            walls.append(N)
+        if by == self.size - 1:
+            walls.append(S)
+        return walls
+
     def recolor_doors(self) -> None:
         """Give every room four unique colours and keep shared edges matched.
 

@@ -32,6 +32,9 @@ export type PuzzleResult = {
 };
 export type DealerNudge = { role: Role; text: string; puzzle?: string; round: number };
 export type NoteLine = { id: number; from: string; color: string; text: string };
+export type Pose = { x: number; z: number; yaw: number; moving: boolean };
+export type PlayerMoveEvent = Pose & { id: number; player: string; room_code: string | null };
+export type PlayerLeftEvent = { player: string; name: string; message: string };
 
 export type DelayTier = 1 | 2 | 3;
 export type DelayCell = { row: number; col: number };
@@ -90,14 +93,31 @@ export type KingEvent = {
   reason?: string;
 };
 
+export type KingWatchRoom = {
+  index: number;
+  room_code: string | null;
+  room: [number, number] | null;
+  from: number;
+  until: number;
+};
+export type KingWatchAppearance = {
+  appearance: number;
+  starts_at: number;
+  ends_at: number;
+  in_seconds: number;
+  rooms: KingWatchRoom[];
+};
 export type KingWatchView = {
   id: string;
   appearance: number;
   total: number;
   in_seconds: number;
   starts_at: number;
+  ends_at: number;
   room_code: string | null;
   room: [number, number] | null;
+  room_remaining: number;
+  appearances: KingWatchAppearance[];
 };
 
 export type CrossEvent = {
@@ -146,6 +166,7 @@ export type You = {
   escaped: boolean;
   exit_found: boolean;
   exit_code: string | null;
+  exit_wall?: Direction[];
   points: number;
   role: Role;
   wristband_revealed?: boolean;
@@ -174,6 +195,7 @@ export type Player = {
   eliminated: boolean;
   waits: number;
   revives: number;
+  pose?: Pose;
 };
 
 export type NexusPlayer = {

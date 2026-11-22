@@ -17,6 +17,10 @@ const registry = read("../../backend/app/room_registry.py");
 const main = read("../../backend/app/main.py");
 const lobby = read("../app/lobby/page.tsx");
 const landing = read("../app/page.tsx");
+const guest = read("../lib/guest.ts");
+const gameLoader = read("../app/game/GameLoader.tsx");
+const roles = read("../../backend/app/roles.py");
+const arena = read("../../backend/app/arena.py");
 
 test("tier-2 delay puzzle is answerable", () => {
   assert.ok(client.includes('puzzle.tier === 2 ? "Grid · tap destination" : "Before"'));
@@ -73,7 +77,7 @@ test("predict-shift panel and desktop role intel are removed", () => {
   assert.ok(!client.includes('"predict"'));
   const rightColumn = client.slice(
     client.indexOf("{/* right column */}"),
-    client.indexOf("{/* bottom chat */}")
+    client.indexOf("{/* mobile command deck */}")
   );
   assert.ok(!rightColumn.includes("Role intel"));
 });
@@ -85,7 +89,7 @@ test("team notes render in the right column", () => {
   );
   const rightColumn = client.slice(
     client.indexOf("{/* right column */}"),
-    client.indexOf("{/* bottom chat */}")
+    client.indexOf("{/* mobile command deck */}")
   );
   assert.ok(!leftColumn.includes("<NotesPanel"));
   assert.ok(rightColumn.includes("<NotesPanel"));
@@ -112,4 +116,73 @@ test("starting points are 25 everywhere", () => {
   assert.ok(client.includes("25 points each."));
   assert.ok(lobby.includes("starts with 25 points"));
   assert.ok(landing.includes('["25", "Starting points"]'));
+});
+
+test("chat UI is removed while team notes remain", () => {
+  assert.ok(!client.includes("bottom chat"));
+  assert.ok(!client.includes("Team chat"));
+  assert.ok(!socket.includes("setChat"));
+  assert.ok(!socket.includes("sendChat"));
+  assert.ok(client.includes("<NotesPanel"));
+});
+
+test("clicking the arena restores focus after a HUD input", () => {
+  assert.ok(canvas.includes("active.blur()"));
+  assert.ok(canvas.includes("requestPointerLock()"));
+  assert.ok(client.includes("Click to lock cursor"));
+});
+
+test("remote players move smoothly from throttled pose events", () => {
+  assert.ok(game.includes('"type": "player_move"'));
+  assert.ok(game.includes('kind in ("pose", "player_move")'));
+  assert.ok(socket.includes("const sendPose"));
+  assert.ok(canvas.includes("onPose: (pose: Pose) => void"));
+  assert.ok(canvas.includes("userData.remotePlayer"));
+});
+
+test("watcher receives the full king schedule and no live king state", () => {
+  assert.ok(game.includes('"appearances": appearances'));
+  assert.ok(roles.includes('snap.pop("king", None)'));
+  assert.ok(game.includes('player.role != "watcher"'));
+  assert.ok(client.includes("All five appearances"));
+  assert.ok(lobby.includes("full KING OF SPADES schedule"));
+});
+
+test("lockdown is escapable by escort and shifts protect locked/exit rooms", () => {
+  assert.ok(game.includes("escorted"));
+  assert.ok(game.includes("_protected_room_ids"));
+  assert.ok(game.includes("self.arena.exit_room().rid"));
+  assert.ok(client.includes("lead you out"));
+});
+
+test("game over explains the personal loss reason", () => {
+  assert.ok(game.includes("death_reason"));
+  assert.ok(game.includes('"reason": reason'));
+  assert.ok(socket.includes("reason: String(m.reason"));
+  assert.ok(client.includes("g.gameOver?.reason"));
+});
+
+test("guests get a usable name and short room codes survive navigation", () => {
+  assert.ok(guest.includes('`Guest${Math.floor(1000 + Math.random() * 9000)}`'));
+  assert.ok(lobby.includes("guest.get()"));
+  assert.ok(gameLoader.includes("slice(0, 4)"));
+  assert.ok(gameLoader.includes('|| "Guest"'));
+});
+
+test("room join validates the four-character code before navigation", () => {
+  assert.ok(lobby.includes("const joinRoom = async () =>"));
+  assert.ok(lobby.includes("api.getRoom(target)"));
+  assert.ok(lobby.includes("That match has already started."));
+});
+
+test("exit room renders a black edge door", () => {
+  assert.ok(arena.includes("exit_wall_directions"));
+  assert.ok(game.includes('"exit_wall":'));
+  assert.ok(canvas.includes("userData.exitDoor"));
+  assert.ok(canvas.includes("color: 0x000000"));
+});
+
+test("role-mark puzzle remains part of the HUD", () => {
+  assert.ok(client.includes("Role mark puzzle"));
+  assert.ok(client.includes("Submit role mark"));
 });

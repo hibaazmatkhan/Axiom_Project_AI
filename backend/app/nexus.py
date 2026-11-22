@@ -85,7 +85,7 @@ MAX_COMPLEXITY = 3
 DICE_RELIEF_ROUNDS = 2
 ROLE_NUDGES = {
     "pathfinder": "Pathfinder: reveal the wristband map before calling a route.",
-    "watcher": "Watcher: warn the team before the KING'S first room is revealed.",
+    "watcher": "Watcher: warn the team using the full KING schedule.",
     "timekeeper": "Timekeeper: call the countdown before the next shift.",
     "decoder": "Decoder: solve the puzzle with the key the Timekeeper passes you.",
 }

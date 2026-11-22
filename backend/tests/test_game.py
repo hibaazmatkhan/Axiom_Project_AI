@@ -24,6 +24,14 @@ def _player(room, pid="a", slot=0, role=None):
                   room.arena.start_room().rid)
 
 
+class _RecordingWS:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
 def _open_door(room, arena_room=None):
     r = arena_room or room.arena.start_room()
     return next((d for d in DIRECTIONS if room.arena.door_open(r, d)), None)
@@ -1179,7 +1187,7 @@ def test_king_teleports_through_five_rooms_and_kills_occupants():
     asyncio.run(scenario())
 
 
-def test_watcher_gets_first_room_alert_without_teleport_intel():
+def test_watcher_gets_full_king_schedule_and_no_live_king_events():
     room = Room("KINGWATCH", seed=19)
 
     class FakeWebSocket:
@@ -1203,17 +1211,20 @@ def test_watcher_gets_first_room_alert_without_teleport_intel():
         await room._update_king(first_spawn - KING_WATCH_LEAD_SECONDS)
 
         alerts = [m for m in watcher.ws.sent if m.get("type") == "king_watch"]
-        assert len(alerts) == 1
+        lead_alerts = [m for m in alerts if abs(m["in_seconds"] - KING_WATCH_LEAD_SECONDS) < 0.001]
+        assert len(lead_alerts) == 1
+        alert = lead_alerts[0]
         first_room = room.arena.room_by_id(room.king_plans[0]["room_ids"][0])
-        assert alerts[0]["appearance"] == 1
-        assert alerts[0]["total"] == KING_APPEARANCES
-        assert alerts[0]["in_seconds"] == KING_WATCH_LEAD_SECONDS
-        assert alerts[0]["room_code"] == first_room.code
-        assert alerts[0]["room"] == [first_room.bx, first_room.by]
+        assert alert["appearance"] == 1
+        assert alert["total"] == KING_APPEARANCES
+        assert alert["room_code"] == first_room.code
+        assert alert["room"] == [first_room.bx, first_room.by]
+        assert len(alert["appearances"]) == KING_APPEARANCES
+        assert all(len(item["rooms"]) == 5 for item in alert["appearances"])
         assert not [m for m in guard.ws.sent if m.get("type") == "king_watch"]
 
         await room._update_king(first_spawn - KING_WATCH_LEAD_SECONDS)
-        assert len([m for m in watcher.ws.sent if m.get("type") == "king_watch"]) == 1
+        assert len([m for m in watcher.ws.sent if m.get("type") == "king_watch"]) == 2
 
         await room._update_king(first_spawn)
         assert not [m for m in watcher.ws.sent if m.get("type") == "king_spawn"]
@@ -1228,14 +1239,18 @@ def test_watcher_gets_first_room_alert_without_teleport_intel():
             await room._update_king(spawn_at - KING_WATCH_LEAD_SECONDS)
             appearance_alerts = [
                 m for m in watcher.ws.sent
-                if m.get("type") == "king_watch" and m.get("appearance") == index + 1
+                if m.get("type") == "king_watch"
+                and m.get("appearance") == index + 1
+                and abs(m["in_seconds"] - KING_WATCH_LEAD_SECONDS) < 0.001
             ]
             assert len(appearance_alerts) == 1
             alert = appearance_alerts[0]
             expected = room.arena.room_by_id(room.king_plans[index]["room_ids"][0])
             assert alert["room_code"] == expected.code
             assert alert["room"] == [expected.bx, expected.by]
-            assert "room_ids" not in alert and "teleport" not in str(alert).lower()
+            assert len(alert["appearances"]) == KING_APPEARANCES
+            assert all(len(item["rooms"]) == 5 for item in alert["appearances"])
+            assert "room_ids" not in alert
 
             await room._update_king(spawn_at)
             assert not [m for m in watcher.ws.sent if m.get("type") == "king_spawn"]
@@ -1243,6 +1258,122 @@ def test_watcher_gets_first_room_alert_without_teleport_intel():
 
         snap = room.snapshot(watcher)
         assert "king" not in snap
-        assert snap["king_watch"] is None
+        assert snap["king_watch"] is not None
+        assert len(snap["king_watch"]["appearances"]) == KING_APPEARANCES
 
     asyncio.run(scenario())
+
+
+def test_pose_events_bypass_gameplay_rate_limit():
+    room = Room("POSE", seed=5)
+    room.status = "running"
+    mover = _player(room, "mover", 0)
+    other = _player(room, "other", 1)
+    mover.ws = _RecordingWS()
+    other.ws = _RecordingWS()
+    mover.last_move = time.monotonic()
+    room.players[mover.id] = mover
+    room.players[other.id] = other
+
+    async def scenario():
+        await room.handle(mover, {
+            "type": "pose", "x": 1.25, "z": -0.5, "yaw": 0.75, "moving": True,
+        })
+
+    asyncio.run(scenario())
+    moves = [m for m in other.ws.sent if m.get("type") == "player_move"]
+    assert len(moves) == 1
+    assert moves[0]["player"] == mover.id
+    assert moves[0]["x"] == 1.25
+    assert moves[0]["z"] == -0.5
+    assert moves[0]["moving"] is True
+    assert not [m for m in mover.ws.sent if m.get("code") == "rate_limited"]
+
+
+def test_non_locked_player_can_escort_locked_teammate():
+    room = Room("ESCORT", seed=7)
+    room.status = "running"
+    leader = _player(room, "lead", 0)
+    locked = _player(room, "lock", 1)
+    locked.locked = True
+    room.players[leader.id] = leader
+    room.players[locked.id] = locked
+    current = room.arena.start_room()
+    door = _open_door(room, current)
+    target = room.arena.door_target(current, door)
+    room.open_doors[frozenset((current.rid, target.rid))] = TemporaryDoor(
+        a_rid=current.rid, b_rid=target.rid, a_dir=door,
+        b_dir=OPPOSITE[door], opened_by=leader.id,
+        expires_at=time.time() + 10, cost=1,
+    )
+
+    asyncio.run(room._complete_crossing(leader, current, target, door))
+    assert leader.room_id == target.rid
+    assert locked.room_id == target.rid
+    assert locked.locked is False
+    assert locked.revives == 1
+
+
+def test_shifts_never_move_exit_or_locked_room():
+    for seed in range(6):
+        room = Room(f"PROT{seed}", seed=seed, round_seconds=20)
+        locked = _player(room, "lock", 0)
+        locked.locked = True
+        room.players[locked.id] = locked
+        locked_rid = locked.room_id
+        exit_rid = room.arena.exit_room().rid
+        locked_room = room.arena.room_by_id(locked_rid)
+        exit_room = room.arena.room_by_id(exit_rid)
+        locked_before = (locked_room.bx, locked_room.by)
+        exit_before = (exit_room.bx, exit_room.by)
+        room.step_round()
+        locked_after = room.arena.room_by_id(locked_rid)
+        exit_after = room.arena.room_by_id(exit_rid)
+        assert (locked_after.bx, locked_after.by) == locked_before
+        assert (exit_after.bx, exit_after.by) == exit_before
+
+
+def test_game_over_reason_is_personalized():
+    room = Room("REASON", seed=7)
+    first = _player(room, "first", 0)
+    second = _player(room, "second", 1)
+    first.ws = _RecordingWS()
+    second.ws = _RecordingWS()
+    first.death_reason = "The KING found you."
+    room.end_reason = "The team failed to reach the exit."
+    room.players[first.id] = first
+    room.players[second.id] = second
+
+    asyncio.run(room.finish(False))
+    first_over = [m for m in first.ws.sent if m.get("type") == "game_over"]
+    second_over = [m for m in second.ws.sent if m.get("type") == "game_over"]
+    assert first_over[0]["reason"] == "The KING found you."
+    assert second_over[0]["reason"] == "The team failed to reach the exit."
+
+
+def test_leave_broadcasts_player_left_and_exit_wall_is_exposed():
+    room = Room("LEAVE", seed=7)
+    leaving = _player(room, "leaving", 0)
+    staying = _player(room, "staying", 1)
+    leaving.ws = _RecordingWS()
+    staying.ws = _RecordingWS()
+    room.players[leaving.id] = leaving
+    room.players[staying.id] = staying
+    asyncio.run(room.leave(leaving))
+    left_events = [m for m in staying.ws.sent if m.get("type") == "player_left"]
+    assert len(left_events) == 1
+    assert left_events[0]["player"] == leaving.id
+
+    finder = _player(room, "finder", 2)
+    finder.exit_found = True
+    snap = room.snapshot(finder)
+    exit_room = room.arena.exit_room()
+    assert snap["you"]["exit_code"] == exit_room.code
+    assert snap["you"]["exit_wall"]
+    assert all(
+        (d == "W" and exit_room.bx == 0)
+        or (d == "E" and exit_room.bx == room.arena.size - 1)
+        or (d == "N" and exit_room.by == 0)
+        or (d == "S" and exit_room.by == room.arena.size - 1)
+        for d in snap["you"]["exit_wall"]
+    )

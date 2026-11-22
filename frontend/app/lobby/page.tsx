@@ -22,7 +22,7 @@ const ROLES = [
 
 const ROLE_PREVIEWS: Record<string, string> = {
   Pathfinder: "Wristband scan: reveal blocked walls and sanction rooms until the next shift.",
-  Watcher: "Early warning: you get 30 seconds before each KING OF SPADES appearance and learn its first room only.",
+  Watcher: "Early warning: you see the full KING OF SPADES schedule, including every appearance and teleport room.",
   Timekeeper: "Clock control: you alone see the countdown and pass the delay puzzle key to the Decoder.",
   Decoder: "Puzzle access: you see the delay puzzle question and answer it using the Timekeeper's key.",
 };
@@ -132,7 +132,7 @@ export default function LobbyPage() {
     }
   };
 
-  const joinRoom = () => {
+  const joinRoom = async () => {
     const target = code.trim().toUpperCase();
     if (!name.trim() || busy) return;
     if (!/^[A-Z0-9]{4}$/.test(target)) {
@@ -141,7 +141,18 @@ export default function LobbyPage() {
     }
     setError(null);
     stopPolling();
-    go(target);
+    setBusy(true);
+    try {
+      const room = await api.getRoom(target);
+      if (room.status !== "lobby") {
+        throw new Error("That match has already started.");
+      }
+      go(target);
+    } catch (cause) {
+      setError(errorMessage(cause, "That room code is not available."));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const pollQuickMatch = async (key: string) => {
