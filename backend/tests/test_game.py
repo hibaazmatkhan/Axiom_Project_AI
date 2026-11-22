@@ -1,6 +1,7 @@
 """Server tests (v3): round transitions, door movement, lockdown, cheat
 rejection, prediction, asymmetric information, exit, reconnect and limits."""
 import asyncio
+import random
 import time
 from contextlib import ExitStack
 
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.arena import DIRECTIONS, OPPOSITE, STEP
 from app import puzzles
 from app.game import (
-    DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_SECONDS,
+    DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_INTERVAL, KING_APPEARANCE_SECONDS,
     KING_FIRST_SPAWN_SECONDS, KING_ROOMS_PER_APPEARANCE, KING_WATCH_LEAD_SECONDS,
     PATHFINDER_REVEAL_COOLDOWN, Player, Room, TemporaryDoor,
 )
@@ -37,6 +38,15 @@ def _seed_room(code, **kwargs):
     room = Room(code, **kwargs)
     rooms[code] = room
     return room
+
+
+def _prediction_target_rule(room):
+    if not room.engines:
+        return None
+    index = random.Random(room.seed ^ (room.round * 7919) ^ 0x50524544).randrange(
+        len(room.engines)
+    )
+    return room.engines[index].rule.pattern_type
 
 
 def test_round_advances_and_shifts_grid():
@@ -183,7 +193,12 @@ def test_clicking_sealed_door_reports_sealed_without_leaking_state():
             self.sent.append(payload)
 
     p.ws = FakeWebSocket()
-    sealed = next(d for d in DIRECTIONS if room.arena.start_room().doors[d].sealed)
+    start = room.arena.start_room()
+    sealed = next(
+        d for d in DIRECTIONS
+        if start.doors[d].sealed
+        and room.arena.room_at(start.bx + STEP[d][0], start.by + STEP[d][1]) is not None
+    )
     before = p.points
     asyncio.run(room.open_door(p, sealed))
     result = next(m for m in reversed(p.ws.sent) if m.get("type") == "door_result")
@@ -191,6 +206,30 @@ def test_clicking_sealed_door_reports_sealed_without_leaking_state():
     assert result["message"] == "That door is sealed."
     assert p.points == before - 1
     assert p.sealed_strikes == 1
+
+
+def test_clicking_edge_wall_does_not_penalize_player():
+    room = Room("EDGE", seed=7, round_seconds=60)
+    room.status = "running"
+    p = _player(room)
+    room.players[p.id] = p
+    edge_room = next(
+        r for r in room.arena.rooms
+        if any(
+            room.arena.room_at(r.bx + STEP[d][0], r.by + STEP[d][1]) is None
+            for d in DIRECTIONS
+        )
+    )
+    p.room_id = edge_room.rid
+    edge = next(
+        d for d in DIRECTIONS
+        if room.arena.room_at(edge_room.bx + STEP[d][0], edge_room.by + STEP[d][1]) is None
+    )
+    edge_room.doors[edge].sealed = True
+    before = p.points
+    asyncio.run(room.open_door(p, edge))
+    assert p.points == before
+    assert p.sealed_strikes == 0
 
 
 def test_two_sealed_clicks_in_same_room_and_round_trigger_lockdown():
@@ -209,10 +248,18 @@ def test_two_sealed_clicks_in_same_room_and_round_trigger_lockdown():
     p.ws = FakeWebSocket()
     target = next(
         r for r in room.arena.rooms
-        if sum(1 for d in DIRECTIONS if r.doors[d].sealed) >= 2
+        if len([
+            d for d in DIRECTIONS
+            if r.doors[d].sealed
+            and room.arena.room_at(r.bx + STEP[d][0], r.by + STEP[d][1]) is not None
+        ]) >= 2
     )
     p.room_id = target.rid
-    sealed = [d for d in DIRECTIONS if target.doors[d].sealed]
+    sealed = [
+        d for d in DIRECTIONS
+        if target.doors[d].sealed
+        and room.arena.room_at(target.bx + STEP[d][0], target.by + STEP[d][1]) is not None
+    ]
     assert len(sealed) >= 2
     before = p.points
 
@@ -236,7 +283,20 @@ def test_two_sealed_clicks_in_same_room_and_round_trigger_lockdown():
     room.step_round()
     p.locked = False
     p.last_move = 0
-    sealed = [d for d in DIRECTIONS if target.doors[d].sealed]
+    target = next(
+        r for r in room.arena.rooms
+        if any(
+            r.doors[d].sealed
+            and room.arena.room_at(r.bx + STEP[d][0], r.by + STEP[d][1]) is not None
+            for d in DIRECTIONS
+        )
+    )
+    p.room_id = target.rid
+    sealed = [
+        d for d in DIRECTIONS
+        if target.doors[d].sealed
+        and room.arena.room_at(target.bx + STEP[d][0], target.by + STEP[d][1]) is not None
+    ]
     asyncio.run(room.open_door(p, sealed[0]))
     assert p.locked is False
     assert p.sealed_strikes == 1
@@ -331,13 +391,13 @@ def test_filter_round_hides_data_per_role():
     nav = filter_round(payload, "pathfinder", None)
     watcher = filter_round(payload, "watcher", None)
     keeper = filter_round(payload, "timekeeper", None)
-    decoder = filter_round(payload, "decoder", None)
+    decoder = filter_round(payload, "decoder", {"old": True})
     assert "sigil" not in nav["moved"][0]
-    assert watcher["moved"] == [] and "sigil" not in str(watcher["moved"])
+    assert watcher["moved"] == [] and watcher["sigils"] == ["spade"]
     assert keeper["moved"] == [] and keeper["timing"]["next_in"] == 5
     assert "dice" not in keeper
     assert decoder["moved"] == [] and "timing" not in decoder
-    assert "previous" not in decoder and "dice" not in decoder
+    assert decoder["previous"]["old"] is True and "dice" not in decoder
 
 
 def test_role_assignment_covers_four_roles():
@@ -392,8 +452,8 @@ def test_join_welcome_and_move():
             m = ws.receive_json()
             if m["type"] == "room_entered" and m.get("player") == msg["you"]:
                 assert m["door"] == door
-                assert m.get("to") is None
-                assert m.get("from") is None
+                assert m.get("from") == "C3"
+                assert m.get("to") is not None
                 break
         else:
             raise AssertionError("no room_entered received")
@@ -420,8 +480,36 @@ def test_prediction_scoring():
     room.status = "running"
     p = _player(room)
     room.players["a"] = p
-    asyncio.run(room.predict(p, {"pattern_type": room.engines[0].rule.pattern_type}))
+    asyncio.run(room.predict(p, {"pattern_type": _prediction_target_rule(room)}))
     assert p.predictions == 1 and p.correct == 1
+
+
+def test_prediction_does_not_reveal_best_public_rule():
+    room = Room("PHID", seed=5, round_seconds=1)
+    room.status = "running"
+    p = _player(room)
+    room.players["a"] = p
+    asyncio.run(room.predict(p, {"pattern_type": "__wrong__"}))
+    assert p.predictions == 1 and p.correct == 0
+
+
+def test_prediction_cooldown_blocks_rapid_calls():
+    room = Room("PCOOL", seed=5, round_seconds=1)
+    room.status = "running"
+    p = _player(room)
+    room.players["a"] = p
+    p.prediction_cooldown_until = time.time() + 10
+    asyncio.run(room.predict(p, {"pattern_type": room.engines[0].rule.pattern_type}))
+    assert p.predictions == 0
+
+
+def test_team_notes_broadcast_and_replay():
+    room = Room("NOTES", seed=9)
+    p = _player(room)
+    room.players["a"] = p
+    asyncio.run(room.team_notes(p, "check A1"))
+    assert room.notes[0]["text"] == "check A1"
+    assert room.snapshot(p)["notes"][0]["text"] == "check A1"
 
 
 def test_room_full_after_four():
@@ -473,11 +561,46 @@ def test_finish_builds_a_valid_summary():
     room = Room("FIN", seed=9, round_seconds=60)
     room.status = "running"
     p = _player(room)
+    p.avatar_url = "/avatars/characters/arisu.png"
+    p.character_id = "arisu"
     room.players["a"] = p
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    p.ws = FakeWebSocket()
     room.log("a", "join", {"name": "A", "role": p.role})
     asyncio.run(room.finish(won=True))
     assert room.status == "won"
     assert room.nexus.team_report()["players"]
+    game_over = next(m for m in p.ws.sent if m.get("type") == "game_over")
+    row = game_over["summary"]["players"][0]
+    assert row["avatar_url"] == "/avatars/characters/arisu.png"
+    assert row["character_id"] == "arisu"
+
+
+def test_live_state_messages_hide_nexus_player_models():
+    room = Room("PRIVACY", seed=9, round_seconds=60)
+    p = _player(room)
+    room.players[p.id] = p
+    p.connected = True
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    p.ws = FakeWebSocket()
+    asyncio.run(room.broadcast_state())
+    state = next(m for m in p.ws.sent if m.get("type") == "state")
+    assert "nexus" in room.snapshot()
+    assert "nexus" not in state["state"]
 
 
 def test_opening_a_door_costs_one_point_and_crossing_is_free():
@@ -503,9 +626,12 @@ def test_sealed_door_strikes_cost_one_point_and_lock_at_two():
     room.status = "running"
     p = _player(room)
     room.players["a"] = p
-    door = _open_door(room)
-    assert door
     start = room.arena.start_room()
+    door = next(
+        d for d in DIRECTIONS
+        if room.arena.door_open(start, d)
+        and room.arena.room_at(start.bx + STEP[d][0], start.by + STEP[d][1]) is not None
+    )
     start.doors[door].rolled_sealed = True
     before = p.points
 
@@ -580,6 +706,20 @@ def test_all_players_at_exit_triggers_win():
     room.log("a", "join", {"name": "A", "role": p.role})
     asyncio.run(room._check_endings())
     assert room.status == "won" and p.escaped
+
+
+def test_disconnected_living_player_does_not_block_team_win():
+    room = Room("WINDISC", seed=9, round_seconds=60)
+    room.status = "running"
+    players = [_player(room, "a", 0), _player(room, "b", 1)]
+    players[1].connected = False
+    exit_rid = room.arena.exit_room().rid
+    for p in players:
+        p.room_id = exit_rid
+    room.players = {p.id: p for p in players}
+    asyncio.run(room._check_endings())
+    assert room.status == "won"
+    assert all(p.escaped for p in players)
 
 
 def test_team_at_exit_wins_before_match_timer_expires():
@@ -684,6 +824,21 @@ def test_locked_player_needs_two_helpers():
     room.players["h2"] = second
     asyncio.run(room.unlock(second, "t"))
     assert not target.locked and target.revives == 1
+
+
+def test_locked_players_cannot_help_unlock_each_other():
+    room = Room("LOCKHELP", seed=4, round_seconds=60)
+    room.status = "running"
+    target = _player(room, "t", 0, "pathfinder")
+    target.locked = True
+    locked_helper = _player(room, "lh", 1, "watcher")
+    locked_helper.locked = True
+    free_helper = _player(room, "fh", 2, "timekeeper")
+    room.players = {"t": target, "lh": locked_helper, "fh": free_helper}
+    asyncio.run(room.unlock(locked_helper, "t"))
+    assert target.locked
+    asyncio.run(room.unlock(free_helper, "t"))
+    assert target.locked
 
 
 def test_sanction_counts_recompute_and_stay_counts_only():
@@ -936,12 +1091,21 @@ def test_match_defaults_to_five_king_appearances_and_no_round_cap():
     assert [
         round(at - room.started_at, 3) for at in room.king_spawn_at
     ] == [
-        KING_FIRST_SPAWN_SECONDS + i * KING_APPEARANCE_SECONDS
+        KING_FIRST_SPAWN_SECONDS + i * KING_APPEARANCE_INTERVAL
         for i in range(KING_APPEARANCES)
     ]
 
 
-def test_king_runs_five_sequential_three_minute_appearances():
+def test_king_plan_never_uses_exit_room():
+    room = Room("KINGEXIT", seed=3)
+    exit_rid = room.arena.exit_room().rid
+    room._prepare_king_plan(room.started_at)
+    planned = [rid for plan in room.king_plans for rid in plan["room_ids"]]
+    assert planned
+    assert exit_rid not in planned
+
+
+def test_king_runs_five_scheduled_three_minute_appearances():
     room = Room("KINGSEQ", seed=4)
     room.status = "running"
     room.started_at = time.time()
@@ -956,11 +1120,7 @@ def test_king_runs_five_sequential_three_minute_appearances():
             assert round(room.king["ends_at"] - room.king_spawn_at[appearance - 1], 3) == 180
             assert len(room.king["room_ids"]) == KING_ROOMS_PER_APPEARANCE
             await room._update_king(room.king["ends_at"])
-            if appearance < KING_APPEARANCES:
-                assert room.king is not None
-                assert room.king["appearance"] == appearance + 1
-            else:
-                assert room.king is None
+            assert room.king is None
         await room._update_king(room.match_deadline + 1)
         assert room.king_appearance == KING_APPEARANCES
 

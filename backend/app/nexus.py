@@ -40,9 +40,9 @@ SKILL_ATTRS = ("pattern", "puzzle", "cooperation", "exploration", "leadership")
 # brand new team would score 0.0 and the director would always hand out clues.
 PRIOR = 0.5
 
-CLUE_PLAYER_COOLDOWN = 45.0
-CLUE_TEAM_COOLDOWN = 20.0
-CLUE_MAX_PER_STAGE = 6
+CLUE_PLAYER_COOLDOWN = 30.0
+CLUE_TEAM_COOLDOWN = 12.0
+CLUE_MAX_PER_STAGE = 4
 CLUE_BASE_CHANCE = 0.60
 CLUE_LOW_SKILL = 0.40
 CLUE_HIGH_SKILL = 0.70

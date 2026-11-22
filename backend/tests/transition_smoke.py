@@ -56,6 +56,7 @@ async def main():
     assert got["pathfinder"]["moved"], "pathfinder saw no moved rooms"
     assert "sigil" not in got["pathfinder"]["moved"][0], "pathfinder leaked a sigil"
     assert got["watcher"]["moved"] == [], "watcher saw move intel"
+    assert len(got["watcher"].get("sigils", [])) == len(got["pathfinder"]["moved"])
     for view in (got["watcher"], got["watcher"].get("state", {})):
         for room in view.get("arena", {}).get("rooms", []):
             assert not room.get("sigil"), "watcher leaked a sigil"
@@ -63,7 +64,7 @@ async def main():
     assert got["timekeeper"]["timing"]["next_in"] >= 0, "timekeeper saw no timing"
     assert "dice" not in got["timekeeper"], "timekeeper saw dice"
     assert "timing" not in got["decoder"], "decoder saw the countdown"
-    assert "previous" not in got["decoder"], "decoder saw a previous layout"
+    assert "previous" in got["decoder"], "decoder received no previous layout field"
     assert "arena" in got["pathfinder"], "round carried no arena"
 
     print("round:", got["pathfinder"]["round"], "pattern:", got["pathfinder"]["pattern_type"])

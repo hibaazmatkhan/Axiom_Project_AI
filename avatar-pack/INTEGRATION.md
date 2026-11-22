@@ -64,7 +64,7 @@ Copy these modules to `backend/app/`:
 - `avatar_adapters.py`
 - `avatar_router.py`
 
-Copy `avatar-pack/backend/migrations/003_avatar_fields.sql` to `backend/migrations/` and run it in Supabase.
+Copy `avatar-pack/backend/migrations/004_avatar_fields.sql` to `backend/migrations/` and run it in Supabase.
 
 After `app = FastAPI(...)`, include the router:
 

@@ -58,6 +58,7 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
         "type": "round",
         "round": payload.get("round"),
         "pattern_type": payload.get("pattern_type"),
+        "pattern_types": payload.get("pattern_types"),
         "active": payload.get("active", True),
         "pa": payload.get("pa", ""),
         "futures": _futures_for(payload, role),
@@ -74,11 +75,14 @@ def filter_round(payload: dict, role: str, prev_arena: dict | None) -> dict:
         ]
     elif role == "watcher":
         base["moved"] = []
+        base["sigils"] = [m.get("sigil") for m in moved if m.get("sigil")]
     elif role == "timekeeper":
         base["moved"] = []
         base["timing"] = {"next_in": payload.get("next_round_in")}
     else:
         base["moved"] = []
+        if prev_arena:
+            base["previous"] = filter_arena(prev_arena, role)
     return base
 
 

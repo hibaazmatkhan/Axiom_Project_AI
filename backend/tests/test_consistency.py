@@ -66,12 +66,12 @@ def test_each_role_receives_a_distinct_information_slice():
     }
     views = {r: filter_round(payload, r, {"old": True}) for r in ROLES}
     assert "sigil" not in views["pathfinder"]["moved"][0]
-    assert views["watcher"]["moved"] == []
+    assert views["watcher"]["moved"] == [] and views["watcher"]["sigils"] == ["spade"]
     assert views["timekeeper"]["moved"] == [] and views["timekeeper"]["timing"]["next_in"] == 5
     assert views["decoder"]["moved"] == [] and "timing" not in views["decoder"]
-    assert "previous" not in views["decoder"]
+    assert views["decoder"]["previous"]["old"] is True
     assert "spade" not in str(views["pathfinder"])
-    assert "spade" not in str(views["watcher"])
+    assert views["watcher"]["sigils"] == ["spade"]
     assert "spade" not in str(views["timekeeper"])
     assert "spade" not in str(views["decoder"])
 

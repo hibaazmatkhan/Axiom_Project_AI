@@ -53,7 +53,8 @@ INTENT_MAX = 14
 DEFAULT_MATCH_SECONDS = 1800.0
 KING_APPEARANCES = 5
 KING_APPEARANCE_SECONDS = 180.0
-KING_FIRST_SPAWN_SECONDS = 30.0
+KING_APPEARANCE_INTERVAL = 300.0
+KING_FIRST_SPAWN_SECONDS = 120.0
 KING_WATCH_LEAD_SECONDS = 30.0
 KING_ROOMS_PER_APPEARANCE = 5
 KING_TELEPORT_SECONDS = KING_APPEARANCE_SECONDS / KING_ROOMS_PER_APPEARANCE
@@ -64,15 +65,15 @@ DOOR_COST = fate.DOOR_COST
 DOOR_OPEN_SECONDS = 10.0
 PATHFINDER_REVEAL_COOLDOWN = 120.0
 DELAY_CONFIG = {
-    "answer_ms": {1: 30000, 2: 40000, 3: 50000},
+    "answer_ms": {1: 12000, 2: 15000, 3: 18000},
     "delay_s": {1: 6, 2: 12, 3: 18},
     "penalty_s": {1: -3, 2: -6, 3: -9},
-    "cooldown_s": 45,
+    "cooldown_s": 30,
     "attempts_per_stage": 2,
     "max_shift_delay_s": 18,
     "second_success_multiplier": 0.5,
-    "min_shift_s": 15,
-    "max_shift_s": 60,
+    "min_shift_s": 18,
+    "max_shift_s": 45,
     "min_time_before_shift_s": 3,
 }
 WAIT_COST = fate.WAIT_COST
@@ -115,6 +116,7 @@ class Player:
     entered_round: int = 0
     wristband_revealed: bool = False
     wristband_cooldown_until: float = 0.0
+    prediction_cooldown_until: float = 0.0
     ws: WebSocket | None = field(default=None, repr=False)
     bucket_at: float = 0.0
     bucket_n: int = 0
@@ -197,6 +199,7 @@ class Room:
         self.sanction_total = 0
         self.sanction_found = 0
         self.pending_clues: list[tuple[str, dict]] = []
+        self.notes: list[dict] = []
         self.puzzle = self._new_puzzle()
         self._recompute_sanctions()
         self.rng = random.Random(self.seed ^ 0x9E3779B9)
@@ -318,7 +321,7 @@ class Room:
         base = self.round_override if self.round_override is not None else self.round_seconds
         if base <= 0:
             return DELAY_CONFIG["min_shift_s"]
-        rolled = self.rng.uniform(base * 0.8, base * 1.2)
+        rolled = self.rng.uniform(base * 0.9, base * 1.1)
         return round(max(DELAY_CONFIG["min_shift_s"], min(DELAY_CONFIG["max_shift_s"], rolled)), 1)
 
     def _temporary_for(self, room: ArenaRoom, d: str) -> TemporaryDoor | None:
@@ -426,6 +429,7 @@ class Room:
             "escaped": p.escaped,             "points": p.points, "role": p.role,
             "wristband_revealed": p.wristband_revealed,
             "wristband_cooldown_remaining": max(0.0, p.wristband_cooldown_until - time.time()),
+            "prediction_cooldown_remaining": max(0.0, p.prediction_cooldown_until - time.time()),
             "exit_found": p.exit_found,
             "exit_code": self.arena.exit_room().code if p.exit_found else None,
         }
@@ -441,6 +445,14 @@ class Room:
         wristband_revealed = bool(
             for_player and for_player.role == "pathfinder" and for_player.wristband_revealed
         )
+        puzzle_public = dict(self.puzzle.public()) if self.puzzle else {}
+        puzzle_public["marks"] = len(self.puzzle_contributions)
+        puzzle_you = (
+            self.puzzle.role_view(role)
+            if self.puzzle and role in self.puzzle.domains else None
+        )
+        if puzzle_you is not None:
+            puzzle_you["mark"] = self.puzzle_contributions.get(role)
         snap = {
             "room": self.id, "status": self.status, "round": self.round,
             "max_rounds": self.max_rounds,
@@ -458,14 +470,12 @@ class Room:
             "min_players": self.min_players, "rule_count": len(self.engines),
             "sanction_total": self.sanction_total, "sanction_found": self.sanction_found,
             "nexus": self._nexus_report(), "pa": self.pa,
+            "notes": self.notes[-40:],
             "king": self.king_public(),
             "king_watch": self.king_watch_public() if role == "watcher" else None,
             "dice": {}, "futures": filter_visions(self.visions, role),
             "dice_relief_rounds": self.dice_relief_rounds,
-            "puzzle": {
-                "public": self.puzzle.public() if self.puzzle else {},
-                "you": self.puzzle.role_view(role) if self.puzzle and role in self.puzzle.domains else None,
-            },
+            "puzzle": {"public": puzzle_public, "you": puzzle_you},
         }
         if role in ("timekeeper", "decoder"):
             snap["delay_status"] = self._delay_status()
@@ -487,7 +497,9 @@ class Room:
     async def broadcast_state(self) -> None:
         for p in list(self.players.values()):
             if p.connected:
-                await self.send(p, {"type": "state", "state": self.snapshot(p)})
+                state = self.snapshot(p)
+                state.pop("nexus", None)
+                await self.send(p, {"type": "state", "state": state})
         await self.broadcast_admin()
 
     # ---- admin observers ----------------------------------------------------
@@ -691,6 +703,8 @@ class Room:
             await self.maybe_start()
         elif kind == "chat":
             await self.team_chat(player, msg.get("text"))
+        elif kind in ("notes", "notes_send"):
+            await self.team_notes(player, msg.get("text"))
         elif kind in ("pathfinder_reveal", "reveal_wristband"):
             await self.reveal_wristband(player)
         elif kind == "ping":
@@ -911,6 +925,9 @@ class Room:
         await self.broadcast_state()
 
     async def _strike_sealed_door(self, player: Player, room: Room, door: str) -> None:
+        dx, dy = STEP[door]
+        if self.arena.room_at(room.bx + dx, room.by + dy) is None:
+            return
         player.sealed_strikes += 1
         player.points -= 1
         self.log(player.id, "bump", {"door": door, "room": room.code})
@@ -1083,7 +1100,7 @@ class Room:
 
         await self.broadcast({
             "type": "room_entered", "player": player.id, "door": door,
-            "cost": 0,
+            "from": room.code, "to": target.code, "cost": 0,
         })
 
         if fate.reveal(self.arena, target) and target.sanction:
@@ -1121,7 +1138,7 @@ class Room:
         await self.broadcast_state()
 
     async def unlock(self, helper: Player, target_id) -> None:
-        if self.status != "running" or helper.eliminated or helper.escaped:
+        if self.status != "running" or helper.eliminated or helper.escaped or helper.locked:
             return
         target = self.players.get(str(target_id))
         if target is None or not target.locked:
@@ -1135,7 +1152,7 @@ class Room:
             valid.add(nb.rid)
         helpers = [
             p for p in self.players.values()
-            if p.connected and not p.eliminated and not p.escaped
+            if p.connected and not p.eliminated and not p.escaped and not p.locked
             and p.id != target.id and p.room_id in valid
         ]
         if helper.id not in {h.id for h in helpers}:
@@ -1174,10 +1191,15 @@ class Room:
         return (room.code if room else None,
                 [room.bx, room.by] if room else None)
 
+    def _king_room_ids(self) -> list[str]:
+        exit_rid = self.arena.exit_room().rid
+        room_ids = [room.rid for room in self.arena.rooms if room.rid != exit_rid]
+        return room_ids or [room.rid for room in self.arena.rooms]
+
     def _prepare_king_plan(self, started_at: float | None = None) -> None:
         start = self.started_at if started_at is None else started_at
         self._king_rng = random.Random(self.seed ^ 0x4B494E47)
-        room_ids = [room.rid for room in self.arena.rooms]
+        room_ids = self._king_room_ids()
         self.king_plans = [
             {
                 "appearance": i + 1,
@@ -1188,7 +1210,7 @@ class Room:
             for i in range(KING_APPEARANCES)
         ]
         self.king_spawn_at = [
-            start + KING_FIRST_SPAWN_SECONDS + i * KING_APPEARANCE_SECONDS
+            start + KING_FIRST_SPAWN_SECONDS + i * KING_APPEARANCE_INTERVAL
             for i in range(KING_APPEARANCES)
         ]
         self.king_alerted = set()
@@ -1258,7 +1280,7 @@ class Room:
         if appearance <= len(self.king_plans):
             selected = list(self.king_plans[appearance - 1]["room_ids"])
         else:
-            room_ids = [room.rid for room in self.arena.rooms]
+            room_ids = self._king_room_ids()
             selected = self._king_rng.sample(
                 room_ids, min(KING_ROOMS_PER_APPEARANCE, len(room_ids))
             )
@@ -1377,15 +1399,15 @@ class Room:
     async def _check_endings(self) -> None:
         if self.status != "running":
             return
-        alive = self.alive()
-        if not alive:
+        living = [p for p in self.players.values() if not p.eliminated]
+        if not living:
             await self.finish(won=False)
             return
         exit_room = self.arena.exit_room()
-        in_exit = [p for p in alive if p.room_id == exit_room.rid]
-        if len(in_exit) == len(alive):
+        in_exit = [p for p in living if p.room_id == exit_room.rid]
+        if len(in_exit) == len(living):
             self.pa = "THE EXIT IS OPEN. THE TEAM ESCAPED."
-            for p in alive:
+            for p in living:
                 p.escaped = True
             await self.finish(won=True)
 
@@ -1414,6 +1436,14 @@ class Room:
     async def predict(self, player: Player, msg: dict) -> None:
         if self.status != "running" or player.eliminated:
             return
+        now = time.time()
+        if now < player.prediction_cooldown_until:
+            await self.send(player, {
+                "type": "error", "code": "prediction_cooldown",
+                "message": "Prediction recharging. Wait a moment.",
+            })
+            return
+        player.prediction_cooldown_until = now + 2.0
         guess: dict = {}
         if msg.get("pattern_type"):
             guess["pattern_type"] = msg["pattern_type"]
@@ -1423,8 +1453,13 @@ class Room:
             guess["sigils"] = msg["sigils"]
         kb = KnowledgeBase()
         moved = self.last_shift.get("moved", [])
-        scores = [kb.score_hypothesis(guess, e.rule, moved) for e in self.engines] or [0.0]
-        score = max(scores)
+        target_index = (
+            random.Random(self.seed ^ (self.round * 7919) ^ 0x50524544)
+            .randrange(len(self.engines))
+            if self.engines else 0
+        )
+        rule = self.engines[target_index].rule if self.engines else None
+        score = kb.score_hypothesis(guess, rule, moved) if rule is not None else 0.0
         ok = score >= 0.5
         player.predictions += 1
         if ok:
@@ -1459,6 +1494,19 @@ class Room:
             await self.broadcast({"type": "chat", "from": player.name, "color": player.color,
                                   "text": text})
             await self.broadcast_admin()
+
+    async def team_notes(self, player: Player, text) -> None:
+        text = re.sub(r"[^\w \-.,!?']", "", str(text or ""))[:280]
+        if not text:
+            return
+        entry = {
+            "id": (self.notes[-1]["id"] + 1) if self.notes else 1,
+            "from": player.name, "color": player.color, "text": text,
+        }
+        self.notes.append(entry)
+        self.notes = self.notes[-40:]
+        self.log(player.id, "note", {"length": len(text)})
+        await self.broadcast({"type": "notes", **entry})
 
     async def maybe_start(self) -> None:
         connected = [p for p in self.players.values() if p.connected]
@@ -1521,6 +1569,7 @@ class Room:
         self.visions = fate.build_visions(self.arena, self.rng, self.round)
         self.last_shift = {
             "pattern_type": self.engines[0].rule.pattern_type if self.engines else None,
+            "pattern_types": [e.rule.pattern_type for e in self.engines],
             "moved": moved, "ops": ops, "repairs": repairs,
         }
 
@@ -1553,7 +1602,8 @@ class Room:
 
         return {
             "type": "round", "round": self.round,
-            "pattern_type": self.last_shift["pattern_type"], "active": True,
+            "pattern_type": self.last_shift["pattern_type"],
+            "pattern_types": self.last_shift["pattern_types"], "active": True,
             "moved": moved, "ops": ops, "arena": self.arena_public(),
             "players": self.players_public(), "next_round_in": self.shift_seconds,
             "dice": self.dice, "visions": self.visions,             "pa": self.pa,
@@ -1627,7 +1677,7 @@ class Room:
                 if clue:
                     self.pending_clues.append((player.id, clue))
             if self.round_override is None:
-                self.round_seconds = min(26.0, self.round_seconds + 0.5)
+                self.round_seconds = min(40.0, self.round_seconds + 0.5)
             self.pa = "THE DEALER OFFERS A VISION."
         elif kind == "shift_information":
             available = [p.role for p in self.alive()]
@@ -1644,7 +1694,7 @@ class Room:
                 self.info_nudges[target.id] = self.info_nudges.get(target.id, 0) + 1
                 self.log(None, "info_nudge", {"role": nudge["role"], "round": self.round})
             if self.round_override is None:
-                self.round_seconds = min(26.0, self.round_seconds + 0.5)
+                self.round_seconds = min(40.0, self.round_seconds + 0.5)
             self.pa = "THE DEALER WHISPERS TO ONE ROLE."
         else:
             self.pa = "THE DEALER WATCHES."
@@ -1694,7 +1744,9 @@ class Room:
         if self.king is not None:
             await self._king_despawn()
         if won:
-            for p in self.alive():
+            for p in self.players.values():
+                if p.eliminated:
+                    continue
                 p.escaped = True
                 self.log(p.id, "escaped", {"round": self.round})
         duration = time.time() - self.started_at
@@ -1712,6 +1764,7 @@ class Room:
             "players": [
                 {
                     "name": p.name, "slot": p.slot, "uid": p.uid,
+                    "avatar_url": p.avatar_url, "character_id": p.character_id,
                     "verified": p.verified, "escaped": p.escaped,
                     "eliminated": p.eliminated, "points": p.points,
                     "revives": p.revives,

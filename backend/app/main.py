@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
@@ -37,6 +38,7 @@ from .room_registry import RoomRegistry
 from .store_errors import MatchStoreUnavailable
 
 logger = logging.getLogger(__name__)
+APP_STARTED_AT = time.time()
 ROUND_SECONDS = os.getenv("ROUND_SECONDS")
 MATCH_SECONDS = os.getenv("MATCH_SECONDS")
 MIN_PLAYERS = int(os.getenv("MIN_PLAYERS", "1"))
@@ -146,7 +148,13 @@ def _history_for(user: AuthUser, profile: dict, limit: int) -> list[dict]:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "rooms": len(rooms), "players": sum(len(r.players) for r in rooms.values())}
+    return {
+        "ok": True,
+        "status": "healthy",
+        "uptime_s": round(time.time() - APP_STARTED_AT, 1),
+        "rooms": len(rooms),
+        "players": sum(len(r.players) for r in rooms.values()),
+    }
 
 
 @app.get("/api/me")
@@ -577,6 +585,9 @@ async def _spectator_socket(ws: WebSocket, room_id: str) -> None:
 
 async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
                          auth_required: bool) -> None:
+    identity = await _ws_identity(ws, name, pid, auth_required)
+    if identity is None:
+        return
     async with room_creation_lock:
         room = rooms.get(room_id)
         created = False
@@ -598,9 +609,6 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
             )
             created = True
 
-        identity = await _ws_identity(ws, name, pid, auth_required)
-        if identity is None:
-            return
         try:
             player = await room.join(
                 ws, identity.name, identity.pid,
