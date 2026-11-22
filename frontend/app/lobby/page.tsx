@@ -134,7 +134,11 @@ export default function LobbyPage() {
 
   const joinRoom = () => {
     const target = code.trim().toUpperCase();
-    if (!name.trim() || !target || busy) return;
+    if (!name.trim() || busy) return;
+    if (!/^[A-Z0-9]{4}$/.test(target)) {
+      setError("Room codes are exactly four letters or numbers.");
+      return;
+    }
     setError(null);
     stopPolling();
     go(target);
@@ -344,7 +348,7 @@ export default function LobbyPage() {
               <input
                 id="code"
                 value={code}
-                maxLength={8}
+                maxLength={4}
                 onChange={(event) => setCode(event.target.value.toUpperCase())}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void joinRoom();
@@ -448,7 +452,7 @@ export default function LobbyPage() {
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">02</span>
-                  <span>Every player starts with 15 points. Crossing and waiting cost 1.</span>
+                  <span>Every player starts with 25 points. Crossing and waiting cost 1.</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">03</span>

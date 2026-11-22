@@ -31,7 +31,7 @@ def test_create_and_lookup_room():
     created = client.post("/api/rooms", json={"min_players": 3})
     assert created.status_code == 200
     code = created.json()["code"]
-    assert 4 <= len(code) <= 6 and code.isalnum()
+    assert len(code) == 4 and code.isalnum()
 
     found = client.get(f"/api/rooms/{code}")
     assert found.status_code == 200
@@ -104,13 +104,13 @@ def test_room_code_survives_last_disconnect():
 
 
 def test_spectator_requires_auth_and_admin(monkeypatch):
-    main.rooms["SPEC1"] = Room("SPEC1", seed=1)
+    main.rooms["SPC1"] = Room("SPC1", seed=1)
     monkeypatch.setattr(main, "verify_token", lambda token: _user(uid="viewer"))
     monkeypatch.setattr(config, "ADMIN_UIDS", set())
     client = TestClient(main.app)
 
     try:
-        with client.websocket_connect("/ws/SPEC1?spectator=1") as ws:
+        with client.websocket_connect("/ws/SPC1?spectator=1") as ws:
             ws.send_json({"type": "auth", "token": "viewer-token"})
             assert ws.receive_json()["code"] == "admin_required"
             with pytest.raises(WebSocketDisconnect) as exc:
@@ -118,23 +118,23 @@ def test_spectator_requires_auth_and_admin(monkeypatch):
             assert exc.value.code == 1008
     except WebSocketDisconnect:
         pass
-    assert len(main.rooms["SPEC1"].spectators) == 0
+    assert len(main.rooms["SPC1"].spectators) == 0
 
 
 def test_spectator_admin_gets_admin_state_and_is_audited(monkeypatch):
-    main.rooms["SPEC2"] = Room("SPEC2", seed=2)
+    main.rooms["SPC2"] = Room("SPC2", seed=2)
     monkeypatch.setattr(main, "verify_token", lambda token: _user(uid="admin", admin=True))
     client = TestClient(main.app)
 
-    with client.websocket_connect("/ws/SPEC2?spectator=1") as ws:
+    with client.websocket_connect("/ws/SPC2?spectator=1") as ws:
         ws.send_json({"type": "auth", "token": "admin-token"})
         state = ws.receive_json()
-        assert state["type"] == "admin_state" and state["room"] == "SPEC2"
-        assert len(main.rooms["SPEC2"].spectators) == 1
+        assert state["type"] == "admin_state" and state["room"] == "SPC2"
+        assert len(main.rooms["SPC2"].spectators) == 1
         ws.send_json({"type": "ping"})
         assert ws.receive_json() == {"type": "pong"}
 
-    assert len(main.rooms["SPEC2"].spectators) == 0
+    assert len(main.rooms["SPC2"].spectators) == 0
     with db.store.conn() as c:
         kinds = [row["kind"] for row in c.execute(
             "SELECT kind FROM audit_logs WHERE firebase_uid=? ORDER BY id", ("admin",)
@@ -143,38 +143,38 @@ def test_spectator_admin_gets_admin_state_and_is_audited(monkeypatch):
 
 
 def test_spectator_accepts_admin_uid(monkeypatch):
-    main.rooms["SPEC4"] = Room("SPEC4", seed=4)
+    main.rooms["SPC4"] = Room("SPC4", seed=4)
     monkeypatch.setattr(config, "ADMIN_UIDS", {"listed-admin"})
     monkeypatch.setattr(main, "verify_token", lambda token: _user(uid="listed-admin"))
     client = TestClient(main.app)
-    with client.websocket_connect("/ws/SPEC4?spectator=1") as ws:
+    with client.websocket_connect("/ws/SPC4?spectator=1") as ws:
         ws.send_json({"type": "auth", "token": "admin-token"})
         assert ws.receive_json()["type"] == "admin_state"
 
 
 def test_spectator_without_token_is_rejected(monkeypatch):
-    main.rooms["SPEC3"] = Room("SPEC3", seed=3)
+    main.rooms["SPC3"] = Room("SPC3", seed=3)
     client = TestClient(main.app)
     try:
-        with client.websocket_connect("/ws/SPEC3?spectator=1") as ws:
+        with client.websocket_connect("/ws/SPC3?spectator=1") as ws:
             ws.send_json({"type": "auth", "name": "Guest"})
             assert ws.receive_json()["code"] == "auth_required"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
     except WebSocketDisconnect:
         pass
-    assert len(main.rooms["SPEC3"].spectators) == 0
+    assert len(main.rooms["SPC3"].spectators) == 0
 
 
 def test_spectator_cannot_create_unknown_room(monkeypatch):
     monkeypatch.setattr(main, "verify_token", lambda token: _user(uid="admin", admin=True))
     client = TestClient(main.app)
     try:
-        with client.websocket_connect("/ws/NEWROOM?spectator=1") as ws:
+        with client.websocket_connect("/ws/NEWR?spectator=1") as ws:
             ws.send_json({"type": "auth", "token": "admin-token"})
             assert ws.receive_json()["code"] == "room_not_found"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
     except WebSocketDisconnect:
         pass
-    assert "NEWROOM" not in main.rooms
+    assert "NEWR" not in main.rooms

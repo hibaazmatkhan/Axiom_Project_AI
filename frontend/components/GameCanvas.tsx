@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { playSound, unlockAudio } from "@/lib/audio";
 import type { Arena, CrossEvent, Direction, Door, DoorColor, KingEvent, KingView, Player, You } from "@/lib/types";
@@ -260,6 +260,7 @@ function isEdgeDirection(room: [number, number] | null, size: number, dir: Direc
 
 export default function GameCanvas(props: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const [pointerLocked, setPointerLocked] = useState(false);
   const propsRef = useRef(props);
   propsRef.current = props;
   const apiRef = useRef<{
@@ -960,6 +961,7 @@ export default function GameCanvas(props: Props) {
 
     const ndc = new THREE.Vector2(0, 0);
     const raycaster = new THREE.Raycaster();
+    const isPointerLocked = () => document.pointerLockElement === renderer.domElement;
 
     const setPointerNdc = (e: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -1003,6 +1005,12 @@ export default function GameCanvas(props: Props) {
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      if (isPointerLocked() && e.pointerType === "mouse") {
+        yaw -= e.movementX * LOOK_SENSITIVITY;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch - e.movementY * LOOK_SENSITIVITY));
+        ndc.set(0, 0);
+        return;
+      }
       setPointerNdc(e);
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (!pointerInside) {
@@ -1028,6 +1036,10 @@ export default function GameCanvas(props: Props) {
       if (activePointerId !== null || (e.pointerType === "mouse" && e.button !== 0)) return;
       unlockAudio();
       e.preventDefault();
+      if (e.pointerType === "mouse" && !isPointerLocked()) {
+        const request = renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (request) request.catch(() => undefined);
+      }
       setPointerNdc(e);
       activePointerId = e.pointerId;
       pointerDownAt = performance.now();
@@ -1043,8 +1055,9 @@ export default function GameCanvas(props: Props) {
 
     const onPointerUp = (e: PointerEvent) => {
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      if (isPointerLocked()) ndc.set(0, 0);
       if (!pointerMoved && performance.now() - pointerDownAt < 350) {
-        setPointerNdc(e);
+        if (!isPointerLocked()) setPointerNdc(e);
         pick();
       }
       if (activePointerId !== null) {
@@ -1055,15 +1068,17 @@ export default function GameCanvas(props: Props) {
       activePointerId = null;
       dragging = false;
       if (e.pointerType !== "mouse") pointerInside = false;
-      renderer.domElement.style.cursor = !propsRef.current.ghost && intersectDir(ndc)
-        ? "pointer" : "grab";
+      renderer.domElement.style.cursor = isPointerLocked()
+        ? "none"
+        : !propsRef.current.ghost && intersectDir(ndc)
+          ? "pointer" : "grab";
     };
 
     const onPointerCancel = () => {
       activePointerId = null;
       dragging = false;
       pointerInside = false;
-      renderer.domElement.style.cursor = "grab";
+      if (!isPointerLocked()) renderer.domElement.style.cursor = "grab";
     };
 
     const onBlur = () => {
@@ -1071,6 +1086,17 @@ export default function GameCanvas(props: Props) {
       activePointerId = null;
       dragging = false;
       pointerInside = false;
+    };
+
+    const onPointerLockChange = () => {
+      const locked = isPointerLocked();
+      setPointerLocked(locked);
+      renderer.domElement.style.cursor = locked ? "none" : "grab";
+      if (!locked) {
+        activePointerId = null;
+        dragging = false;
+        pointerInside = false;
+      }
     };
 
     const movementKeys = new Set(["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
@@ -1102,6 +1128,7 @@ export default function GameCanvas(props: Props) {
       if (movementKeys.has(k)) keys[k] = false;
     };
 
+    document.addEventListener("pointerlockchange", onPointerLockChange);
     renderer.domElement.addEventListener("pointerenter", onPointerEnter);
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
@@ -1400,6 +1427,8 @@ export default function GameCanvas(props: Props) {
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
+      if (isPointerLocked()) document.exitPointerLock();
       renderer.domElement.removeEventListener("pointerenter", onPointerEnter);
       renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
@@ -1457,5 +1486,14 @@ export default function GameCanvas(props: Props) {
     }
   }, [props.transitionId, props.moved]);
 
-  return <div ref={mountRef} className="absolute inset-0 cursor-grab select-none" />;
+  return (
+    <div className="absolute inset-0">
+      <div ref={mountRef} className="absolute inset-0 cursor-grab select-none" />
+      {pointerLocked && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <span className="h-1.5 w-1.5 rounded-full border border-bone/80 bg-void/60 shadow-[0_0_6px_rgba(0,0,0,0.9)]" />
+        </div>
+      )}
+    </div>
+  );
 }

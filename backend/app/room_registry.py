@@ -15,7 +15,7 @@ CODE_ALPHABET = (
     string.ascii_uppercase.replace("O", "").replace("I", "")
     + string.digits.replace("0", "").replace("1", "")
 )
-CODE_LENGTHS = (4, 5, 6)
+CODE_LENGTH = 4
 
 
 @dataclass(frozen=True)
@@ -56,8 +56,7 @@ class RoomRegistry:
     def _new_code(self, taken: Iterable[str]) -> str:
         blocked = {str(code).strip().upper() for code in taken}
         for _ in range(100):
-            length = secrets.choice(CODE_LENGTHS)
-            code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(length))
+            code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
             if code not in blocked:
                 return code
         raise RuntimeError("Could not allocate a unique room code.")

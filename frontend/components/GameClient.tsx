@@ -7,16 +7,13 @@ import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
 import { playSound, setKingProximity, setMuted, stopSounds, unlockAudio } from "@/lib/audio";
-import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, NoteLine, PatternType, Sigil } from "@/lib/types";
+import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, NoteLine, Sigil } from "@/lib/types";
 
-const PATTERN_TYPES: PatternType[] = [
-  "rotation", "reflection", "translation", "symbol", "sequential", "conditional", "compound",
-];
 const SIGILS = ["spade", "heart", "diamond", "club"] as const;
 const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
 };
-const MAX_POINTS = 15;
+const MAX_POINTS = 25;
 
 function formatClock(value: number) {
   const total = Math.max(0, Math.ceil(value));
@@ -52,61 +49,6 @@ function Points({ value }: { value: number }) {
       <div className="mt-1 h-2 overflow-hidden rounded-full bg-void/70">
         <div className={`h-full rounded-full bg-gradient-to-r ${tone} transition-all duration-500 ease-out`} style={{ width: `${pct}%` }} />
       </div>
-    </div>
-  );
-}
-
-function PredictionPanel({
-  patterns, selected, onSelect, onSubmit, result, cooldown, ghost,
-}: {
-  patterns: PatternType[];
-  selected: PatternType | null;
-  onSelect: (value: PatternType) => void;
-  onSubmit: () => void;
-  result: { id: number; correct: boolean; score: number; points: number; message: string } | null;
-  cooldown: number;
-  ghost: boolean;
-}) {
-  const disabled = ghost || cooldown > 0 || !selected;
-  return (
-    <div className="mt-3 border-t border-edge/40 pt-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs uppercase tracking-widest text-dim">Predict shift</span>
-        <span className="mono text-[9px] text-dim">+1 · delay</span>
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1">
-        {patterns.map((pattern) => (
-          <button
-            key={pattern}
-            type="button"
-            onClick={() => onSelect(pattern)}
-            className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-wide transition ${
-              selected === pattern
-                ? "border-yellow bg-yellow/15 text-yellow"
-                : "border-edge text-dim hover:text-bone"
-            }`}
-          >
-            {pattern}
-          </button>
-        ))}
-      </div>
-      <button
-        type="button"
-        onClick={onSubmit}
-        disabled={disabled}
-        className="mt-2 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
-      >
-        {cooldown > 0
-          ? `Recharging · ${cooldown.toFixed(1)}s`
-          : ghost
-            ? "Ghosts cannot predict"
-            : "Send prediction"}
-      </button>
-      {result && (
-        <p key={result.id} className={`mt-2 text-[10px] leading-relaxed ${result.correct ? "text-green" : "text-red"}`}>
-          {result.message} · score {result.score.toFixed(2)} · points {result.points > 0 ? "+" : ""}{result.points}
-        </p>
-      )}
     </div>
   );
 }
@@ -313,12 +255,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [delaySecs, setDelaySecs] = useState<number | null>(null);
   const [kingWatchSecs, setKingWatchSecs] = useState<number | null>(null);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes" | "intel" | "predict" | "puzzle" | "delay">("none");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes" | "intel" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [soundMuted, setSoundMuted] = useState(false);
-  const [predictionChoice, setPredictionChoice] = useState<PatternType | null>(null);
   const [noteInput, setNoteInput] = useState("");
   const [puzzleMark, setPuzzleMark] = useState("");
   const [kingStrikeAt, setKingStrikeAt] = useState(0);
@@ -431,14 +372,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const teamRoster = useMemo(() => [...g.players].sort((a, b) => a.slot - b.slot), [g.players]);
   const isLobby = g.status === "lobby";
   const isOver = g.status === "won" || g.status === "over";
-  const predictionCooldown = me?.prediction_cooldown_remaining ?? 0;
-  const predictionPatterns = g.transition.patternTypes?.length
-    ? g.transition.patternTypes
-    : PATTERN_TYPES;
-  const sendPrediction = () => {
-    if (!predictionChoice || ghost || predictionCooldown > 0) return;
-    g.sendPredict(predictionChoice, g.transition.sigils.length ? g.transition.sigils : undefined);
-  };
   const sendNote = () => {
     if (!noteInput.trim()) return;
     g.sendNotes(noteInput.trim());
@@ -495,7 +428,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
           <p className="mono rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
             {ghost
               ? "Ghost · chat and role intel stay live · movement and doors are disabled"
-              : "Drag to look · click a door to open · WASD to walk · E opens the door you face"}
+              : "Click to lock cursor · mouse to look · click a door to open · WASD to walk · Esc releases"}
           </p>
         </div>
       )}
@@ -684,28 +617,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
         </Panel>
 
         <Panel>
-          <PredictionPanel
-            patterns={predictionPatterns}
-            selected={predictionChoice}
-            onSelect={setPredictionChoice}
-            onSubmit={sendPrediction}
-            result={g.prediction}
-            cooldown={predictionCooldown}
-            ghost={ghost}
-          />
-        </Panel>
-
-        <Panel>
-          <NotesPanel
-            lines={g.notes}
-            draft={noteInput}
-            setDraft={setNoteInput}
-            onSend={sendNote}
-            ghost={ghost}
-          />
-        </Panel>
-
-        <Panel>
           <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">Wristband</span>
             <span className="mono text-[10px] text-dim">A1–E5</span>
@@ -839,40 +750,13 @@ export default function GameClient({ room, name }: { room: string; name: string 
         )}
 
         <Panel>
-          <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-widest text-dim">Role intel</span>
-            <span className="mono text-[9px] text-dim">round {g.transition.round || "--"}</span>
-          </div>
-          {g.role === "pathfinder" && (
-            <p className="mt-2 text-[11px] leading-relaxed text-bone">
-              {g.transition.moved.length === 0
-                ? "No rooms moved in the last shift."
-                : g.transition.moved.map((room) => `${room.code_from}→${room.code_to}`).join(" · ")}
-            </p>
-          )}
-          {g.role === "watcher" && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {g.transition.sigils.length === 0
-                ? <p className="text-[11px] text-dim">No sigil moved in the last shift.</p>
-                : g.transition.sigils.map((sigil, index) => (
-                    <span key={`${sigil}-${index}`} className="rounded-full border border-red/40 px-2 py-0.5 text-xs text-red">
-                      {SIGIL_GLYPH[sigil] ?? sigil}
-                    </span>
-                  ))}
-            </div>
-          )}
-          {g.role === "decoder" && (
-            <p className="mt-2 text-[11px] leading-relaxed text-bone">
-              {g.transition.previous
-                ? `Prior layout: ${g.transition.previous.rooms.map((room) => room.code).join(" · ")}`
-                : "No previous layout captured yet."}
-            </p>
-          )}
-          {g.role === "timekeeper" && (
-            <p className="mt-2 text-[11px] leading-relaxed text-dim">
-              Timing intel appears in the Next shift counter above.
-            </p>
-          )}
+          <NotesPanel
+            lines={g.notes}
+            draft={noteInput}
+            setDraft={setNoteInput}
+            onSend={sendNote}
+            ghost={ghost}
+          />
         </Panel>
 
         <Panel>
@@ -1138,20 +1022,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             )}
 
-            {mobilePanel === "predict" && (
-              <div>
-                <PredictionPanel
-                  patterns={predictionPatterns}
-                  selected={predictionChoice}
-                  onSelect={setPredictionChoice}
-                  onSubmit={sendPrediction}
-                  result={g.prediction}
-                  cooldown={predictionCooldown}
-                  ghost={ghost}
-                />
-              </div>
-            )}
-
             {mobilePanel === "puzzle" && (
               <div>
                 <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Role marks</span>
@@ -1252,7 +1122,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   ["chat", "Chat"],
                   ["notes", "Notes"],
                   ["intel", "Intel"],
-                  ["predict", "Predict"],
                   ["puzzle", "Marks"],
                   ["delay", "Delay"],
                 ] as const)
@@ -1261,7 +1130,6 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   ["chat", "Chat"],
                   ["notes", "Notes"],
                   ["intel", "Intel"],
-                  ["predict", "Predict"],
                   ["puzzle", "Marks"],
                 ] as const)
             ).map(([key, label]) => (
@@ -1380,7 +1248,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {g.players.find((p) => p.id === g.you)?.ready ? "Cancel ready" : "Ready up"}
             </button>
             <p className="mt-4 text-[11px] leading-relaxed text-dim">
-              Spawn in C3. Find the hidden exit and bring every living player into it. 15 points each.
+              Spawn in C3. Find the hidden exit and bring every living player into it. 25 points each.
             </p>
           </div>
         </div>

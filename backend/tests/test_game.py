@@ -461,8 +461,8 @@ def test_join_welcome_and_move():
 
 def test_rejects_cheating_moves():
     client = TestClient(app)
-    _seed_room("CHEAT", seed=3)
-    with client.websocket_connect("/ws/CHEAT?name=X") as ws:
+    _seed_room("CHEA", seed=3)
+    with client.websocket_connect("/ws/CHEA?name=X") as ws:
         ws.receive_json()
         ws.send_json({"type": "move", "dx": 3, "dy": 0})
         ws.send_json({"type": "move", "dx": 1, "dy": 1})
@@ -514,22 +514,22 @@ def test_team_notes_broadcast_and_replay():
 
 def test_room_full_after_four():
     client = TestClient(app)
-    _seed_room("FULLTEST", seed=3)
+    _seed_room("FULL", seed=3)
     with ExitStack() as stack:
         for i in range(4):
             stack.enter_context(
-                client.websocket_connect(f"/ws/FULLTEST?name=p{i}")).receive_json()
-        with client.websocket_connect("/ws/FULLTEST?name=late") as ws:
+                client.websocket_connect(f"/ws/FULL?name=p{i}")).receive_json()
+        with client.websocket_connect("/ws/FULL?name=late") as ws:
             assert ws.receive_json()["code"] == "room_full"
 
 
 def test_late_join_rejected_after_match_starts():
     client = TestClient(app)
-    _seed_room("STARTED", seed=3)
-    with client.websocket_connect("/ws/STARTED?name=first") as first:
+    _seed_room("STRT", seed=3)
+    with client.websocket_connect("/ws/STRT?name=first") as first:
         assert first.receive_json()["type"] == "welcome"
-        rooms["STARTED"].status = "running"
-        with client.websocket_connect("/ws/STARTED?name=late") as late:
+        rooms["STRT"].status = "running"
+        with client.websocket_connect("/ws/STRT?name=late") as late:
             error = late.receive_json()
             assert error["code"] == "game_started"
             assert "already started" in error["message"].lower()
@@ -537,11 +537,11 @@ def test_late_join_rejected_after_match_starts():
 
 def test_existing_player_can_reconnect_after_match_starts():
     client = TestClient(app)
-    _seed_room("RJOIN", seed=3)
-    with client.websocket_connect("/ws/RJOIN?name=first") as first:
+    _seed_room("RJON", seed=3)
+    with client.websocket_connect("/ws/RJON?name=first") as first:
         pid = first.receive_json()["you"]
-        rooms["RJOIN"].status = "running"
-        with client.websocket_connect(f"/ws/RJOIN?name=first&pid={pid}&auth=1") as rejoined:
+        rooms["RJON"].status = "running"
+        with client.websocket_connect(f"/ws/RJON?name=first&pid={pid}&auth=1") as rejoined:
             rejoined.send_json({"type": "auth", "name": "first", "pid": pid})
             welcome = rejoined.receive_json()
             assert welcome["type"] == "welcome"
@@ -671,7 +671,7 @@ def test_temporary_door_is_shared_and_expires():
 
 
 def test_solo_player_can_reach_exit_with_door_cost():
-    """The 15-point economy must allow a full route to the exit."""
+    """The 25-point economy must allow a full route to the exit."""
     room = Room("WIN2", seed=7, round_seconds=60)
     room.status = "running"
     for r in room.arena.rooms:

@@ -6,7 +6,7 @@ import { BroadcastKicker, SuitMark } from "@/components/Brand";
 const STATS = [
   ["04", "Players"],
   ["5×5", "Moving rooms"],
-  ["15", "Starting points"],
+  ["25", "Starting points"],
   ["07", "Stages"],
 ];
 

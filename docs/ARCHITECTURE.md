@@ -53,21 +53,19 @@ strips on the walls previewing possible futures.
 
 ## Deployment
 
-Deploy the Next.js frontend on Vercel and the FastAPI game server on a
-long-lived host (the repository blueprint uses Render with `numInstances: 1`).
-The Vercel project builds `frontend/`, and `/backend/*` is proxied by the Next.js
-route to `BACKEND_URL`. WebSocket games connect directly to
-`NEXT_PUBLIC_WS_URL`/`WS_URL` as `wss://<backend-host>/ws/<room>`; Vercel
-rewrites are not used for sockets.
+Deploy the Next.js frontend and FastAPI game server as two services in one
+Vercel project from the repository root. The root `vercel.json` routes all other
+paths to the `frontend/` service, `/backend/:path*` to the `backend/` service,
+and `/ws/*` to the same backend service. Vercel Services supports WebSockets on
+Fluid compute; the backend function uses the maximum available duration.
 
-Do not host the authoritative game loop on Vercel Functions: matches last 1800
-seconds, rooms are process-local, and Functions are terminated and rescheduled.
-A dropped function breaks in-memory rooms and reconnect. Before horizontal
-scaling on any host, move `rooms` to shared state such as Redis or a pub/sub
-coordinator. Persistent data is shared through Supabase. Set backend
-`ALLOWED_ORIGINS` and `FRONTEND_URL` to the Vercel domain, and set frontend
-`BACKEND_URL` plus `NEXT_PUBLIC_WS_URL` to the Render service URLs. Health checks
-use `GET /health`.
+Matches last 1800 seconds, and rooms are process-local, so a recycled function
+breaks in-memory rooms and reconnect until clients are re-seeded. The socket
+client reconnects automatically. Before horizontal scaling, move `rooms` to
+shared state such as Redis or a pub/sub coordinator. Persistent data is shared
+through Supabase. Set backend `ALLOWED_ORIGINS` and `FRONTEND_URL` to the Vercel
+domain; do not set frontend `BACKEND_URL`, `WS_URL`, or `NEXT_PUBLIC_WS_URL` for
+Services mode. Health checks use `GET /health`.
 
 ## Round loop
 
@@ -200,7 +198,7 @@ loaded only from user-supplied assets.
 
 | Show concept | Original name here |
 |---|---|
-| points | **Points** (start 15) |
+| points | **Points** (start 25) |
 | dice | **d10 pedestal** (four coloured dice per room) |
 | coloured doors | **Red / Blue / Yellow / Green doors** |
 | sigils | **Spade / Heart / Diamond / Club** |

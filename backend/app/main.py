@@ -326,7 +326,7 @@ def revoke_sessions(uid: str, _: AuthUser = Depends(require_admin)):
 
 
 def _normalize_code(code: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:8]
+    return re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:4]
 
 
 def _room_response(code: str) -> dict:
@@ -667,7 +667,7 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
 async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: str = "",
                       spectator: int = 0, auth: int = 0):
     await ws.accept()
-    room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:8] or "LOBBY"
+    room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:4] or "LOBBY"
     if spectator:
         await _spectator_socket(ws, room_id)
         return

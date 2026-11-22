@@ -12,6 +12,11 @@ const vercel = read("../../vercel.json");
 const frontendVercel = read("../vercel.json");
 const rootPackage = read("../../package.json");
 const game = read("../../backend/app/game.py");
+const fate = read("../../backend/app/fate.py");
+const registry = read("../../backend/app/room_registry.py");
+const main = read("../../backend/app/main.py");
+const lobby = read("../app/lobby/page.tsx");
+const landing = read("../app/page.tsx");
 
 test("tier-2 delay puzzle is answerable", () => {
   assert.ok(client.includes('puzzle.tier === 2 ? "Grid · tap destination" : "Before"'));
@@ -60,4 +65,51 @@ test("Vercel Services deploy frontend and backend in one project", () => {
 test("game over summary includes avatar identity", () => {
   assert.ok(game.includes('"avatar_url": p.avatar_url'));
   assert.ok(game.includes('"character_id": p.character_id'));
+});
+
+test("predict-shift panel and desktop role intel are removed", () => {
+  assert.ok(!client.includes("PredictionPanel"));
+  assert.ok(!client.includes("Predict shift"));
+  assert.ok(!client.includes('"predict"'));
+  const rightColumn = client.slice(
+    client.indexOf("{/* right column */}"),
+    client.indexOf("{/* bottom chat */}")
+  );
+  assert.ok(!rightColumn.includes("Role intel"));
+});
+
+test("team notes render in the right column", () => {
+  const leftColumn = client.slice(
+    client.indexOf("{/* left column */}"),
+    client.indexOf("{/* right column */}")
+  );
+  const rightColumn = client.slice(
+    client.indexOf("{/* right column */}"),
+    client.indexOf("{/* bottom chat */}")
+  );
+  assert.ok(!leftColumn.includes("<NotesPanel"));
+  assert.ok(rightColumn.includes("<NotesPanel"));
+});
+
+test("room codes are exactly four characters", () => {
+  assert.ok(registry.includes("CODE_LENGTH = 4"));
+  assert.ok(main.includes('.upper()[:4]'));
+  assert.ok(lobby.includes("maxLength={4}"));
+  assert.ok(lobby.includes("/^[A-Z0-9]{4}$/"));
+});
+
+test("desktop mouse look uses a sticky locked cursor", () => {
+  assert.ok(canvas.includes("requestPointerLock()"));
+  assert.ok(canvas.includes('document.addEventListener("pointerlockchange"'));
+  assert.ok(canvas.includes("e.movementX"));
+  assert.ok(canvas.includes("e.movementY"));
+  assert.ok(client.includes("Click to lock cursor"));
+});
+
+test("starting points are 25 everywhere", () => {
+  assert.ok(fate.includes("START_VITALITY = 25"));
+  assert.ok(client.includes("const MAX_POINTS = 25"));
+  assert.ok(client.includes("25 points each."));
+  assert.ok(lobby.includes("starts with 25 points"));
+  assert.ok(landing.includes('["25", "Starting points"]'));
 });

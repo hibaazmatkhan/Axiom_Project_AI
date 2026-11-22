@@ -57,7 +57,7 @@ Convergence → The Last Room`.
 
 ### Economy
 
-- Start with **15 points**.
+- Start with **25 points**.
 - Open a door: **−1**. Cross through an active doorway: **free**.
 - Wait: **−1**. Sanction room: **−1…−8** depending on the room.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
@@ -74,8 +74,7 @@ Convergence → The Last Room`.
 - The Watcher receives a private alert 30 seconds before each appearance with
   only that session's first room. The four teleport rooms stay hidden from the
   Watcher.
-- The HUD includes shared team notes, a prediction panel with a 2-second
-  cooldown, and per-role intel for moved rooms, sigils and the previous layout.
+- The HUD includes shared team notes in the right sidebar.
 - Sound effects are generated locally and played with Howler.js (MIT):
   footsteps, doors, lockdowns, KING warnings and a KING proximity drone. Use the
   **Sound on/off** control in the top bar to mute.
@@ -174,8 +173,9 @@ Before going live, authorize the Vercel domain in Firebase Auth, set Firebase/Su
 | `W A S D` toward an open doorway | cross into the next room (free) |
 | `E` / `Enter` while facing a door | open it for 10 seconds (−1 point) |
 | `Space` | wait (spends 1 point; disabled for ghosts) |
-| Drag to look / click a door | look around in first person / open a door |
-| Drag to look / click a door (touch) | look around in first person / open a door |
+| Click canvas, then move mouse | lock the cursor and look around without dragging |
+| Click a door / tap a door (touch) | open a door; touch users can still drag to look |
+| `Esc` | release the locked cursor |
 | Chat | coordinate the four roles |
 
 A doorway is passable only when both rooms have that side open. Clicking a
@@ -340,7 +340,7 @@ come only from user-supplied assets.
 
 | Show concept | Game term |
 |---|---|
-| points | **Points** (start 15) |
+| points | **Points** (start 25) |
 | dice | **d10 pedestal** (four coloured dice per room) |
 | coloured doors | **Red / Blue / Yellow / Green doors** |
 | sigils | **Spade / Heart / Diamond / Club** |

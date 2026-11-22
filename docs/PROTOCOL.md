@@ -1,8 +1,8 @@
 # AXIOM · THE LAST ROOM protocol (WP1 shared contracts)
 
-All WebSocket messages are JSON. On Vercel the browser connects to
-`wss://HOST/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`; local development uses
-`ws://HOST:8000/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`. `pid` is optional and
+All WebSocket messages are JSON. On Vercel Services the browser connects to the
+same origin at `wss://HOST/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`; local
+development uses `ws://HOST:8000/ws/{ROOM}?name={NAME}&pid={PID}&auth=1`. `pid` is optional and
 used for reconnect. The client must send an `auth` frame immediately after
 opening an `auth=1` socket. The server is authoritative: clients send intents,
 never state.
@@ -88,7 +88,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     },
     "locked": false, "eliminated": false, "escaped": false,
     "exit_found": false, "exit_code": null,
-    "points": 15, "role": "decoder",
+    "points": 25, "role": "decoder",
     "wristband_revealed": false, "wristband_cooldown_remaining": 0,
     "prediction_cooldown_remaining": 0
   },
@@ -195,7 +195,7 @@ for the rest of the round.
 {
   "id": "p1", "name": "Hiba", "slot": 0, "color": "#ff4655",
   "role": "decoder", "room_id": "r12", "room_code": "C3", "room": [2, 2],
-  "points": 15, "locked": false, "eliminated": false, "escaped": false,
+  "points": 25, "locked": false, "eliminated": false, "escaped": false,
   "ready": false, "connected": true,
   "predictions": 0, "correct": 0, "streak": 0,
   "waits": 0, "revives": 0
@@ -264,7 +264,7 @@ No client ever receives another role's hidden data, and the hidden rule itself
 
 | Constant | Value |
 |---|---|
-| `START_POINTS` | 15 |
+| `START_POINTS` | 25 |
 | `DOOR_COST` | 1 |
 | `WAIT_COST` | 1 |
 | `REVIVE_COST` | 1 per helper |
@@ -280,11 +280,11 @@ No client ever receives another role's hidden data, and the hidden rule itself
 ## HTTP API
 
 Browser HTTP calls use the `/backend` prefix (for example `/backend/health`).
-The Next.js route proxies those calls to `BACKEND_URL`; on Vercel this must point
-to the long-lived FastAPI service (for example Render). WebSocket games connect
-directly to `NEXT_PUBLIC_WS_URL`/`WS_URL` (`wss://.../ws/<room>`) and must not use
-Vercel rewrites, because Vercel Functions cannot host 30-minute in-memory rooms.
-Local development can use FastAPI on port 8000 directly.
+On Vercel Services, the root `vercel.json` rewrites `/backend/:path*` to the
+FastAPI service; `BackendPrefixMiddleware` strips the prefix before routing.
+WebSocket games use the same origin (`wss://.../ws/<room>`) and the root rewrite
+routes `/ws/*` to the same backend service. Local development can use the Next.js
+proxy with `BACKEND_URL` and `WS_URL`, or FastAPI on port 8000 directly.
 Firebase ID tokens are sent as `Authorization: Bearer <token>`; only endpoints
 marked public omit auth.
 
