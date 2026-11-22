@@ -157,11 +157,11 @@ docker compose up --build
 
 ### Vercel
 
-The Vercel project deploys only the Next.js app in `frontend/`. The recommended setup is to set **Project Settings → Build & Deployment → Root Directory** to `frontend`; `frontend/vercel.json` then runs `npm ci`, `npm run build`, and serves `.next`. If Root Directory is left at the repository root, the root `vercel.json` and root `package.json` pin the Next.js version, install both dependency sets, build `frontend/`, and serve `frontend/.next`. Do not use Vercel Services or `/ws/*` rewrites for the game server.
+The root `vercel.json` deploys both services in one Vercel project: Next.js from `frontend/` and FastAPI from `backend/app/main.py`. Keep **Project Settings → Build & Deployment → Root Directory** at the repository root (blank), not `frontend`. `/backend/*` is rewritten to the backend service and normalized by `BackendPrefixMiddleware`; `/ws/*` is rewritten to the same backend service; all other paths go to the frontend. On Vercel the browser always uses same-origin `/ws/*` even if a stale `WS_URL` or `NEXT_PUBLIC_WS_URL` exists, because `frontend/next.config.mjs` sets `AXIOM_SAME_ORIGIN_WS` from Vercel's `VERCEL` build variable.
 
-The frontend's `/backend/*` route proxies HTTP calls to `BACKEND_URL`; WebSocket clients connect directly to `NEXT_PUBLIC_WS_URL`/`WS_URL`. For local development, set `BACKEND_URL=http://localhost:8000` in `frontend/.env.local`. Leave `WS_URL` unset so the browser connects to the current host; set it to `ws://localhost:8000` only when running the backend separately. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables.
+For local development outside Vercel, set `BACKEND_URL=http://localhost:8000` and `WS_URL=ws://localhost:8000` in `frontend/.env.local`. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables.
 
-Before going live, authorize the Vercel domain in Firebase Auth, set frontend `BACKEND_URL`, `NEXT_PUBLIC_WS_URL`, and Firebase values in Vercel, set backend/Supabase/Firebase secrets on Render, and keep `AXIOM_MATCH_STORE=supabase` for persisted match data. Rooms and quick-match state are process-local (`rooms` in `backend/app/main.py` and `RoomRegistry` in `backend/app/room_registry.py`), so the backend must remain one long-lived instance or be replaced by shared state/Redis before scaling. The Render Blueprint uses one Docker instance (`numInstances: 1`) for the same reason. Match data is shared through Supabase.
+Before going live, authorize the Vercel domain in Firebase Auth, set Firebase/Supabase secrets in Vercel, and keep `AXIOM_MATCH_STORE=supabase` for persisted match data. Do not set `BACKEND_URL`, `WS_URL`, or `NEXT_PUBLIC_WS_URL` on the Vercel project for Services mode. Vercel Services runs the FastAPI backend on Fluid compute with the maximum available function duration; sockets reconnect through `frontend/lib/useGameSocket.ts`, but rooms and quick-match state remain process-local (`rooms` in `backend/app/main.py` and `RoomRegistry` in `backend/app/room_registry.py`). Shared state such as Redis is required before horizontal scaling. The Render Blueprint remains available as an optional external-backend deployment, not the default Vercel setup.
 
 ---
 
@@ -227,9 +227,10 @@ D10 seals stay hidden until a door is tried.
 - Branching: keep `main` deployable; use `feat/`, `fix/` and `docs/` branches with
   squash merges. GitHub Issues are the task board; branch protection should
   require CI and one reviewer when the repository is hosted on GitHub.
-- Deployment: Vercel hosts `frontend/`, Render hosts the FastAPI backend with one
-  instance. Set frontend `BACKEND_URL`, `WS_URL` and `NEXT_PUBLIC_WS_URL`, plus
-  backend `ALLOWED_ORIGINS`, `FRONTEND_URL` and Supabase/Firebase secrets.
+- Deployment: Vercel Services hosts `frontend/` and the FastAPI backend in one
+  project. Do not set frontend `BACKEND_URL`, `WS_URL` or `NEXT_PUBLIC_WS_URL` on
+  Vercel; set backend `ALLOWED_ORIGINS`, `FRONTEND_URL` and Supabase/Firebase
+  secrets.
 - Monitoring contract: `GET /health` reports `ok`, `status`, uptime, room count
   and player count. Alert on non-200, backend restart loops, socket reconnect
   storms and p95 RTT above 250 ms.

@@ -14,6 +14,7 @@ const nextConfig = {
     SITE_URL: process.env.SITE_URL,
     WS_URL: process.env.WS_URL,
     NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? process.env.WS_URL,
+    AXIOM_SAME_ORIGIN_WS: process.env.VERCEL ? "1" : "",
   },
 };
 export default nextConfig;

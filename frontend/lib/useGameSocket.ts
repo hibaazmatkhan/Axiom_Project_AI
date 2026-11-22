@@ -49,7 +49,10 @@ function socketUrl(room: string, name: string, pid: string) {
   const origin = window.location.origin;
   let base: URL;
   try {
-    const configured = process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.WS_URL?.trim();
+    const sameOrigin = process.env.AXIOM_SAME_ORIGIN_WS === "1";
+    const configured = sameOrigin
+      ? ""
+      : process.env.NEXT_PUBLIC_WS_URL?.trim() || process.env.WS_URL?.trim();
     base = new URL(configured || origin, origin);
     if (!/^(ws|wss|http|https):$/.test(base.protocol)) throw new Error("Invalid WS URL");
   } catch {

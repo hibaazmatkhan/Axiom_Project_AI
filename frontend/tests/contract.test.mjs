@@ -25,9 +25,11 @@ test("ghost mode blocks gameplay actions", () => {
   assert.ok(canvas.includes("if (propsRef.current.ghost || !you || you.eliminated) return null;"));
 });
 
-test("websocket URL supports public runtime configuration", () => {
+test("websocket URL supports external config and same-origin Vercel Services", () => {
   assert.ok(socket.includes("process.env.NEXT_PUBLIC_WS_URL?.trim()"));
+  assert.ok(socket.includes('process.env.AXIOM_SAME_ORIGIN_WS === "1"'));
   assert.ok(nextConfig.includes("NEXT_PUBLIC_WS_URL:"));
+  assert.ok(nextConfig.includes("AXIOM_SAME_ORIGIN_WS: process.env.VERCEL"));
 });
 
 test("transition animation consumes moved rooms", () => {
@@ -35,14 +37,19 @@ test("transition animation consumes moved rooms", () => {
   assert.ok(canvas.includes("const shiftMarkers: ShiftMarker[] = []"));
 });
 
-test("Vercel deployment config supports repo-root and frontend-root builds", () => {
+test("Vercel Services deploy frontend and backend in one project", () => {
   assert.ok(rootPackage.includes('"next": "14.2.15"'));
+  assert.ok(vercel.includes('"services"'));
+  assert.ok(vercel.includes('"root": "frontend/"'));
   assert.ok(vercel.includes('"framework": "nextjs"'));
-  assert.ok(vercel.includes('"installCommand": "npm ci && npm ci --prefix frontend"'));
-  assert.ok(vercel.includes('"buildCommand": "npm run build --prefix frontend"'));
-  assert.ok(vercel.includes('"outputDirectory": "frontend/.next"'));
-  assert.ok(!vercel.includes('"services"'));
-  assert.ok(!vercel.includes('"functions"'));
+  assert.ok(vercel.includes('"root": "backend/"'));
+  assert.ok(vercel.includes('"framework": "fastapi"'));
+  assert.ok(vercel.includes('"entrypoint": "app.main:app"'));
+  assert.ok(vercel.includes('"source": "/backend/:path*"'));
+  assert.ok(vercel.includes('"service": "backend"'));
+  assert.ok(vercel.includes('"source": "/ws/(.*)"'));
+  assert.ok(vercel.includes('"source": "/(.*)"'));
+  assert.ok(vercel.includes('"service": "frontend"'));
   assert.ok(frontendVercel.includes('"framework": "nextjs"'));
   assert.ok(frontendVercel.includes('"installCommand": "npm ci"'));
   assert.ok(frontendVercel.includes('"buildCommand": "npm run build"'));
