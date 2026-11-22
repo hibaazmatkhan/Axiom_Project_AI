@@ -6,8 +6,12 @@ import WristbandMap from "./WristbandMap";
 import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
-import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, Sigil } from "@/lib/types";
+import { playSound, setKingProximity, setMuted, stopSounds, unlockAudio } from "@/lib/audio";
+import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, NoteLine, PatternType, Sigil } from "@/lib/types";
 
+const PATTERN_TYPES: PatternType[] = [
+  "rotation", "reflection", "translation", "symbol", "sequential", "conditional", "compound",
+];
 const SIGILS = ["spade", "heart", "diamond", "club"] as const;
 const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
@@ -52,6 +56,107 @@ function Points({ value }: { value: number }) {
   );
 }
 
+function PredictionPanel({
+  patterns, selected, onSelect, onSubmit, result, cooldown, ghost,
+}: {
+  patterns: PatternType[];
+  selected: PatternType | null;
+  onSelect: (value: PatternType) => void;
+  onSubmit: () => void;
+  result: { id: number; correct: boolean; score: number; points: number; message: string } | null;
+  cooldown: number;
+  ghost: boolean;
+}) {
+  const disabled = ghost || cooldown > 0 || !selected;
+  return (
+    <div className="mt-3 border-t border-edge/40 pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs uppercase tracking-widest text-dim">Predict shift</span>
+        <span className="mono text-[9px] text-dim">+1 · delay</span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {patterns.map((pattern) => (
+          <button
+            key={pattern}
+            type="button"
+            onClick={() => onSelect(pattern)}
+            className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-wide transition ${
+              selected === pattern
+                ? "border-yellow bg-yellow/15 text-yellow"
+                : "border-edge text-dim hover:text-bone"
+            }`}
+          >
+            {pattern}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={disabled}
+        className="mt-2 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
+      >
+        {cooldown > 0
+          ? `Recharging · ${cooldown.toFixed(1)}s`
+          : ghost
+            ? "Ghosts cannot predict"
+            : "Send prediction"}
+      </button>
+      {result && (
+        <p key={result.id} className={`mt-2 text-[10px] leading-relaxed ${result.correct ? "text-green" : "text-red"}`}>
+          {result.message} · score {result.score.toFixed(2)} · points {result.points > 0 ? "+" : ""}{result.points}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function NotesPanel({
+  lines, draft, setDraft, onSend, ghost,
+}: {
+  lines: NoteLine[];
+  draft: string;
+  setDraft: (value: string) => void;
+  onSend: () => void;
+  ghost: boolean;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-widest text-dim">Team notes</span>
+        <span className="mono text-[9px] text-dim">{lines.length}/40</span>
+      </div>
+      <div className="scroll-thin mt-2 max-h-28 space-y-1 overflow-y-auto">
+        {lines.length === 0 && <p className="text-[11px] text-dim">Shared deductions appear here.</p>}
+        {lines.map((line) => (
+          <p key={line.id} className="text-[11px]">
+            <span style={{ color: line.color }} className="font-medium">{line.from}</span>
+            <span className="text-bone"> · {line.text}</span>
+          </p>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && draft.trim()) onSend();
+          }}
+          placeholder={ghost ? "Ghosts can keep notes" : "Record a clue…"}
+          className="min-w-0 flex-1 rounded-lg border border-edge bg-ink/60 px-2 py-1.5 text-xs outline-none focus:border-blue"
+        />
+        <button
+          type="button"
+          onClick={onSend}
+          className="rounded-lg border border-edge px-2 text-[10px] text-dim transition hover:border-blue hover:text-bone"
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DelayGrid({
   grid, highlight, onPick,
 }: {
@@ -87,11 +192,12 @@ function DelayGrid({
 }
 
 function DelayBoard({
-  puzzle, clock, onAnswer,
+  puzzle, clock, onAnswer, interactive = true,
 }: {
   puzzle: DelayPuzzleView;
   clock: number | null;
   onAnswer: (answer: DelayCell | Sigil) => void;
+  interactive?: boolean;
 }) {
   const pct = clock == null || puzzle.answer_ms <= 0
     ? 0
@@ -108,14 +214,24 @@ function DelayBoard({
       </div>
       {puzzle.grids.before && (
         <div className="mt-2">
-          <span className="mono text-[10px] uppercase tracking-widest text-dim">Before</span>
-          <DelayGrid grid={puzzle.grids.before} />
+          <span className="mono text-[10px] uppercase tracking-widest text-dim">
+            {puzzle.tier === 2 ? "Grid · tap destination" : "Before"}
+          </span>
+          <DelayGrid
+            grid={puzzle.grids.before}
+            highlight={puzzle.highlight}
+            onPick={interactive && puzzle.tier === 2 ? onAnswer : undefined}
+          />
         </div>
       )}
       {puzzle.grids.after && (
         <div className="mt-2">
           <span className="mono text-[10px] uppercase tracking-widest text-dim">After · tap one tile</span>
-          <DelayGrid grid={puzzle.grids.after} highlight={puzzle.highlight} onPick={onAnswer} />
+          <DelayGrid
+            grid={puzzle.grids.after}
+            highlight={puzzle.highlight}
+            onPick={interactive ? onAnswer : undefined}
+          />
         </div>
       )}
       {puzzle.grids.given && (
@@ -126,7 +242,7 @@ function DelayBoard({
           <DelayGrid
             grid={puzzle.grids.given}
             highlight={puzzle.highlight}
-            onPick={puzzle.tier === 2 ? onAnswer : undefined}
+            onPick={interactive && puzzle.tier === 2 ? onAnswer : undefined}
           />
         </div>
       )}
@@ -136,8 +252,9 @@ function DelayBoard({
             <button
               key={suit}
               type="button"
+              disabled={!interactive}
               onClick={() => onAnswer(suit)}
-              className="rounded-lg border border-edge py-1 text-sm text-bone transition hover:border-yellow hover:text-yellow"
+              className="rounded-lg border border-edge py-1 text-sm text-bone transition hover:border-yellow hover:text-yellow disabled:opacity-50"
               title={suit}
             >
               {SIGIL_GLYPH[suit]}
@@ -196,14 +313,21 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [delaySecs, setDelaySecs] = useState<number | null>(null);
   const [kingWatchSecs, setKingWatchSecs] = useState<number | null>(null);
-  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "puzzle" | "delay">("none");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "chat" | "notes" | "intel" | "predict" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [soundMuted, setSoundMuted] = useState(false);
+  const [predictionChoice, setPredictionChoice] = useState<PatternType | null>(null);
+  const [noteInput, setNoteInput] = useState("");
   const [puzzleMark, setPuzzleMark] = useState("");
   const [kingStrikeAt, setKingStrikeAt] = useState(0);
   const teamRef = useRef<HTMLDivElement>(null);
+  const lastWatchSound = useRef("");
   const { sendOpenDoor, sendCrossDoor, sendWait, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch } = g;
 
   const me = g.me;
+  const ghost = !!me?.eliminated && g.status === "running";
   const handleExit = () => {
     exitMatch();
     router.push("/lobby");
@@ -222,7 +346,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
       if (e.metaKey || e.ctrlKey || e.altKey || target?.isContentEditable) return;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const k = e.key.toLowerCase();
-      if (k === " " || k === "spacebar") { e.preventDefault(); sendWait(); return; }
+      if (k === " " || k === "spacebar") {
+        e.preventDefault();
+        if (!ghost) sendWait();
+        return;
+      }
       if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         e.preventDefault();
         return;
@@ -230,7 +358,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sendWait]);
+  }, [ghost, sendWait]);
 
   useEffect(() => {
     const tick = () => {
@@ -246,8 +374,8 @@ export default function GameClient({ room, name }: { room: string; name: string 
 
 
   useEffect(() => {
-    setPuzzleMark("");
-  }, [g.puzzle?.you?.role, g.puzzle?.you?.domain.join("|")]);
+    setPuzzleMark(g.puzzle?.you?.mark ?? "");
+  }, [g.puzzle?.you?.role, g.puzzle?.you?.domain.join("|"), g.puzzle?.you?.mark]);
 
   useEffect(() => {
     if (g.kingEvent?.type !== "kill") return;
@@ -255,6 +383,28 @@ export default function GameClient({ room, name }: { room: string; name: string 
     const timer = window.setTimeout(() => setKingStrikeAt(0), 1500);
     return () => window.clearTimeout(timer);
   }, [g.kingEvent?.id, g.kingEvent?.type]);
+
+  useEffect(() => {
+    setMuted(soundMuted);
+  }, [soundMuted]);
+
+  useEffect(() => () => {
+    setKingProximity(false);
+    stopSounds();
+  }, []);
+
+  useEffect(() => {
+    const active = g.status === "running" && !!g.king && !me?.eliminated
+      && !!me?.room_code && g.king.room_code === me.room_code;
+    setKingProximity(active);
+    return () => setKingProximity(false);
+  }, [g.status, g.king?.id, g.king?.room_code, g.king?.teleport_index, me?.room_code, me?.eliminated]);
+
+  useEffect(() => {
+    if (!g.kingWatch || lastWatchSound.current === g.kingWatch.id) return;
+    lastWatchSound.current = g.kingWatch.id;
+    playSound("warning");
+  }, [g.kingWatch]);
 
   useEffect(() => {
     if (!teamOpen) return;
@@ -281,6 +431,19 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const teamRoster = useMemo(() => [...g.players].sort((a, b) => a.slot - b.slot), [g.players]);
   const isLobby = g.status === "lobby";
   const isOver = g.status === "won" || g.status === "over";
+  const predictionCooldown = me?.prediction_cooldown_remaining ?? 0;
+  const predictionPatterns = g.transition.patternTypes?.length
+    ? g.transition.patternTypes
+    : PATTERN_TYPES;
+  const sendPrediction = () => {
+    if (!predictionChoice || ghost || predictionCooldown > 0) return;
+    g.sendPredict(predictionChoice, g.transition.sigils.length ? g.transition.sigils : undefined);
+  };
+  const sendNote = () => {
+    if (!noteInput.trim()) return;
+    g.sendNotes(noteInput.trim());
+    setNoteInput("");
+  };
 
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-void text-bone">
@@ -295,6 +458,8 @@ export default function GameClient({ room, name }: { room: string; name: string 
         doorEvent={g.doorEvent}
         king={g.king}
         kingEvent={g.kingEvent}
+        elimination={g.eliminated}
+        ghost={ghost}
         onOpenDoor={sendOpenDoor}
         onCrossDoor={sendCrossDoor}
       />
@@ -328,7 +493,9 @@ export default function GameClient({ room, name }: { room: string; name: string 
       {g.status === "running" && (
         <div className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 xl:bottom-24">
           <p className="mono rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
-            Click into arena to look · click a door to open · WASD to walk in · Esc stops view
+            {ghost
+              ? "Ghost · chat and role intel stay live · movement and doors are disabled"
+              : "Drag to look · click a door to open · WASD to walk · E opens the door you face"}
           </p>
         </div>
       )}
@@ -341,7 +508,8 @@ export default function GameClient({ room, name }: { room: string; name: string 
             Live
           </span>
           <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
-            R<span className="mono ml-1 text-bone">{g.round}</span>/{g.maxRounds}
+            R<span className="mono ml-1 text-bone">{g.round}</span>
+            {g.maxRounds > 0 ? `/${g.maxRounds}` : ""}
           </span>
           <span className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.12em] text-dim backdrop-blur">
             Room <span className="mono ml-1 text-bone">{me?.room_code ?? "--"}</span>
@@ -353,6 +521,18 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </span>
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              unlockAudio();
+              setSoundMuted((value) => !value);
+            }}
+            aria-label={soundMuted ? "Unmute sounds" : "Mute sounds"}
+            title={soundMuted ? "Unmute sounds" : "Mute sounds"}
+            className="border border-edge bg-void/85 px-2.5 py-2 text-[10px] uppercase tracking-[0.14em] text-dim backdrop-blur transition hover:border-gold/50 hover:text-bone"
+          >
+            {soundMuted ? "Sound off" : "Sound on"}
+          </button>
           <div ref={teamRef} className="relative">
             <button
               type="button"
@@ -432,7 +612,20 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {/* left column */}
-      <div className="absolute left-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-64 space-y-3 overflow-y-auto pb-4 scroll-thin xl:block">
+      <button
+        type="button"
+        onClick={() => setLeftOpen((open) => !open)}
+        aria-expanded={leftOpen}
+        aria-label={leftOpen ? "Hide left panels" : "Show left panels"}
+        className={`absolute top-20 z-30 hidden h-8 w-7 items-center justify-center border border-edge bg-void/90 text-xs text-dim backdrop-blur transition hover:border-gold/60 hover:text-bone xl:flex ${
+          leftOpen ? "left-[17.25rem]" : "left-4"
+        }`}
+      >
+        {leftOpen ? "‹" : "›"}
+      </button>
+      <div className={`absolute left-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-64 space-y-3 overflow-y-auto pb-4 scroll-thin transition-all duration-300 xl:block ${
+        leftOpen ? "opacity-100" : "pointer-events-none -translate-x-4 opacity-0"
+      }`}>
         <Panel>
           <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">Your role</span>
@@ -443,14 +636,16 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <button
               type="button"
               onClick={sendRevealWristband}
-              disabled={!g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
+              disabled={ghost || !g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
               className="mt-3 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
             >
-              {me?.wristband_revealed
-                ? "Wristband revealed · next shift"
-                : wristbandCooldown > 0
-                  ? `Scan recharging · ${formatClock(wristbandCooldown)}`
-                  : "Reveal wristband map"}
+              {ghost
+                ? "Ghosts cannot scan"
+                : me?.wristband_revealed
+                  ? "Wristband revealed · next shift"
+                  : wristbandCooldown > 0
+                    ? `Scan recharging · ${formatClock(wristbandCooldown)}`
+                    : "Reveal wristband map"}
             </button>
           )}
           {g.role === "timekeeper" && (
@@ -462,7 +657,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                     key={tier}
                     type="button"
                     onClick={() => sendDelayQueue(tier)}
-                    disabled={!g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
+                    disabled={ghost || !g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
                     className="rounded-lg border border-yellow/50 py-1.5 text-xs text-yellow transition hover:bg-yellow/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
                   >
                     Tier {tier}
@@ -489,6 +684,28 @@ export default function GameClient({ room, name }: { room: string; name: string 
         </Panel>
 
         <Panel>
+          <PredictionPanel
+            patterns={predictionPatterns}
+            selected={predictionChoice}
+            onSelect={setPredictionChoice}
+            onSubmit={sendPrediction}
+            result={g.prediction}
+            cooldown={predictionCooldown}
+            ghost={ghost}
+          />
+        </Panel>
+
+        <Panel>
+          <NotesPanel
+            lines={g.notes}
+            draft={noteInput}
+            setDraft={setNoteInput}
+            onSend={sendNote}
+            ghost={ghost}
+          />
+        </Panel>
+
+        <Panel>
           <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">Wristband</span>
             <span className="mono text-[10px] text-dim">A1–E5</span>
@@ -507,7 +724,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
           </p>
         </Panel>
 
-        {lockedAllies.length > 0 && (
+        {!ghost && lockedAllies.length > 0 && (
           <Panel className="border-red/60">
             <span className="text-xs uppercase tracking-widest text-red">Free a teammate</span>
             {lockedAllies.map((p) => (
@@ -525,7 +742,20 @@ export default function GameClient({ room, name }: { room: string; name: string 
       </div>
 
       {/* right column */}
-      <div className="absolute right-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-72 space-y-3 overflow-y-auto pb-4 scroll-thin xl:block">
+      <button
+        type="button"
+        onClick={() => setRightOpen((open) => !open)}
+        aria-expanded={rightOpen}
+        aria-label={rightOpen ? "Hide right panels" : "Show right panels"}
+        className={`absolute top-20 z-30 hidden h-8 w-7 items-center justify-center border border-edge bg-void/90 text-xs text-dim backdrop-blur transition hover:border-gold/60 hover:text-bone xl:flex ${
+          rightOpen ? "right-[19.5rem]" : "right-4"
+        }`}
+      >
+        {rightOpen ? "›" : "‹"}
+      </button>
+      <div className={`absolute right-4 top-20 z-20 hidden max-h-[calc(100vh-6rem)] w-72 space-y-3 overflow-y-auto pb-4 scroll-thin transition-all duration-300 xl:block ${
+        rightOpen ? "opacity-100" : "pointer-events-none translate-x-4 opacity-0"
+      }`}>
         {(g.dealerClue || g.dealerNudge) && (
           <Panel compact className={sanctionLead ? "border-yellow/60 bg-yellow/[0.06]" : ""}>
             <div className="flex items-center justify-between gap-2">
@@ -565,6 +795,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               <DelayBoard
                 puzzle={g.delayPuzzle}
                 clock={delaySecs}
+                interactive={!ghost}
                 onAnswer={(answer) =>
                   g.sendDelayAnswer(g.delayPuzzle!.puzzle_id, answer)
                 }
@@ -609,15 +840,56 @@ export default function GameClient({ room, name }: { room: string; name: string 
 
         <Panel>
           <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-widest text-dim">Role intel</span>
+            <span className="mono text-[9px] text-dim">round {g.transition.round || "--"}</span>
+          </div>
+          {g.role === "pathfinder" && (
+            <p className="mt-2 text-[11px] leading-relaxed text-bone">
+              {g.transition.moved.length === 0
+                ? "No rooms moved in the last shift."
+                : g.transition.moved.map((room) => `${room.code_from}→${room.code_to}`).join(" · ")}
+            </p>
+          )}
+          {g.role === "watcher" && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {g.transition.sigils.length === 0
+                ? <p className="text-[11px] text-dim">No sigil moved in the last shift.</p>
+                : g.transition.sigils.map((sigil, index) => (
+                    <span key={`${sigil}-${index}`} className="rounded-full border border-red/40 px-2 py-0.5 text-xs text-red">
+                      {SIGIL_GLYPH[sigil] ?? sigil}
+                    </span>
+                  ))}
+            </div>
+          )}
+          {g.role === "decoder" && (
+            <p className="mt-2 text-[11px] leading-relaxed text-bone">
+              {g.transition.previous
+                ? `Prior layout: ${g.transition.previous.rooms.map((room) => room.code).join(" · ")}`
+                : "No previous layout captured yet."}
+            </p>
+          )}
+          {g.role === "timekeeper" && (
+            <p className="mt-2 text-[11px] leading-relaxed text-dim">
+              Timing intel appears in the Next shift counter above.
+            </p>
+          )}
+        </Panel>
+
+        <Panel>
+          <div className="flex items-center justify-between">
             <span className="text-xs uppercase tracking-widest text-dim">Role mark puzzle</span>
             <span className="mono text-[10px] text-dim">
-              {g.puzzle?.public?.solved ? "solved" : `${g.puzzle?.public?.attempts ?? 0} tries`}
+              {g.puzzle?.public?.solved
+                ? "solved"
+                : `${g.puzzle?.public?.marks ?? 0}/4 set · ${g.puzzle?.public?.attempts ?? 0} tries`}
             </span>
           </div>
           {g.puzzle?.you ? (
             <>
               <p className="mt-1 text-[11px] leading-relaxed text-dim">
-                Set only your role's mark. Share the clues; every role must contribute.
+                {g.puzzle.you.mark
+                  ? `Your mark is ${SIGIL_GLYPH[g.puzzle.you.mark] ?? g.puzzle.you.mark}. Change it if the shared clues point elsewhere.`
+                  : "Set only your role's mark. Share the clues; every role must contribute."}
               </p>
               <div className="mt-2 space-y-1">
                 {g.puzzle.you.clues.map((clue, index) => (
@@ -641,10 +913,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
                 onClick={() => {
                   if (g.puzzle?.you && puzzleMark) g.sendPuzzleMark(g.puzzle.you.role, puzzleMark);
                 }}
-                disabled={!puzzleMark}
+                disabled={ghost || !puzzleMark}
                 className="mt-3 w-full rounded-lg bg-bone py-2 text-sm font-semibold text-coal transition hover:brightness-95 disabled:opacity-40"
               >
-                Submit role mark
+                {ghost ? "Ghosts cannot submit" : "Submit role mark"}
               </button>
             </>
           ) : (
@@ -709,14 +981,16 @@ export default function GameClient({ room, name }: { room: string; name: string 
                   <button
                     type="button"
                     onClick={sendRevealWristband}
-                    disabled={!g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
+                    disabled={ghost || !g.connected || !!me?.wristband_revealed || wristbandCooldown > 0}
                     className="mt-2 w-full rounded-lg border border-blue/60 py-1.5 text-xs text-blue transition hover:bg-blue/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim disabled:hover:bg-transparent"
                   >
-                    {me?.wristband_revealed
-                      ? "Wristband revealed · next shift"
-                      : wristbandCooldown > 0
-                        ? `Scan recharging · ${formatClock(wristbandCooldown)}`
-                        : "Reveal wristband map"}
+                    {ghost
+                      ? "Ghosts cannot scan"
+                      : me?.wristband_revealed
+                        ? "Wristband revealed · next shift"
+                        : wristbandCooldown > 0
+                          ? `Scan recharging · ${formatClock(wristbandCooldown)}`
+                          : "Reveal wristband map"}
                   </button>
                 )}
                 <WristbandMap
@@ -745,7 +1019,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
                           key={tier}
                           type="button"
                           onClick={() => sendDelayQueue(tier)}
-                          disabled={!g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
+                          disabled={ghost || !g.connected || g.delayStatus?.state === "solving" || g.delayStatus?.state === "cooldown" || (g.delayStatus?.attempts_left ?? 0) <= 0}
                           className="rounded-lg border border-yellow/50 py-1.5 text-xs text-yellow transition hover:bg-yellow/10 disabled:cursor-not-allowed disabled:border-edge disabled:text-dim"
                         >
                           Tier {tier}
@@ -816,6 +1090,68 @@ export default function GameClient({ room, name }: { room: string; name: string 
               </div>
             )}
 
+            {mobilePanel === "notes" && (
+              <div>
+                <NotesPanel
+                  lines={g.notes}
+                  draft={noteInput}
+                  setDraft={setNoteInput}
+                  onSend={sendNote}
+                  ghost={ghost}
+                />
+              </div>
+            )}
+
+            {mobilePanel === "intel" && (
+              <div>
+                <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Role intel</span>
+                {g.role === "pathfinder" && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-bone">
+                    {g.transition.moved.length === 0
+                      ? "No rooms moved in the last shift."
+                      : g.transition.moved.map((room) => `${room.code_from}→${room.code_to}`).join(" · ")}
+                  </p>
+                )}
+                {g.role === "watcher" && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {g.transition.sigils.length === 0
+                      ? <p className="text-[11px] text-dim">No sigil moved in the last shift.</p>
+                      : g.transition.sigils.map((sigil, index) => (
+                          <span key={`${sigil}-${index}`} className="rounded-full border border-red/40 px-2 py-0.5 text-xs text-red">
+                            {SIGIL_GLYPH[sigil] ?? sigil}
+                          </span>
+                        ))}
+                  </div>
+                )}
+                {g.role === "decoder" && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-bone">
+                    {g.transition.previous
+                      ? `Prior layout: ${g.transition.previous.rooms.map((room) => room.code).join(" · ")}`
+                      : "No previous layout captured yet."}
+                  </p>
+                )}
+                {g.role === "timekeeper" && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-dim">
+                    Timing intel appears in the Next shift counter above.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {mobilePanel === "predict" && (
+              <div>
+                <PredictionPanel
+                  patterns={predictionPatterns}
+                  selected={predictionChoice}
+                  onSelect={setPredictionChoice}
+                  onSubmit={sendPrediction}
+                  result={g.prediction}
+                  cooldown={predictionCooldown}
+                  ghost={ghost}
+                />
+              </div>
+            )}
+
             {mobilePanel === "puzzle" && (
               <div>
                 <span className="mono text-[10px] uppercase tracking-[0.2em] text-gold">Role marks</span>
@@ -845,10 +1181,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
                       onClick={() => {
                         if (g.puzzle?.you && puzzleMark) g.sendPuzzleMark(g.puzzle.you.role, puzzleMark);
                       }}
-                      disabled={!puzzleMark}
+                      disabled={ghost || !puzzleMark}
                       className="mt-2 w-full rounded-lg bg-bone py-2 text-xs font-semibold text-coal disabled:opacity-40"
                     >
-                      Submit role mark
+                      {ghost ? "Ghosts cannot submit" : "Submit role mark"}
                     </button>
                   </>
                 ) : (
@@ -876,7 +1212,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
             )}
           </div>
 
-          {lockedAllies.length > 0 && (
+          {!ghost && lockedAllies.length > 0 && (
             <div className="mb-2 rounded-lg border border-red/50 bg-red/5 p-2">
               <p className="mono text-[9px] uppercase tracking-[0.18em] text-red">Free a teammate</p>
               <div className="mt-1 flex flex-wrap gap-1">
@@ -898,12 +1234,15 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <button
               type="button"
               onClick={sendWait}
-              className="rounded-lg border border-edge bg-ink/50 px-3 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow"
+              disabled={ghost}
+              className="rounded-lg border border-edge bg-ink/50 px-3 py-2 text-[10px] text-dim transition hover:border-yellow hover:text-yellow disabled:cursor-not-allowed disabled:opacity-40"
               title="Wait (−1 point)"
             >
               WAIT
             </button>
-            <span className="text-[9px] leading-tight text-dim">Tap a door to open it for 10s, then walk in.</span>
+            <span className="text-[9px] leading-tight text-dim">
+              {ghost ? "Ghosts can watch and chat, but cannot act." : "Tap a door to open it for 10s, then walk in."}
+            </span>
           </div>
 
           <div className="grid grid-cols-2 gap-1">
@@ -911,12 +1250,18 @@ export default function GameClient({ room, name }: { room: string; name: string 
               ? ([
                   ["map", "Map"],
                   ["chat", "Chat"],
+                  ["notes", "Notes"],
+                  ["intel", "Intel"],
+                  ["predict", "Predict"],
                   ["puzzle", "Marks"],
                   ["delay", "Delay"],
                 ] as const)
               : ([
                   ["map", "Map"],
                   ["chat", "Chat"],
+                  ["notes", "Notes"],
+                  ["intel", "Intel"],
+                  ["predict", "Predict"],
                   ["puzzle", "Marks"],
                 ] as const)
             ).map(([key, label]) => (
@@ -1075,10 +1420,10 @@ export default function GameClient({ room, name }: { room: string; name: string 
         </div>
       )}
 
-      {me?.eliminated && g.status === "running" && (
-        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-void/45">
-          <p className="rounded-2xl border border-red/60 bg-ink/90 px-6 py-3 text-sm text-red backdrop-blur">
-            Points spent. You are eliminated — the team plays on.
+      {ghost && (
+        <div className="pointer-events-none absolute inset-x-0 top-28 z-30 flex justify-center px-3 sm:top-32">
+          <p className="rounded-full border border-red/60 bg-ink/90 px-4 py-2 text-center text-[11px] text-red backdrop-blur">
+            GHOST MODE · chat and role intel remain live · movement, doors and puzzles are disabled
           </p>
         </div>
       )}

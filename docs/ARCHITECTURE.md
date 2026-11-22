@@ -53,18 +53,21 @@ strips on the walls previewing possible futures.
 
 ## Deployment
 
-Vercel Services builds `frontend/` and `backend/` into one deployment. Public
-`/backend/*` rewrites route to the FastAPI service, which normalizes the prefix
-with `BackendPrefixMiddleware`; `/ws/*` routes to the same backend service. The
-frontend keeps a local Next.js proxy for `vercel dev` and Docker development; on
-Vercel it is bypassed by the
-top-level rewrite. The `BACKEND_URL` binding is internal and injected by Vercel.
+Deploy the Next.js frontend on Vercel and the FastAPI game server on a
+long-lived host (the repository blueprint uses Render with `numInstances: 1`).
+The Vercel project builds `frontend/`, and `/backend/*` is proxied by the Next.js
+route to `BACKEND_URL`. WebSocket games connect directly to
+`NEXT_PUBLIC_WS_URL`/`WS_URL` as `wss://<backend-host>/ws/<room>`; Vercel
+rewrites are not used for sockets.
 
-Rooms are authoritative but process-local. Keep one long-lived backend instance,
-and configure Fluid Compute/max duration for WebSocket traffic in the Vercel
-dashboard. Before horizontal scaling, move `rooms` to shared state such as Redis
-or a pub/sub-backed coordinator. The Render Blueprint keeps `numInstances: 1`
-for the same reason. Persistent data is shared through Supabase.
+Do not host the authoritative game loop on Vercel Functions: matches last 1800
+seconds, rooms are process-local, and Functions are terminated and rescheduled.
+A dropped function breaks in-memory rooms and reconnect. Before horizontal
+scaling on any host, move `rooms` to shared state such as Redis or a pub/sub
+coordinator. Persistent data is shared through Supabase. Set backend
+`ALLOWED_ORIGINS` and `FRONTEND_URL` to the Vercel domain, and set frontend
+`BACKEND_URL` plus `NEXT_PUBLIC_WS_URL` to the Render service URLs. Health checks
+use `GET /health`.
 
 ## Round loop
 
@@ -103,7 +106,7 @@ round_start → shift_grid → roll_dice → choose_doors → resolve_lockdowns
     every living player is in the hidden exit room. The match ends when the
     1800-second timer expires, or when nobody is left; there is no round cap.
     KING OF SPADES is a non-player hazard with five 180-second appearances
-    beginning at 30/210/390/570/750 seconds, each teleporting through five rooms
+    beginning at 120/420/720/1020/1320 seconds, each teleporting through five rooms
     and eliminating occupants. The Watcher gets a private 30-second alert with
     only that appearance's first room; teleport rooms stay hidden.
 

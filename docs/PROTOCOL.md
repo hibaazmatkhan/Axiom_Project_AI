@@ -28,11 +28,12 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `move` | `door`, or `dx`,`dy`, or `color` | legacy alias of `open_door`; `dx/dy` is mapped to the matching direction |
 | `wait` | none | spends 1 point |
 | `unlock` | `target` (player id) | asks the server to scan a locked teammate free; two helpers in or beside the room are required, each spends 1 point |
-| `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it |
+| `predict` | `pattern_type` (optional), `sigils[]` (optional), `rooms[]` (optional) | scored against the hidden rule; correct delays the shift, wrong hurries it; 2-second per-player cooldown |
 | `puzzle_submit` | `assignment` with only the sender's `role` and chosen mark | contributes one role mark to the cooperative CSP puzzle |
 | `delay_queue` | `tier` (`1`/`2`/`3`) | Timekeeper only; opens one delay puzzle for the Decoder |
 | `delay_answer` | `puzzle_id`, `answer` (cell `{row, col}` or suit) | Decoder only; answers the open delay puzzle |
 | `chat` | `text` | team chat |
+| `notes` | `text` | shared team notes; aliases: `notes_send` |
 | `ready` | `value` (bool) | lobby ready toggle; match starts when all connected players are ready |
 | `ping` | none | server replies `pong` |
 
@@ -43,11 +44,11 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `welcome` | `you`, `state` | to the joining / reconnecting player |
 | `state` | `state` | join/leave, lobby change, open/cross/wait/unlock, prediction |
 | `players` | `status`, `players[]` | after every accepted door open / wait / unlock |
-| `round` | role-filtered shift + `arena`, `players`, `state`, `futures`, `pa`; `next_round_in` only for the Timekeeper | the grid shifted and new d10s were rolled |
+| `round` | role-filtered shift + `arena`, `players`, `state`, `futures`, `pa`, `pattern_types`; `sigils` for the Watcher, `previous` for the Decoder, `moved`/`ops` for the Pathfinder, `timing`/`next_round_in` for the Timekeeper | the grid shifted and new d10s were rolled |
 | `door_result` | `accepted`, `locked`, `door`, `color`, `room_code`, `target_code`, `cost`, `message` | rejected/locked door intent; private to the acting player |
 | `door_opened` | `accepted`, `player`, `door`, `color`, `cost`, `open_until`, `message`; plus `room_code`/`target_code` only for players in either connected room | a paid doorway opened for 10s |
 | `door_closed` | `door`, `message`; plus `room_code`/`target_code` only for players in either connected room | the 10s window expired or the grid shifted |
-| `room_entered` | `player`, `door`, `cost` | a player physically crossed an open doorway |
+| `room_entered` | `player`, `door`, `from`, `to`, `cost` | a player physically crossed an open doorway |
 | `exit_found` | `room_code`, `message` | private to a player who entered the exit or saw it through an active doorway |
 | `lockdown` | `player`, `room_code`, `door`, `message` | a player hit a second sealed door in one round and is locked |
 | `hazard` | `player`, `room_code`, `penalty`, `points` | a Sanction room drained points |
@@ -68,8 +69,9 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 | `prediction_result` | `correct`, `score`, `points`, `message` | after a prediction |
 | `time_up` | `message` | match timer expired; living players were eliminated |
 | `chat` | `from`, `color`, `text` | team chat line |
+| `notes` | `id`, `from`, `color`, `text` | shared team note; the last 40 are replayed in `state.notes` |
 | `game_over` | `won`, `summary`, `nexus` | match ended (stored to the database) |
-| `error` | `code`, `message` | advisory: `rate_limited`, `not_adjacent`, `need_two`, `internal`; fatal: `invalid_username`, `username_taken`, `profile_unavailable`, `app_check_invalid`, `app_check_unavailable`, `room_not_found`, `auth_*` |
+| `error` | `code`, `message` | advisory: `rate_limited`, `not_adjacent`, `need_two`, `prediction_cooldown`, `internal`; fatal: `invalid_username`, `username_taken`, `profile_unavailable`, `app_check_invalid`, `app_check_unavailable`, `room_not_found`, `auth_*` |
 
 ### `state`
 
@@ -86,21 +88,24 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     },
     "locked": false, "eliminated": false, "escaped": false,
     "exit_found": false, "exit_code": null,
-    "points": 15, "role": "decoder"
+    "points": 15, "role": "decoder",
+    "wristband_revealed": false, "wristband_cooldown_remaining": 0,
+    "prediction_cooldown_remaining": 0
   },
   "next_round_in": null, "round_seconds": 22,
   "match_time_left": 1654.2, "match_seconds": 1800,
   "min_players": 1, "rule_count": 1,
   "sanction_total": 7, "sanction_found": 0,
   "nexus": { ... }, "pa": "ROUND 3. THE GRID MOVES.",
+  "notes": [{ "id": 1, "from": "P1", "color": "#fff", "text": "check C3" }],
   "king": null,
   "king_watch": null,
   "futures": { ... },
   "delay_status": { "state": "idle", "cooldown_s": 0, "attempts_left": 2 },
   "dice_relief_rounds": 0,
   "puzzle": {
-    "public": { "difficulty": "easy", "complexity": 1, "attempts": 0, "solved": false },
-    "you": { "role": "watcher", "domain": ["spade", "club"], "clues": ["..."] }
+    "public": { "difficulty": "easy", "complexity": 1, "attempts": 0, "solved": false, "marks": 0 },
+    "you": { "role": "watcher", "domain": ["spade", "club"], "clues": ["..."], "mark": null }
   },
   "role": "watcher", "role_label": "Watcher", "role_hint": "..."
 }
@@ -110,15 +115,16 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
 `max_rounds: 0` means the match ends on its 1800-second timer rather than a round
 cap. `state.king` is the currently active KING OF SPADES appearance, or `null`
 between appearances. The KING is not a player role and is never assigned to a
-player; five 180-second appearances begin at 30/210/390/570/750 seconds and each
-visits five rooms before the next appearance. `state.king_watch` is the current
+player; five 180-second appearances begin at 120/420/720/1020/1320 seconds and
+each visits five non-exit rooms before the next appearance. `state.king_watch` is the current
 private Watcher alert, or `null`; the Watcher snapshot omits `state.king` and
 never receives KING spawn, teleport, despawn or kill events.
 `next_round_in` is populated only for the Timekeeper; every other role receives
 `null`. `delay_status` is sent only to the Timekeeper and Decoder. No player
 snapshot contains dice data.
 `pattern_type` is one of
-`rotation, reflection, translation, symbol, sequential, conditional, compound`.
+`rotation, reflection, translation, symbol, sequential, conditional, compound`;
+`pattern_types` carries every active rule type for multi-rule stages.
 `sanction_total` and `sanction_found` are counts only. Unrevealed Sanction rooms
 stay `sanction: null` and `revealed: false`; no room id, code or location is sent
 for them.
@@ -199,10 +205,10 @@ for the rest of the round.
 ### Delay puzzle
 
 The Timekeeper and Decoder solve one cooperative puzzle during a shift. The
-server config is the single source for all values: answer windows `30/40/50s`,
-success `+6/+12/+18s`, failure `-3/-6/-9s`, cooldown `45s`, `2` attempts per
+server config is the single source for all values: answer windows `12/15/18s`,
+success `+6/+12/+18s`, failure `-3/-6/-9s`, cooldown `30s`, `2` attempts per
 stage, maximum applied delay `+18s`, second success `0.5x`, shift bounds
-`15..60s`, penalty floor `3s` before the pending shift.
+`18..45s`, penalty floor `3s` before the pending shift.
 
 The Timekeeper sends `delay_queue {tier}`; the server sends `puzzle` to the
 Decoder and `puzzle_key` to the Timekeeper. The Decoder sends exactly one
@@ -235,9 +241,9 @@ The server filters every `round` and `state` per role (see
 | role | sees |
 |---|---|
 | `pathfinder` | which rooms moved (positions only); `pathfinder_reveal` exposes blocked walls and sanction rooms until the next shift |
-| `watcher` | 30-second warning before each KING session: time remaining and that session's first room only; no active KING state and no teleport rooms |
+| `watcher` | 30-second warning before each KING session: time remaining and first room only; sigils attached to moved rooms; no active KING state and no teleport rooms |
 | `timekeeper` | the countdown and the delay puzzle key, never the puzzle question |
-| `decoder` | the delay puzzle question, never the key or countdown |
+| `decoder` | the delay puzzle question and the previous filtered layout, never the key or countdown |
 
 The `wristband` is neutral by default: every door reads unsealed and no
 sanction room is listed. A Pathfinder may send `{ "type": "pathfinder_reveal" }`
@@ -266,15 +272,19 @@ No client ever receives another role's hidden data, and the hidden rule itself
 | `MAX_ROUNDS` | 0 (no round cap) |
 | `KING_APPEARANCES` | 5 |
 | `KING_APPEARANCE_SECONDS` | 180 |
-| `KING_FIRST_SPAWN_SECONDS` | 30 |
+| `KING_APPEARANCE_INTERVAL` | 300 |
+| `KING_FIRST_SPAWN_SECONDS` | 120 |
 | `KING_WATCH_LEAD_SECONDS` | 30 |
 | `KING_ROOMS_PER_APPEARANCE` | 5 |
 
 ## HTTP API
 
-Browser calls use the `/backend` prefix (for example `/backend/health`), which
-Vercel rewrites directly to the FastAPI service. Local development can use the
-Next.js fallback proxy at the same prefix or call FastAPI on port 8000 directly.
+Browser HTTP calls use the `/backend` prefix (for example `/backend/health`).
+The Next.js route proxies those calls to `BACKEND_URL`; on Vercel this must point
+to the long-lived FastAPI service (for example Render). WebSocket games connect
+directly to `NEXT_PUBLIC_WS_URL`/`WS_URL` (`wss://.../ws/<room>`) and must not use
+Vercel rewrites, because Vercel Functions cannot host 30-minute in-memory rooms.
+Local development can use FastAPI on port 8000 directly.
 Firebase ID tokens are sent as `Authorization: Bearer <token>`; only endpoints
 marked public omit auth.
 
