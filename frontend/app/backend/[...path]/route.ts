@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 10;
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 10000;

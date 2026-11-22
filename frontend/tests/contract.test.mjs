@@ -7,7 +7,10 @@ const client = read("../components/GameClient.tsx");
 const canvas = read("../components/GameCanvas.tsx");
 const socket = read("../lib/useGameSocket.ts");
 const nextConfig = read("../next.config.mjs");
+const backendProxyRoute = read("../app/backend/[...path]/route.ts");
 const vercel = read("../../vercel.json");
+const frontendVercel = read("../vercel.json");
+const rootPackage = read("../../package.json");
 const game = read("../../backend/app/game.py");
 
 test("tier-2 delay puzzle is answerable", () => {
@@ -32,10 +35,19 @@ test("transition animation consumes moved rooms", () => {
   assert.ok(canvas.includes("const shiftMarkers: ShiftMarker[] = []"));
 });
 
-test("Vercel config hosts only the Next.js frontend", () => {
+test("Vercel deployment config supports repo-root and frontend-root builds", () => {
+  assert.ok(rootPackage.includes('"next": "14.2.15"'));
+  assert.ok(vercel.includes('"framework": "nextjs"'));
+  assert.ok(vercel.includes('"installCommand": "npm ci && npm ci --prefix frontend"'));
+  assert.ok(vercel.includes('"buildCommand": "npm run build --prefix frontend"'));
   assert.ok(vercel.includes('"outputDirectory": "frontend/.next"'));
   assert.ok(!vercel.includes('"services"'));
-  assert.ok(vercel.includes('"maxDuration": 10'));
+  assert.ok(!vercel.includes('"functions"'));
+  assert.ok(frontendVercel.includes('"framework": "nextjs"'));
+  assert.ok(frontendVercel.includes('"installCommand": "npm ci"'));
+  assert.ok(frontendVercel.includes('"buildCommand": "npm run build"'));
+  assert.ok(frontendVercel.includes('"outputDirectory": ".next"'));
+  assert.ok(backendProxyRoute.includes("export const maxDuration = 10;"));
 });
 
 test("game over summary includes avatar identity", () => {
