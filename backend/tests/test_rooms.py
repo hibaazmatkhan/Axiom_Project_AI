@@ -9,7 +9,7 @@ from app import config, db, main
 from app.auth import AuthUser
 from app.game import Room
 from app.room_registry import RoomRegistry
-from app.shared_rooms import RedisRoomGateway
+from app.shared_rooms import RedisRoomGateway, RedisRoomTransport, _RoomLink
 
 
 @pytest.fixture(autouse=True)
@@ -48,12 +48,16 @@ class _FakeAsyncRedis:
     def __init__(self, values):
         self.values = values
         self.refreshed = []
+        self.published = []
 
     async def get(self, key):
         return self.values.get(key)
 
     async def exists(self, key):
         return int(key in self.values)
+
+    async def publish(self, channel, message):
+        self.published.append((channel, message))
 
     def pipeline(self):
         return _FakePipeline(self)
@@ -86,6 +90,63 @@ def test_shared_lookup_refreshes_meta_and_accepts_owner_only(monkeypatch):
     owner_only = asyncio.run(main._room_response("ABCD"))
     assert owner_only["joinable"] is True
     assert asyncio.run(gateway.room_exists("ABCD")) is True
+
+
+def test_redis_publish_adds_room_envelope():
+    gateway = RedisRoomGateway("instance-a", "", {}, RoomRegistry())
+    gateway.enabled = True
+    gateway.redis = _FakeAsyncRedis({})
+
+    asyncio.run(gateway.publish("abcd", {"kind": "send", "payload": {"type": "welcome"}}))
+    channel, raw = gateway.redis.published[-1]
+    message = json.loads(raw)
+    assert channel == gateway.channel("ABCD")
+    assert message["room"] == "ABCD"
+    assert message["origin"] == "instance-a"
+
+
+def test_redis_transport_publishes_welcome_for_join_token():
+    gateway = RedisRoomGateway("instance-a", "", {}, RoomRegistry())
+    gateway.enabled = True
+    gateway.redis = _FakeAsyncRedis({})
+
+    asyncio.run(RedisRoomTransport(gateway, "ABCD").send("p1", {
+        "type": "welcome", "you": "p1", "join_token": "tok", "state": {"you": "p1"},
+    }))
+    _, raw = gateway.redis.published[-1]
+    message = json.loads(raw)
+    assert message["kind"] == "welcome"
+    assert message["room"] == "ABCD"
+    assert message["join_token"] == "tok"
+    assert message["player_id"] == "p1"
+
+
+def test_redis_welcome_dispatch_binds_pending_socket():
+    class _WS:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    gateway = RedisRoomGateway("instance-a", "", {}, RoomRegistry())
+    ws = _WS()
+    event = asyncio.Event()
+    link = object.__new__(_RoomLink)
+    link.gateway = gateway
+    link.pending = {"tok": {"ws": ws, "event": event, "player_id": []}}
+    link.sockets = {}
+
+    asyncio.run(link._dispatch({
+        "kind": "welcome", "room": "ABCD", "join_token": "tok",
+        "player_id": "p1", "payload": {
+            "type": "welcome", "you": "p1", "join_token": "tok", "state": {"you": "p1"},
+        },
+    }))
+    assert event.is_set()
+    assert link.sockets["p1"] is ws
+    assert ws.sent[0]["type"] == "welcome"
+    assert "join_token" not in ws.sent[0]
 
 
 def test_create_and_lookup_room():

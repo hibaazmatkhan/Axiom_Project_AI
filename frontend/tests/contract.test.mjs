@@ -214,6 +214,8 @@ test("room join validates the four-character code before navigation", () => {
   assert.ok(lobby.includes("joinInFlight.current"));
   assert.ok(lobby.includes("retryableRoomLookup("));
   assert.ok(lobby.includes("attempt < 3"));
+  assert.ok(socket.includes('"join_timeout"'));
+  assert.ok(client.includes("g.connected && g.you"));
 });
 
 test("exit room renders a black edge door", () => {

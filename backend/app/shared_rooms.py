@@ -225,6 +225,15 @@ class RedisRoomTransport:
     code: str
 
     async def send(self, player_id: str, payload: dict) -> None:
+        join_token = payload.get("join_token")
+        if join_token:
+            await self.gateway.publish(self.code, {
+                "kind": "welcome",
+                "join_token": str(join_token),
+                "player_id": player_id,
+                "payload": payload,
+            })
+            return
         await self.gateway.publish(self.code, {
             "kind": "send", "target": player_id, "payload": payload,
         })
@@ -256,7 +265,16 @@ class _RoomLink:
         self.pending: dict[str, dict] = {}
         self.spectators: dict[str, Any] = {}
         self.pubsub = gateway.redis.pubsub()
+        self.ready = asyncio.Event()
+        self.failed = False
         self.task = asyncio.create_task(self._listen())
+
+    async def wait_ready(self, timeout: float = 5.0) -> bool:
+        try:
+            await asyncio.wait_for(self.ready.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return not self.failed and not self.task.done()
 
     async def publish(self, message: dict) -> None:
         payload = dict(message)
@@ -271,6 +289,7 @@ class _RoomLink:
         channel = self.gateway.channel(self.code)
         try:
             await self.pubsub.subscribe(channel)
+            self.ready.set()
             async for raw in self.pubsub.listen():
                 if raw.get("type") != "message":
                     continue
@@ -284,7 +303,10 @@ class _RoomLink:
         except asyncio.CancelledError:
             pass
         except Exception:
+            self.failed = True
             logger.exception("room subscription failed for %s", self.code)
+        finally:
+            self.ready.set()
 
     async def _dispatch(self, message: dict) -> None:
         kind = message.get("kind")
@@ -397,7 +419,11 @@ class RedisRoomGateway:
     async def publish(self, code: str, message: dict) -> None:
         if not self.enabled:
             return
-        await self.redis.publish(self.channel(code), json.dumps(message))
+        normalized = canonicalize_room_code(code)
+        payload = dict(message)
+        payload.setdefault("room", normalized)
+        payload.setdefault("origin", self.instance_id)
+        await self.redis.publish(self.channel(normalized), json.dumps(payload))
 
     async def get_meta(self, code: str) -> dict | None:
         if not self.enabled:
@@ -523,7 +549,13 @@ class RedisRoomGateway:
         normalized = canonicalize_room_code(code)
         link = self.links.get(normalized)
         if link is not None:
-            return link
+            if link.failed or link.task.done():
+                self.links.pop(normalized, None)
+                asyncio.create_task(link.close())
+            else:
+                if owner:
+                    link.owner = owner
+                return link
         link = _RoomLink(self, normalized, owner or self.instance_id)
         self.links[normalized] = link
         return link
@@ -576,6 +608,13 @@ class RedisRoomGateway:
 
         owner = await self.ensure_owner(normalized)
         link = self.link(normalized, owner)
+        if not await link.wait_ready():
+            await self._room_error(ws, "join_timeout", "The room owner did not respond.")
+            try:
+                await ws.close(code=1008)
+            except Exception:
+                pass
+            return
         token = secrets.token_hex(8)
         event = asyncio.Event()
         link.pending[token] = {"ws": ws, "event": event, "player_id": []}
@@ -602,7 +641,8 @@ class RedisRoomGateway:
                 player_id = player_ids[0]
                 break
             except asyncio.TimeoutError:
-                if (attempt == 0 and owner != self.instance_id
+                owner_missing = not await self.owner_exists(normalized)
+                if (attempt == 0 and owner != self.instance_id and owner_missing
                         and await self.claim_owner(normalized, owner)):
                     link.owner = self.instance_id
                     owner = self.instance_id
@@ -655,6 +695,13 @@ class RedisRoomGateway:
             return
         owner = await self.ensure_owner(normalized)
         link = self.link(normalized, owner)
+        if not await link.wait_ready():
+            await self._room_error(ws, "join_timeout", "The room owner did not respond.")
+            try:
+                await ws.close(code=1008)
+            except Exception:
+                pass
+            return
         token = secrets.token_hex(8)
         link.spectators[token] = ws
         await link.publish({"kind": "spectator_join", "token": token, "uid": user.uid})
@@ -687,13 +734,12 @@ class RedisRoomGateway:
         if room is not None:
             return room
         meta = await self.get_meta(code)
-        owned = await self.owner_exists(code)
         reservation = None
         try:
             reservation = self.registry.get_reservation(code)
         except Exception:
             pass
-        if meta is None and reservation is None and not owned:
+        if meta is None and reservation is None:
             return None
         from .game import Room
 

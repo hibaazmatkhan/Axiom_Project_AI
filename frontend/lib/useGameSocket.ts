@@ -41,6 +41,7 @@ const FATAL_ERRORS = new Set([
   "admin_required", "room_full", "game_started", "server_full",
   "invalid_username", "username_taken", "profile_unavailable",
   "app_check_invalid", "app_check_unavailable", "room_not_found", "room_expired",
+  "join_timeout", "join_failed",
 ]);
 
 function livePlayers(players: Player[] | undefined): Player[] {

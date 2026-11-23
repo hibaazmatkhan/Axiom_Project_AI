@@ -1145,7 +1145,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
         </div>
       )}
 
-      {isLobby && !g.error && g.connected && (
+      {isLobby && !g.error && g.connected && g.you && (
         <div className="absolute inset-0 z-30 grid place-items-center bg-void/80 backdrop-blur-sm">
           <div className="hud w-[min(460px,92vw)] rounded-3xl p-8 text-center animate-rise">
             <p className="mono text-[10px] uppercase tracking-[0.3em] text-yellow">The Last Room</p>
