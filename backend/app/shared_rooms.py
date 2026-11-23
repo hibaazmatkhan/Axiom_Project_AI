@@ -402,14 +402,32 @@ class RedisRoomGateway:
     async def get_meta(self, code: str) -> dict | None:
         if not self.enabled:
             return None
-        raw = await self.redis.get(self._meta_key(code))
+        normalized = canonicalize_room_code(code)
+        raw = await self.redis.get(self._meta_key(normalized))
         if not raw:
             return None
         try:
             meta = json.loads(raw)
         except ValueError:
             return None
-        return meta if isinstance(meta, dict) else None
+        if not isinstance(meta, dict):
+            return None
+        try:
+            pipe = self.redis.pipeline()
+            pipe.expire(self._meta_key(normalized), self._meta_ttl)
+            pipe.expire(self._owner_key(normalized), self._meta_ttl)
+            await pipe.execute()
+        except Exception:
+            logger.debug("could not refresh shared room metadata for %s", normalized)
+        return meta
+
+    async def owner_exists(self, code: str) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            return bool(await self.redis.exists(self._owner_key(canonicalize_room_code(code))))
+        except Exception:
+            return False
 
     async def publish_meta(self, code: str, room: Any) -> None:
         if not self.enabled:
@@ -515,6 +533,8 @@ class RedisRoomGateway:
         if normalized in self.rooms:
             return True
         if await self.get_meta(normalized) is not None:
+            return True
+        if await self.owner_exists(normalized):
             return True
         try:
             return self.registry.get_reservation(code) is not None
@@ -667,12 +687,13 @@ class RedisRoomGateway:
         if room is not None:
             return room
         meta = await self.get_meta(code)
+        owned = await self.owner_exists(code)
         reservation = None
         try:
             reservation = self.registry.get_reservation(code)
         except Exception:
             pass
-        if meta is None and reservation is None:
+        if meta is None and reservation is None and not owned:
             return None
         from .game import Room
 
@@ -683,7 +704,8 @@ class RedisRoomGateway:
         self.rooms[code] = room
         if reservation is not None:
             self.registry.consume(code)
-        await self.redis.expire(self._owner_key(code), self._meta_ttl)
+        if self.enabled:
+            await self.redis.expire(self._owner_key(code), self._meta_ttl)
         await self.publish_meta(code, room)
         return room
 

@@ -8,7 +8,7 @@ import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
 import { useProfile } from "@/components/ProfileProvider";
-import { api, canonicalRoomCode } from "@/lib/api";
+import { ApiError, api, canonicalRoomCode } from "@/lib/api";
 import { PFP_PRESETS, pfpPresetUrl, type PfpPresetId } from "@/lib/avatarRules";
 import { guest } from "@/lib/guest";
 
@@ -38,6 +38,14 @@ function clientKey(): string {
   return next;
 }
 
+function retryableRoomLookup(status: number): boolean {
+  return status === 0 || status === 404 || status === 410 || status >= 500;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function LobbyPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -55,6 +63,7 @@ export default function LobbyPage() {
   const [quickPosition, setQuickPosition] = useState<number | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const quickMatchActive = useRef(false);
+  const joinInFlight = useRef(false);
 
   useEffect(() => {
     if (loading) return;
@@ -142,16 +151,37 @@ export default function LobbyPage() {
 
   const joinRoom = async () => {
     const target = canonicalRoomCode(code);
-    if (!name.trim() || busy) return;
+    if (!name.trim() || busy || joinInFlight.current) return;
     if (!/^[A-Z0-9]{4}$/.test(target)) {
       setError("Room codes are exactly four letters or numbers.");
       return;
     }
     setError(null);
     stopPolling();
+    joinInFlight.current = true;
     setBusy(true);
     try {
-      const room = await api.getRoom(target);
+      let room: Awaited<ReturnType<typeof api.getRoom>> | null = null;
+      let lookupError: unknown = null;
+      let lookupStatus = 0;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          room = await api.getRoom(target);
+          break;
+        } catch (cause) {
+          lookupError = cause;
+          lookupStatus = cause instanceof ApiError ? cause.status : 0;
+          if (!retryableRoomLookup(lookupStatus) || attempt === 2) break;
+          await wait(250 * (attempt + 1));
+        }
+      }
+      if (!room) {
+        if (retryableRoomLookup(lookupStatus)) {
+          go(target);
+          return;
+        }
+        throw lookupError ?? new Error("That room code is not available.");
+      }
       if (room.status !== "lobby" || room.started) {
         throw new Error("That match has already started.");
       }
@@ -162,6 +192,7 @@ export default function LobbyPage() {
     } catch (cause) {
       setError(errorMessage(cause, "That room code is not available."));
     } finally {
+      joinInFlight.current = false;
       setBusy(false);
     }
   };

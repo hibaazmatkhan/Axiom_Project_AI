@@ -1,3 +1,6 @@
+import asyncio
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -6,6 +9,7 @@ from app import config, db, main
 from app.auth import AuthUser
 from app.game import Room
 from app.room_registry import RoomRegistry
+from app.shared_rooms import RedisRoomGateway
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +28,64 @@ def _user(uid="u", admin=False):
         uid=uid, email="rooms@example.com", email_verified=True, name="Rooms",
         picture=None, mfa_enabled=False, claims={"admin": True} if admin else {},
     )
+
+
+class _FakePipeline:
+    def __init__(self, redis):
+        self.redis = redis
+        self.calls = []
+
+    def expire(self, key, ttl):
+        self.calls.append((key, ttl))
+        return self
+
+    async def execute(self):
+        self.redis.refreshed.extend(self.calls)
+        return [True] * len(self.calls)
+
+
+class _FakeAsyncRedis:
+    def __init__(self, values):
+        self.values = values
+        self.refreshed = []
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def exists(self, key):
+        return int(key in self.values)
+
+    def pipeline(self):
+        return _FakePipeline(self)
+
+
+def test_shared_lookup_refreshes_meta_and_accepts_owner_only(monkeypatch):
+    gateway = RedisRoomGateway("instance-a", "", {}, RoomRegistry())
+    gateway.enabled = True
+    gateway.redis = _FakeAsyncRedis({})
+    gateway.redis.values[gateway._meta_key("ABCD")] = json.dumps({
+        "room_id": "RABCD",
+        "code": "ABCD",
+        "status": "lobby",
+        "players": 0,
+        "connected": 0,
+        "full": False,
+        "started": False,
+        "joinable": True,
+        "instance_id": "instance-a",
+    })
+    gateway.redis.values[gateway._owner_key("ABCD")] = "instance-a"
+    monkeypatch.setattr(main, "gateway", gateway)
+
+    found = asyncio.run(main._room_response("abcd"))
+    assert found["joinable"] is True
+    assert gateway._meta_key("ABCD") in [key for key, _ in gateway.redis.refreshed]
+    assert gateway._owner_key("ABCD") in [key for key, _ in gateway.redis.refreshed]
+
+    gateway.redis.values.pop(gateway._meta_key("ABCD"))
+    owner_only = asyncio.run(main._room_response("ABCD"))
+    assert owner_only["joinable"] is True
+    assert asyncio.run(gateway.room_exists("ABCD")) is True
 
 
 def test_create_and_lookup_room():

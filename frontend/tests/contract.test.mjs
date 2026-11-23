@@ -211,6 +211,9 @@ test("room join validates the four-character code before navigation", () => {
   assert.ok(lobby.includes("const joinRoom = async () =>"));
   assert.ok(lobby.includes("api.getRoom(target)"));
   assert.ok(lobby.includes("That match has already started."));
+  assert.ok(lobby.includes("joinInFlight.current"));
+  assert.ok(lobby.includes("retryableRoomLookup("));
+  assert.ok(lobby.includes("attempt < 3"));
 });
 
 test("exit room renders a black edge door", () => {

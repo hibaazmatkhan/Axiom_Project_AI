@@ -369,6 +369,18 @@ async def _room_response(code: str) -> dict:
                 "joinable": bool(meta.get("joinable")),
                 "instance_id": meta.get("instance_id") or INSTANCE_ID,
             }
+        if await gateway.owner_exists(code):
+            return {
+                "room_id": code,
+                "code": code,
+                "status": "lobby",
+                "players": 0,
+                "connected": 0,
+                "full": False,
+                "started": False,
+                "joinable": True,
+                "instance_id": INSTANCE_ID,
+            }
     if registry.expired_reservation(code):
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Room code expired.")
     reservation = registry.get_reservation(code)
