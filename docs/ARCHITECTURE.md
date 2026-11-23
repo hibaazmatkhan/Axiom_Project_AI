@@ -199,7 +199,7 @@ loaded only from user-supplied assets.
 
 | Show concept | Original name here |
 |---|---|
-| points | **Points** (start 25) |
+| points | **Points** (start 20) |
 | dice | **d10 pedestal** (four coloured dice per room) |
 | coloured doors | **Red / Blue / Yellow / Green doors** |
 | sigils | **Spade / Heart / Diamond / Club** |

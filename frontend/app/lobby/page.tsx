@@ -528,7 +528,7 @@ export default function LobbyPage() {
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">02</span>
-                  <span>Every player starts with 25 points. Crossing and waiting cost 1.</span>
+                  <span>Every player starts with 20 points. Crossing and waiting cost 1.</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="mono text-gold">03</span>

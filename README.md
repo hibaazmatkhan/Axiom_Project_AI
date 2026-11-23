@@ -57,7 +57,7 @@ Convergence → The Last Room`.
 
 ### Economy
 
-- Start with **25 points**.
+- Start with **20 points**.
 - Open a door: **−1**. Cross through an active doorway: **free**.
 - Wait: **−1**. Sanction room: **−1…−8** depending on the room.
 - Correct prediction: **+1** and the next shift is delayed; wrong: **−1**.
@@ -346,7 +346,7 @@ come only from user-supplied assets.
 
 | Show concept | Game term |
 |---|---|
-| points | **Points** (start 25) |
+| points | **Points** (start 20) |
 | dice | **d10 pedestal** (four coloured dice per room) |
 | coloured doors | **Red / Blue / Yellow / Green doors** |
 | sigils | **Spade / Heart / Diamond / Club** |

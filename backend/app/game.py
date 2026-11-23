@@ -1245,17 +1245,16 @@ class Room:
                 "type": "revive", "player": player.id, "by": [], "points": {},
             })
         self.log(player.id, "cross", {"room": target.code, "from": room.code, "door": door})
+        await self.broadcast({
+            "type": "room_entered", "player": player.id, "door": door,
+            "from": room.code, "to": target.code, "cost": 0,
+        })
         if self.king is not None:
             await self._king_strike()
             if player.eliminated:
                 return
 
         await self._refresh_exit_visibility(player)
-
-        await self.broadcast({
-            "type": "room_entered", "player": player.id, "door": door,
-            "from": room.code, "to": target.code, "cost": 0,
-        })
 
         if fate.reveal(self.arena, target) and target.sanction:
             player.points -= target.sanction

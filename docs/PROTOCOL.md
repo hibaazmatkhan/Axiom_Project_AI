@@ -91,7 +91,7 @@ HTTP API is separate (accounts, profiles, history) — see the bottom of this fi
     },
     "locked": false, "eliminated": false, "escaped": false,
     "exit_found": false, "exit_code": null,
-    "points": 25, "role": "decoder",
+    "points": 20, "role": "decoder",
     "wristband_revealed": false, "wristband_cooldown_remaining": 0,
     "prediction_cooldown_remaining": 0
   },
@@ -198,7 +198,7 @@ for the rest of the round.
 {
   "id": "p1", "name": "Hiba", "slot": 0, "color": "#ff4655",
   "role": "decoder", "room_id": "r12", "room_code": "C3", "room": [2, 2],
-  "points": 25, "locked": false, "eliminated": false, "escaped": false,
+  "points": 20, "locked": false, "eliminated": false, "escaped": false,
   "ready": false, "connected": true,
   "predictions": 0, "correct": 0, "streak": 0,
   "waits": 0, "revives": 0
@@ -267,7 +267,7 @@ data, and the hidden rule itself (`PatternEngine.rule`) is never serialised.
 
 | Constant | Value |
 |---|---|
-| `START_POINTS` | 25 |
+| `START_POINTS` | 20 |
 | `DOOR_COST` | 1 |
 | `WAIT_COST` | 1 |
 | `REVIVE_COST` | 1 per helper |

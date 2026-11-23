@@ -214,9 +214,9 @@ export function useGameSocket(room: string, name: string) {
 
   useEffect(() => {
     if (cross.id <= 0) return;
-    const timer = window.setTimeout(() => setCross({
-      id: 0, door: null, from: null, to: null, cost: 0, player: null,
-    }), 5000);
+    const timer = window.setTimeout(() => setCross((prev) => ({
+      id: prev.id, door: null, from: null, to: null, cost: 0, player: null,
+    })), 5000);
     return () => window.clearTimeout(timer);
   }, [cross]);
 
@@ -543,16 +543,13 @@ export function useGameSocket(room: string, name: string) {
           }));
         } else if (m.type === "king_watch") {
           setKingWatch(m as KingWatchView);
-          pushNotice("KING WARNING: FULL SCHEDULE REVEALED TO THE WATCHER.");
         } else if (m.type === "king_spawn") {
           const view = m.king as KingView | null;
           setKing(view);
-          setKingWatch(null);
           setKingEvent((prev) => ({
             id: (prev?.id ?? 0) + 1, type: "spawn", king: view,
             room_code: view?.room_code ?? null,
           }));
-          pushNotice("THE KING OF SPADES HAS ENTERED THE BUILDING.");
         } else if (m.type === "king_teleport") {
           const view = m.king as KingView | null;
           setKing(view);
@@ -562,7 +559,6 @@ export function useGameSocket(room: string, name: string) {
           }));
         } else if (m.type === "king_despawn") {
           setKing(null);
-          setKingWatch(null);
           setKingEvent((prev) => ({
             id: (prev?.id ?? 0) + 1, type: "despawn",
             king: (m.king as KingView | null) ?? null,
@@ -574,9 +570,7 @@ export function useGameSocket(room: string, name: string) {
             room_code: m.room_code ?? null, room: m.room ?? null,
             victim: m.victim, victim_name: m.victim_name, reason: m.reason,
           }));
-          pushNotice(m.victim === youRef.current
-            ? "THE KING OF SPADES TOOK YOU."
-            : "THE KING OF SPADES TOOK A PLAYER.");
+          if (m.victim === youRef.current) pushNotice("THE KING OF SPADES TOOK YOU.");
         } else if (m.type === "prediction_result") {
           setPrediction((prev) => ({
             id: (prev?.id ?? 0) + 1,

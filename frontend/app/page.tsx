@@ -6,7 +6,7 @@ import { BroadcastKicker, SuitMark } from "@/components/Brand";
 const STATS = [
   ["04", "Players"],
   ["5×5", "Moving rooms"],
-  ["25", "Starting points"],
+  ["20", "Starting points"],
   ["07", "Stages"],
 ];
 
@@ -24,6 +24,15 @@ const LOOP = [
   ["02", "Cross", "Both rooms must open the same side. Opening costs a point; crossing is free."],
   ["03", "Read", "Each role sees a different slice of the truth."],
   ["04", "Predict", "Call the next shift. Correct calls delay the arena."],
+];
+
+const HOW_TO = [
+  ["01", "Survive on points", "Every player starts with 20 points. Opening a door, waiting or being fined costs points; at zero you are out."],
+  ["02", "Cross carefully", "Both rooms must open the same side. Walking through an open doorway is free, but you cannot return the same way in one round."],
+  ["03", "Read your role", "Pathfinder scans the wristband, Watcher tracks the KING, Timekeeper holds the clock, and Decoder answers the delay puzzle."],
+  ["04", "Predict the shift", "Call the next transformation. Correct calls delay the shift; wrong calls cost a point and give the Dealer momentum."],
+  ["05", "Obey the KING", "The Watcher receives staged KING warnings. If the KING occupies your room, you are eliminated."],
+  ["06", "Reach the exit", "Find the hidden exit and bring every living player inside before the 30-minute broadcast ends."],
 ];
 
 const ROLES = [
@@ -187,7 +196,7 @@ export default function Landing() {
                     </div>
                     <div className="mt-1 flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-gold" />
-                      <span className="mono text-xs text-bone">25 pts</span>
+                      <span className="mono text-xs text-bone">20 pts</span>
                     </div>
                   </div>
                   <div className="border border-gold/40 bg-gold/10 px-3 py-2 text-right">
@@ -254,6 +263,28 @@ export default function Landing() {
                 <span className="absolute bottom-0 left-0 h-px w-0 bg-gold transition-all duration-500 group-hover:w-full" />
               </article>
             ))}
+          </div>
+        </section>
+
+        <section className="border-y border-bone/10 bg-coal/50">
+          <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:py-24">
+            <SectionHeading
+              eyebrow="How to play"
+              title="Six rules to survive the broadcast."
+              copy="Click the arena to lock the cursor, use WASD to move, click a door to open it, and press Space to wait. Esc releases the cursor."
+            />
+            <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {HOW_TO.map(([number, title, copy]) => (
+                <article
+                  key={number}
+                  className="border border-bone/10 bg-void/55 p-5 transition hover:border-gold/40 hover:bg-bone/[0.045]"
+                >
+                  <span className="mono text-[10px] uppercase tracking-[0.3em] text-red">{number}</span>
+                  <h3 className="mt-3 text-base font-semibold text-bone">{title}</h3>
+                  <p className="mt-2 text-xs leading-relaxed text-dim">{copy}</p>
+                </article>
+              ))}
+            </div>
           </div>
         </section>
 

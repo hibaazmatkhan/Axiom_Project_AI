@@ -717,7 +717,7 @@ def test_temporary_door_is_shared_and_expires():
 
 
 def test_solo_player_can_reach_exit_with_door_cost():
-    """The 25-point economy must allow a full route to the exit."""
+    """The 20-point economy must allow a full route to the exit."""
     room = Room("WIN2", seed=7, round_seconds=60)
     room.status = "running"
     for r in room.arena.rooms:
@@ -1315,6 +1315,37 @@ def test_king_teleports_through_five_rooms_and_kills_occupants():
         assert not p3.eliminated
 
     asyncio.run(scenario())
+
+
+def test_room_entered_is_broadcast_before_king_strike():
+    room = Room("KINGORDER", seed=23)
+    room.status = "running"
+    player = _player(room)
+    player.ws = _RecordingWS()
+    room.players[player.id] = player
+    current = room.arena.start_room()
+    door = next(d for d in DIRECTIONS if room.arena.door_target(current, d))
+    target = room.arena.door_target(current, door)
+    now = time.time()
+    room.king = {
+        "id": "king-order", "appearance": 1, "room_id": target.rid,
+        "room_ids": [target.rid], "teleport_index": 0,
+        "started_at": now, "ends_at": now + 180,
+        "next_teleport_at": now + 36, "kill_count": 0,
+    }
+    seen: list[list[str | None]] = []
+
+    async def fake_strike():
+        seen.append([message.get("type") for message in player.ws.sent])
+        return False
+
+    room._king_strike = fake_strike
+
+    async def scenario():
+        await room._complete_crossing(player, current, target, door)
+
+    asyncio.run(scenario())
+    assert seen and "room_entered" in seen[0]
 
 
 def test_watcher_gets_full_king_schedule_and_no_live_king_events():

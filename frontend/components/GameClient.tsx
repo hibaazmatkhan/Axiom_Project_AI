@@ -7,13 +7,13 @@ import { SuitMark } from "./Brand";
 import Avatar from "./Avatar";
 import { useGameSocket } from "@/lib/useGameSocket";
 import { playSound, setKingProximity, setMuted, stopSounds, unlockAudio } from "@/lib/audio";
-import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, NoteLine, Sigil } from "@/lib/types";
+import type { DelayCell, DelayKeyView, DelayPuzzleView, DelayStatusView, KingWatchView, NoteLine, Sigil } from "@/lib/types";
 
 const SIGILS = ["spade", "heart", "diamond", "club"] as const;
 const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
 };
-const MAX_POINTS = 25;
+const MAX_POINTS = 20;
 const LOSS_HEADLINES: Record<string, string> = {
   king: "Killed by the KING OF SPADES",
   points_zero: "Your points reached zero",
@@ -30,6 +30,39 @@ function lossHeadline(code?: string) {
 function formatClock(value: number) {
   const total = Math.max(0, Math.ceil(value));
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function kingWatchPhase(view: KingWatchView | null, nowMs: number) {
+  if (!view) return null;
+  const appearances = [...view.appearances].sort((a, b) => a.starts_at - b.starts_at);
+  if (appearances.length === 0) return null;
+  const nowSec = nowMs / 1000;
+  const active = appearances.find(
+    (item) => item.starts_at * 1000 <= nowMs && nowMs < item.ends_at * 1000,
+  ) ?? null;
+  const next = active ?? appearances.find((item) => item.starts_at * 1000 > nowMs)
+    ?? appearances[appearances.length - 1];
+  const rooms = [...next.rooms].sort((a, b) => a.from - b.from);
+  const activeRoom = active
+    ? rooms.find((room) => room.from <= nowSec && nowSec < room.until) ?? null
+    : null;
+  const currentRoom = activeRoom ?? rooms[0] ?? null;
+  const upcomingRoom = currentRoom
+    ? rooms.find((room) => room.from > currentRoom.from) ?? null
+    : null;
+  const warning = !active && next.starts_at * 1000 - nowMs <= 30_000;
+  return {
+    appearance: next.appearance,
+    total: view.total,
+    active: !!active,
+    warning,
+    seconds: active
+      ? Math.max(0, (active.ends_at * 1000 - nowMs) / 1000)
+      : Math.max(0, (next.starts_at * 1000 - nowMs) / 1000),
+    roomCode: currentRoom?.room_code ?? upcomingRoom?.room_code ?? view.room_code,
+    roomRemaining: currentRoom ? Math.max(0, currentRoom.until - nowSec) : 0,
+    nextRoomCode: upcomingRoom?.room_code ?? null,
+  };
 }
 
 function Panel({ children, className = "", compact = false }: {
@@ -265,7 +298,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [secs, setSecs] = useState<number | null>(null);
   const [matchSecs, setMatchSecs] = useState<number | null>(null);
   const [delaySecs, setDelaySecs] = useState<number | null>(null);
-  const [kingWatchSecs, setKingWatchSecs] = useState<number | null>(null);
+  const [kingWatchNow, setKingWatchNow] = useState(0);
   const [mobilePanel, setMobilePanel] = useState<"none" | "map" | "notes" | "intel" | "puzzle" | "delay">("none");
   const [teamOpen, setTeamOpen] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
@@ -273,13 +306,22 @@ export default function GameClient({ room, name }: { room: string; name: string 
   const [soundMuted, setSoundMuted] = useState(false);
   const [noteInput, setNoteInput] = useState("");
   const [puzzleMark, setPuzzleMark] = useState("");
-  const [kingStrikeAt, setKingStrikeAt] = useState(0);
+  const [kingDeathAt, setKingDeathAt] = useState(0);
   const teamRef = useRef<HTMLDivElement>(null);
   const lastWatchSound = useRef("");
   const { sendOpenDoor, sendCrossDoor, sendWait, sendRevealWristband, sendDelayQueue, sendDelayAnswer, exitMatch } = g;
 
   const me = g.me;
   const ghost = !!me?.eliminated && g.status === "running";
+  const watchPhase = useMemo(
+    () => kingWatchNow === 0 ? null : kingWatchPhase(g.kingWatch, kingWatchNow),
+    [g.kingWatch, kingWatchNow],
+  );
+  const kingDeathElapsed = kingDeathAt > 0 ? performance.now() - kingDeathAt : 0;
+  const redVeilAlpha = kingDeathAt > 0 ? Math.min(1, kingDeathElapsed / 260) : 0;
+  const kingVisionAlpha = kingDeathAt > 0
+    ? Math.max(0, Math.min(1, (kingDeathElapsed - 220) / 420, (2500 - kingDeathElapsed) / 500))
+    : 0;
   const handleExit = () => {
     exitMatch();
     router.push("/lobby");
@@ -317,7 +359,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       setSecs(g.nextAt == null ? null : Math.max(0, (g.nextAt - performance.now()) / 1000));
       setMatchSecs(g.matchAt == null ? null : Math.max(0, (g.matchAt - performance.now()) / 1000));
       setDelaySecs(g.delayDeadlineAt == null ? null : Math.max(0, (g.delayDeadlineAt - performance.now()) / 1000));
-      setKingWatchSecs(g.kingWatch == null ? null : Math.max(0, (g.kingWatch.starts_at * 1000 - Date.now()) / 1000));
+      setKingWatchNow(Date.now());
     };
     tick();
     const t = setInterval(tick, 100);
@@ -330,11 +372,11 @@ export default function GameClient({ room, name }: { room: string; name: string 
   }, [g.puzzle?.you?.role, g.puzzle?.you?.domain.join("|"), g.puzzle?.you?.mark]);
 
   useEffect(() => {
-    if (g.kingEvent?.type !== "kill") return;
-    setKingStrikeAt(performance.now());
-    const timer = window.setTimeout(() => setKingStrikeAt(0), 1500);
+    if (g.kingEvent?.type !== "kill" || g.kingEvent.victim !== g.you) return;
+    setKingDeathAt(performance.now());
+    const timer = window.setTimeout(() => setKingDeathAt(0), 2800);
     return () => window.clearTimeout(timer);
-  }, [g.kingEvent?.id, g.kingEvent?.type]);
+  }, [g.kingEvent?.id, g.kingEvent?.type, g.kingEvent?.victim, g.you]);
 
   useEffect(() => {
     setMuted(soundMuted);
@@ -411,31 +453,37 @@ export default function GameClient({ room, name }: { room: string; name: string 
         onPose={g.sendPose}
       />
 
-      {kingStrikeAt > 0 && (
-        <div
-          className="pointer-events-none absolute inset-0 z-[70] flex items-center justify-center"
-          style={{ background: "radial-gradient(circle, rgba(90,0,0,0.08) 10%, rgba(145,0,8,0.82) 100%)" }}
-        >
-          <span className="mono text-2xl uppercase tracking-[0.4em] text-red drop-shadow-[0_0_18px_rgba(255,0,0,0.9)]">
-            King of Spades
-          </span>
-        </div>
-      )}
-
-      {g.role === "watcher" && g.kingWatch && (
-        <div className="pointer-events-none absolute inset-x-0 top-20 z-[60] flex justify-center px-3 sm:top-24">
-          <div className="mono flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border border-red/70 bg-void/95 px-3 py-2 text-[9px] uppercase tracking-[0.18em] text-red shadow-hud backdrop-blur">
-            <span>King warning</span>
-            <span className="text-base tabular-nums text-bone">
-              {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
-            </span>
-            <span className="text-dim">
-              Now <span className="text-gold">{g.kingWatch.room_code ?? "--"}</span>
-              {" · "}
-              {g.kingWatch.appearances
-                .map((item) => `#${item.appearance} ${item.rooms.map((room) => room.room_code ?? "--").join("→")}`)
-                .join(" | ")}
-            </span>
+      {kingDeathAt > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[80] overflow-hidden">
+          <div
+            className="absolute inset-0"
+            style={{
+              opacity: redVeilAlpha,
+              background: "radial-gradient(circle at 50% 46%, rgba(64,0,0,0.05) 4%, rgba(138,0,10,0.88) 100%)",
+            }}
+          />
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            style={{ opacity: kingVisionAlpha }}
+          >
+            <div className="relative flex h-72 w-56 items-end justify-center">
+              <div className="absolute inset-0 rounded-[50%] bg-red/10 blur-3xl" />
+              <div className="absolute bottom-0 h-56 w-40 rounded-t-[45%] border border-red/40 bg-void/85 shadow-[0_0_90px_rgba(255,0,24,0.55)]" />
+              <div className="absolute bottom-36 h-16 w-16 rounded-full border border-red/60 bg-void/90" />
+              <div className="absolute bottom-[10.5rem] flex gap-3">
+                <span className="h-2 w-2 rounded-full bg-red shadow-[0_0_16px_rgba(255,0,24,0.95)]" />
+                <span className="h-2 w-2 rounded-full bg-red shadow-[0_0_16px_rgba(255,0,24,0.95)]" />
+              </div>
+              <div className="absolute bottom-24 h-10 w-10 rounded-t-lg border border-red/50 bg-red/10" />
+            </div>
+          </div>
+          <div
+            className="absolute inset-x-0 bottom-24 text-center"
+            style={{ opacity: kingVisionAlpha }}
+          >
+            <p className="mono text-[10px] uppercase tracking-[0.4em] text-red drop-shadow-[0_0_12px_rgba(255,0,24,0.8)]">
+              The King of Spades found you.
+            </p>
           </div>
         </div>
       )}
@@ -741,23 +789,34 @@ export default function GameClient({ room, name }: { room: string; name: string 
             <div className="flex items-center justify-between">
               <span className="text-xs uppercase tracking-widest text-red">Watcher</span>
               <span className="mono text-[10px] text-dim">
-                {g.kingWatch ? `appearance ${g.kingWatch.appearance}/${g.kingWatch.total}` : "standing by"}
+                {watchPhase ? `appearance ${watchPhase.appearance}/${watchPhase.total}` : "standing by"}
               </span>
             </div>
-            {g.kingWatch ? (
+            {watchPhase?.active ? (
               <div className="mt-2 space-y-1">
-                <p className="mono text-lg text-red">
-                  {formatClock(kingWatchSecs ?? g.kingWatch.in_seconds)}
+                <p className="mono text-lg text-red">{formatClock(watchPhase.roomRemaining)}</p>
+                <p className="text-[11px] leading-relaxed text-bone">
+                  King is in <span className="mono text-red">{watchPhase.roomCode ?? "--"}</span>.
                 </p>
-                <div className="space-y-1">
-                  {g.kingWatch.appearances.map((item) => (
-                    <p key={item.appearance} className="text-[10px] leading-relaxed text-bone">
-                      #{item.appearance} · {item.rooms.map((room) => room.room_code ?? "--").join(" → ")}
-                    </p>
-                  ))}
-                </div>
                 <p className="text-[10px] leading-relaxed text-dim">
-                  All five appearances and every teleport room are revealed to the watcher.
+                  Next room: <span className="mono text-gold">{watchPhase.nextRoomCode ?? "--"}</span>
+                </p>
+              </div>
+            ) : watchPhase?.warning ? (
+              <div className="mt-2 space-y-1">
+                <p className="mono text-lg text-red">{formatClock(watchPhase.seconds)}</p>
+                <p className="text-[11px] leading-relaxed text-bone">
+                  King enters <span className="mono text-red">{watchPhase.roomCode ?? "--"}</span>.
+                </p>
+                <p className="text-[10px] leading-relaxed text-dim">
+                  Warn the team before the door opens.
+                </p>
+              </div>
+            ) : watchPhase ? (
+              <div className="mt-2 space-y-1">
+                <p className="mono text-lg text-red">{formatClock(watchPhase.seconds)}</p>
+                <p className="text-[11px] leading-relaxed text-dim">
+                  Exact room is revealed 30 seconds before the King arrives.
                 </p>
               </div>
             ) : (
@@ -1234,7 +1293,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {g.players.find((p) => p.id === g.you)?.ready ? "Cancel ready" : "Ready up"}
             </button>
             <p className="mt-4 text-[11px] leading-relaxed text-dim">
-              Spawn in C3. Find the hidden exit and bring every living player into it. 25 points each.
+              Spawn in C3. Find the hidden exit and bring every living player into it. 20 points each.
             </p>
           </div>
         </div>

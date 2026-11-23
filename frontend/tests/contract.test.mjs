@@ -116,12 +116,13 @@ test("desktop mouse look uses a sticky locked cursor", () => {
   assert.ok(client.includes("Click to lock cursor"));
 });
 
-test("starting points are 25 everywhere", () => {
-  assert.ok(fate.includes("START_VITALITY = 25"));
-  assert.ok(client.includes("const MAX_POINTS = 25"));
-  assert.ok(client.includes("25 points each."));
-  assert.ok(lobby.includes("starts with 25 points"));
-  assert.ok(landing.includes('["25", "Starting points"]'));
+test("starting points are 20 everywhere", () => {
+  assert.ok(fate.includes("START_VITALITY = 20"));
+  assert.ok(client.includes("const MAX_POINTS = 20"));
+  assert.ok(client.includes("20 points each."));
+  assert.ok(lobby.includes("starts with 20 points"));
+  assert.ok(landing.includes('["20", "Starting points"]'));
+  assert.ok(landing.includes("HOW_TO"));
 });
 
 test("chat UI is removed while team notes remain", () => {
@@ -146,12 +147,39 @@ test("remote players move smoothly from throttled pose events", () => {
   assert.ok(canvas.includes("userData.remotePlayer"));
 });
 
-test("watcher receives the full king schedule and no live king state", () => {
+test("watcher receives the king schedule in staged sidebar copy only", () => {
   assert.ok(game.includes('"appearances": appearances'));
   assert.ok(roles.includes('snap.pop("king", None)'));
   assert.ok(game.includes('player.role != "watcher"'));
-  assert.ok(client.includes("All five appearances"));
+  assert.ok(client.includes("function kingWatchPhase"));
+  assert.ok(client.includes("King is in"));
+  assert.ok(client.includes("King enters"));
+  assert.ok(client.includes("Exact room is revealed 30 seconds before"));
+  assert.ok(!client.includes("All five appearances"));
+  assert.ok(!client.includes("King warning</span>"));
   assert.ok(lobby.includes("full KING OF SPADES schedule"));
+});
+
+test("king intel never posts a public building-entry notice", () => {
+  assert.ok(!socket.includes("THE KING OF SPADES HAS ENTERED THE BUILDING."));
+  assert.ok(!socket.includes("FULL SCHEDULE REVEALED TO THE WATCHER"));
+  assert.ok(!socket.includes("THE KING OF SPADES TOOK A PLAYER."));
+  assert.ok(socket.includes('if (m.victim === youRef.current) pushNotice("THE KING OF SPADES TOOK YOU.")'));
+});
+
+test("king kills trigger a victim-only vision and faint sequence", () => {
+  assert.ok(client.includes("kingDeathAt"));
+  assert.ok(client.includes("The King of Spades found you."));
+  assert.ok(canvas.includes("kingFaintAt"));
+  assert.ok(canvas.includes('event.victim === propsRef.current.youId'));
+});
+
+test("room crossing ids stay monotonic after the alert expires", () => {
+  assert.ok(socket.includes("id: prev.id, door: null, from: null, to: null, cost: 0, player: null"));
+  assert.ok(canvas.includes("props.cross.id !== lastCrossId.current"));
+  const entered = game.indexOf('"type": "room_entered"');
+  const strike = game.indexOf("await self._king_strike()");
+  assert.ok(entered > -1 && strike > -1 && entered < strike);
 });
 
 test("lockdown is opt-in escapable and shifts protect locked/exit rooms", () => {
@@ -190,7 +218,8 @@ test("sealed alerts override instantly and expire in two seconds", () => {
 
 test("transient alerts last five seconds and only the actor gets lockdown effects", () => {
   assert.ok(socket.includes("setDoorEvent(null), 5000"));
-  assert.ok(socket.includes("setCross({"));
+  assert.ok(socket.includes("setCross((prev) => ({"));
+  assert.ok(socket.includes("id: prev.id, door: null, from: null, to: null, cost: 0, player: null,"));
   assert.ok(socket.includes("setHazard(null), 5000"));
   assert.ok(socket.includes("setRevive(null), 5000"));
   assert.ok(socket.includes("setExitNotice(null), 5000"));

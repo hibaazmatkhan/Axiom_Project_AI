@@ -371,6 +371,7 @@ export default function GameCanvas(props: Props) {
     let lastStepAt = 0;
     const previewGroups = new Map<Direction, THREE.Group>();
     let crossAnim: CrossAnimation | null = null;
+    let kingFaintAt = 0;
     let kingGroup: THREE.Group | null = null;
     let kingEyes: THREE.Mesh[] = [];
     let kingLight: THREE.PointLight | null = null;
@@ -634,6 +635,7 @@ export default function GameCanvas(props: Props) {
       const here = !event.room_code || event.room_code === currentRoom;
       if (event.type === "kill") {
         glitch = 1;
+        if (event.victim === propsRef.current.youId) kingFaintAt = performance.now();
         spawnBlood(event.room_code ?? currentRoom);
         return;
       }
@@ -1296,6 +1298,18 @@ export default function GameCanvas(props: Props) {
           yaw: camera.rotation.y,
           moving: Math.hypot(freeVel.x, freeVel.z) > 0.25 || !!crossAnim,
         });
+      }
+
+      if (kingFaintAt > 0) {
+        const age = (t - kingFaintAt) / 2200;
+        if (age >= 1) {
+          kingFaintAt = 0;
+        } else {
+          const sway = Math.sin(Math.min(1, age) * Math.PI);
+          camera.position.y -= sway * 0.62;
+          camera.rotation.x += sway * 0.2;
+          camera.rotation.z += Math.sin(t / 48) * 0.02 * (1 - age);
+        }
       }
 
       const slideEase = 1 - Math.exp(-dt * 8);
