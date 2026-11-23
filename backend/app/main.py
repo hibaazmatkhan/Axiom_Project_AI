@@ -35,6 +35,7 @@ from .auth import (
 )
 from .game import MAX_PLAYERS, GameAlreadyStarted, Room
 from .room_registry import RoomRegistry, canonicalize_room_code
+from .shared_rooms import REDIS_AVAILABLE, RedisRoomGateway, RedisRoomRegistry
 from .store_errors import MatchStoreUnavailable
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,15 @@ app.add_middleware(
 )
 
 rooms: dict[str, Room] = {}
-registry = RoomRegistry()
+REDIS_URL = config.REDIS_URL
+if REDIS_URL and REDIS_AVAILABLE:
+    registry = RedisRoomRegistry(REDIS_URL)
+elif REDIS_URL:
+    logger.error("REDIS_URL is set but the redis package is unavailable; using process-local rooms")
+    registry = RoomRegistry()
+else:
+    registry = RoomRegistry()
+gateway = RedisRoomGateway(INSTANCE_ID, REDIS_URL if REDIS_AVAILABLE else "", rooms, registry)
 room_creation_lock = asyncio.Lock()
 
 _app_check_problem = auth.app_check_config_error()
@@ -331,7 +340,7 @@ def _normalize_code(code: str) -> str:
     return canonicalize_room_code(code)
 
 
-def _room_response(code: str) -> dict:
+async def _room_response(code: str) -> dict:
     room = rooms.get(code)
     if room is not None:
         connected = sum(1 for p in room.players.values() if p.connected)
@@ -346,6 +355,20 @@ def _room_response(code: str) -> dict:
             "joinable": room.status == "lobby" and len(room.players) < MAX_PLAYERS,
             "instance_id": INSTANCE_ID,
         }
+    if gateway.enabled:
+        meta = await gateway.get_meta(code)
+        if meta is not None:
+            return {
+                "room_id": meta.get("room_id") or code,
+                "code": code,
+                "status": meta.get("status") or "lobby",
+                "players": int(meta.get("players") or 0),
+                "connected": int(meta.get("connected") or 0),
+                "full": bool(meta.get("full")),
+                "started": bool(meta.get("started")),
+                "joinable": bool(meta.get("joinable")),
+                "instance_id": meta.get("instance_id") or INSTANCE_ID,
+            }
     if registry.expired_reservation(code):
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Room code expired.")
     reservation = registry.get_reservation(code)
@@ -369,6 +392,15 @@ async def create_room(payload: RoomCreate | None = None):
     min_players = (payload.min_players if payload else None) or MIN_PLAYERS
     async with room_creation_lock:
         reservation = registry.reserve(min_players, existing_codes=rooms.keys())
+        if gateway.enabled:
+            try:
+                ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
+                ms = float(MATCH_SECONDS) if MATCH_SECONDS else None
+                await gateway.create_room(reservation.code, min_players, ts, ms)
+                registry.consume(reservation.code)
+            except Exception:
+                registry.restore(reservation)
+                raise
     audit.log(None, "room_create", {"room_id": reservation.room_id, "code": reservation.code,
                                     "instance_id": INSTANCE_ID})
     logger.info("room_create instance=%s code=%s room_id=%s",
@@ -382,6 +414,19 @@ async def quick_match(payload: QuickMatchRequest):
     try:
         async with room_creation_lock:
             result = registry.queue(payload.client_key, MIN_PLAYERS, existing_codes=rooms.keys())
+            if gateway.enabled and result.get("status") == "matched":
+                reservation = registry.get_reservation(result["code"])
+                if reservation is not None:
+                    try:
+                        ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
+                        ms = float(MATCH_SECONDS) if MATCH_SECONDS else None
+                        await gateway.create_room(
+                            result["code"], reservation.min_players, ts, ms
+                        )
+                        registry.consume(result["code"])
+                    except Exception:
+                        registry.restore(reservation)
+                        raise
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if result.get("status") == "matched":
@@ -402,12 +447,12 @@ def quick_match_status(client_key: str):
 
 
 @app.get("/api/rooms/{code}")
-def room_status(code: str):
+async def room_status(code: str):
     normalized = _normalize_code(code)
     logger.info("room_status instance=%s code=%s normalized=%s", INSTANCE_ID, code, normalized)
     if not normalized:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
-    return _room_response(normalized)
+    return await _room_response(normalized)
 
 
 @app.get("/api/stages")
@@ -594,6 +639,13 @@ async def _spectator_socket(ws: WebSocket, room_id: str) -> None:
     user = await _ws_admin_identity(ws)
     if user is None:
         return
+    if gateway.enabled:
+        audit.log(user.uid, "spectator_connect", {"room_id": room_id})
+        try:
+            await gateway.spectator_socket(ws, room_id, user)
+        finally:
+            audit.log(user.uid, "spectator_disconnect", {"room_id": room_id})
+        return
     room = rooms.get(room_id)
     if room is None:
         await ws.send_json({
@@ -637,6 +689,9 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
                          auth_required: bool) -> None:
     identity = await _ws_identity(ws, name, pid, auth_required)
     if identity is None:
+        return
+    if gateway.enabled:
+        await gateway.player_socket(ws, room_id, identity)
         return
     async with room_creation_lock:
         room = rooms.get(room_id)

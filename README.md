@@ -100,7 +100,9 @@ key must never be exposed to the browser or committed.
 
 Set `AXIOM_MATCH_STORE=supabase` in production so match history, stats and
 Dealer models use Supabase. `AXIOM_MATCH_STORE=sqlite` keeps the local/test
-fallback; it must not be used for deployed ranked data.
+fallback; it must not be used for deployed ranked data. Set `REDIS_URL` for
+deployed rooms so multiple backend instances share reservations, status and
+WebSocket routing; leave it unset for single-process local development.
 
 Run the Supabase migrations once in the Supabase SQL editor:
 
@@ -163,7 +165,7 @@ The root `vercel.json` deploys both services in one Vercel project: Next.js from
 
 For local development outside Vercel, set `BACKEND_URL=http://localhost:8000` and `WS_URL=ws://localhost:8000` in `frontend/.env.local`. Browser config uses non-prefixed `FIREBASE_*`, `SITE_URL`, and `WS_URL` values injected by `frontend/next.config.mjs`; do not add a public prefix to these variables.
 
-Before going live, authorize the Vercel domain in Firebase Auth, set Firebase/Supabase secrets in Vercel, and keep `AXIOM_MATCH_STORE=supabase` for persisted match data. Do not set `BACKEND_URL`, `WS_URL`, or `NEXT_PUBLIC_WS_URL` on the Vercel project for Services mode. Vercel Services runs the FastAPI backend on Fluid compute with the maximum available function duration; sockets reconnect through `frontend/lib/useGameSocket.ts`, but rooms and quick-match state remain process-local (`rooms` in `backend/app/main.py` and `RoomRegistry` in `backend/app/room_registry.py`). Shared state such as Redis is required before horizontal scaling. The Render Blueprint remains available as an optional external-backend deployment, not the default Vercel setup.
+Before going live, authorize the Vercel domain in Firebase Auth, set Firebase/Supabase secrets in Vercel, and keep `AXIOM_MATCH_STORE=supabase` for persisted match data. Do not set `BACKEND_URL`, `WS_URL`, or `NEXT_PUBLIC_WS_URL` on the Vercel project for Services mode. Set `REDIS_URL` in the backend environment to a Redis-compatible connection string so room reservations, room status, ownership and WebSocket fan-out are shared across Vercel Function instances; `backend/app/shared_rooms.py` then routes joins and intents to the instance that owns the authoritative `Room`. Without `REDIS_URL`, rooms stay process-local for simple local development. The Render Blueprint is not used for the current Vercel-only deployment.
 
 ---
 
@@ -275,6 +277,7 @@ axiom/
 │   │   ├── audit.py        # audit log and room inventory persistence
 │   │   ├── avatar_store.py # avatar validation, storage upload and cleanup
 │   │   ├── room_registry.py # process-local room reservations + quick-match queue
+│   │   ├── shared_rooms.py  # Redis reservations, ownership, status + socket routing
 │   │   ├── supabase_store.py # profiles, avatars, export and deletion
 │   │   ├── repositories.py # storage abstraction protocols
 │   │   ├── db.py           # match store selection (Supabase / SQLite fallback)

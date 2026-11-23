@@ -11,3 +11,4 @@ pillow>=10.0
 python-multipart>=0.0.9
 matplotlib>=3.7
 scikit-learn>=1.4
+redis>=5.0

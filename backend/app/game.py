@@ -19,6 +19,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from fastapi import WebSocket
 
@@ -229,8 +230,10 @@ class Room:
         self.started_at = time.time()
         # Read-only admin observers. They never take a player slot and receive
         # the unfiltered arena, dice, visions and event timeline.
-        self.spectators: list[WebSocket] = []
+        self.spectators: list[Any] = []
         self._admin_push_at = 0.0
+        self.transport: Any | None = None
+        self.state_hook: Callable[[], Any] | None = None
         self.king: dict | None = None
         self.king_appearance = 0
         self.king_spawn_at: list[float] = []
@@ -323,6 +326,8 @@ class Room:
 
     def _audit_room(self) -> None:
         audit.room_upsert(self.id, self)
+        if self.state_hook is not None:
+            self.state_hook()
 
     def log(self, player_id: str | None, kind: str, data: dict | None = None) -> None:
         ev = {"t": time.time(), "player": player_id, "kind": kind, "data": data or {}}
@@ -497,6 +502,9 @@ class Room:
         return filter_snapshot(snap, role)
 
     async def send(self, player: Player, payload: dict) -> None:
+        if self.transport is not None:
+            await self.transport.send(player.id, payload)
+            return
         if player.ws is None:
             return
         try:
@@ -505,6 +513,9 @@ class Room:
             pass
 
     async def broadcast(self, payload: dict, exclude: str | None = None) -> None:
+        if self.transport is not None:
+            await self.transport.broadcast(payload, exclude)
+            return
         for p in list(self.players.values()):
             if p.id != exclude and p.connected:
                 await self.send(p, payload)
@@ -588,16 +599,23 @@ class Room:
             "updated_at": time.time(),
         }
 
-    async def watch(self, ws: WebSocket) -> None:
-        self.spectators.append(ws)
+    async def watch(self, ws: WebSocket | None, token: str | None = None) -> None:
+        key: Any = token or f"local-{id(ws)}"
+        self.spectators.append(key)
+        if self.transport is not None:
+            await self.transport.send_spectator(str(key), self.admin_public())
+            return
+        if ws is None:
+            return
         try:
             await ws.send_json(self.admin_public())
         except Exception:
             pass
 
-    async def unwatch(self, ws: WebSocket) -> None:
-        if ws in self.spectators:
-            self.spectators.remove(ws)
+    async def unwatch(self, ws: WebSocket | None, token: str | None = None) -> None:
+        key: Any = token if token is not None else f"local-{id(ws)}"
+        if key in self.spectators:
+            self.spectators.remove(key)
 
     async def broadcast_admin(self, force: bool = False) -> None:
         if not self.spectators:
@@ -607,6 +625,9 @@ class Room:
             return
         self._admin_push_at = now
         payload = self.admin_public()
+        if self.transport is not None:
+            await self.transport.broadcast_admin(payload)
+            return
         dead: list[WebSocket] = []
         for ws in list(self.spectators):
             try:
@@ -617,11 +638,12 @@ class Room:
             await self.unwatch(ws)
 
     # ---- lifecycle ----------------------------------------------------------
-    async def join(self, ws: WebSocket, name: str, player_id: str | None = None,
+    async def join(self, ws: WebSocket | None, name: str, player_id: str | None = None,
                    uid: str | None = None, verified: bool = False,
                    avatar_url: str | None = None,
                    character_id: str | None = None,
-                   instance_id: str | None = None) -> Player | None:
+                   instance_id: str | None = None,
+                   join_token: str | None = None) -> Player | None:
         avatar_url, _ = normalize_avatar(avatar_url, character_id, uid or player_id or name)
         if player_id and player_id in self.players:
             p = self.players[player_id]
@@ -638,6 +660,8 @@ class Room:
                 welcome = {"type": "welcome", "you": p.id, "state": self.snapshot(p)}
                 if instance_id:
                     welcome["instance_id"] = instance_id
+                if join_token:
+                    welcome["join_token"] = join_token
                 if self.final_payload:
                     welcome["game_over"] = self.final_payload
                 await self.send(p, welcome)
@@ -671,6 +695,8 @@ class Room:
         welcome = {"type": "welcome", "you": pid, "state": self.snapshot(player)}
         if instance_id:
             welcome["instance_id"] = instance_id
+        if join_token:
+            welcome["join_token"] = join_token
         if self.final_payload:
             welcome["game_over"] = self.final_payload
         await self.send(player, welcome)
