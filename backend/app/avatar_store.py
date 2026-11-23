@@ -230,4 +230,15 @@ def clear(uid: str) -> None:
 
 
 def guest_avatar(payload: object, seed: object | None = None) -> tuple[str | None, None]:
+    if isinstance(payload, dict):
+        preset = payload.get("pfp_preset_id")
+        if is_pfp_preset(preset):
+            return pfp_url(preset), None
+        avatar = payload.get("avatar")
+        if is_pfp_preset(avatar):
+            return pfp_url(avatar), None
+        if isinstance(avatar, str):
+            match = re.fullmatch(r"/avatars/pfp/([a-z]+)\.png", avatar)
+            if match and is_pfp_preset(match.group(1)):
+                return pfp_url(match.group(1)), None
     return normalize_avatar(None, None, seed)

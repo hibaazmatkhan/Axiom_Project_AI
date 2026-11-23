@@ -182,6 +182,7 @@ class Room:
         self.nexus = director if director is not None else NexusDirector(seed=self.seed)
         self.players: dict[str, Player] = {}
         self.status = "lobby"  # lobby | running | won | over
+        self.final_payload: dict | None = None
         self.round = 0
         self.knowledge = KnowledgeBase()
         self.complexity_override = 1
@@ -416,7 +417,7 @@ class Room:
         return out
 
     def players_public(self) -> list[dict]:
-        return [self.player_public(p) for p in self.players.values()]
+        return [self.player_public(p) for p in self.players.values() if p.connected]
 
     def players_message(self) -> dict:
         return {"type": "players", "status": self.status, "players": self.players_public()}
@@ -619,7 +620,8 @@ class Room:
     async def join(self, ws: WebSocket, name: str, player_id: str | None = None,
                    uid: str | None = None, verified: bool = False,
                    avatar_url: str | None = None,
-                   character_id: str | None = None) -> Player | None:
+                   character_id: str | None = None,
+                   instance_id: str | None = None) -> Player | None:
         avatar_url, _ = normalize_avatar(avatar_url, character_id, uid or player_id or name)
         if player_id and player_id in self.players:
             p = self.players[player_id]
@@ -633,8 +635,16 @@ class Room:
                     p.room_id = self.arena.start_room().rid
                 self.log(p.id, "reconnect")
                 self._audit_room()
-                await self.send(p, {"type": "welcome", "you": p.id, "state": self.snapshot(p)})
+                welcome = {"type": "welcome", "you": p.id, "state": self.snapshot(p)}
+                if instance_id:
+                    welcome["instance_id"] = instance_id
+                if self.final_payload:
+                    welcome["game_over"] = self.final_payload
+                await self.send(p, welcome)
                 await self.broadcast_state()
+                if self.status in ("won", "over"):
+                    return p
+                await self.maybe_start()
                 return p
             player_id = None
         if self.status != "lobby":
@@ -658,7 +668,12 @@ class Room:
         self._audit_room()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
-        await self.send(player, {"type": "welcome", "you": pid, "state": self.snapshot(player)})
+        welcome = {"type": "welcome", "you": pid, "state": self.snapshot(player)}
+        if instance_id:
+            welcome["instance_id"] = instance_id
+        if self.final_payload:
+            welcome["game_over"] = self.final_payload
+        await self.send(player, welcome)
         await self.broadcast_state()
         return player
 
@@ -667,22 +682,45 @@ class Room:
             return
         player.connected = False
         player.ws = None
+        player.ready = False
         player.disconnected_at = time.time()
         self.log(player.id, "disconnect")
         self._audit_room()
         await self.broadcast({
             "type": "player_left", "player": player.id,
-            "name": player.name, "message": f"{player.name} left the arena.",
+            "name": player.name, "reason": "disconnect",
+            "status": self.status, "players": self.players_public(),
+            "message": f"{player.name} left the arena.",
         }, exclude=player.id)
         await self.broadcast_state()
+        if self.status == "lobby":
+            await self.maybe_start()
+        elif self.status == "running":
+            await self._check_endings()
 
-    def purge_disconnected(self) -> None:
+    async def purge_disconnected(self) -> None:
         dead = [pid for pid, p in self.players.items()
                 if not p.connected and time.time() - getattr(p, "disconnected_at", time.time()) > 120]
+        if not dead:
+            return
+        left = []
         for pid in dead:
-            self.players.pop(pid, None)
-        if dead:
-            self._audit_room()
+            player = self.players.pop(pid, None)
+            if player is not None:
+                left.append(player)
+        self._audit_room()
+        for player in left:
+            await self.broadcast({
+                "type": "player_left", "player": player.id,
+                "name": player.name, "reason": "timeout",
+                "status": self.status, "players": self.players_public(),
+                "message": f"{player.name} left the arena.",
+            })
+        await self.broadcast_state()
+        if self.status == "lobby":
+            await self.maybe_start()
+        elif self.status == "running":
+            await self._check_endings()
 
     # ---- input --------------------------------------------------------------
     async def handle(self, player: Player, msg: dict) -> None:
@@ -1527,17 +1565,18 @@ class Room:
     async def _check_endings(self) -> None:
         if self.status != "running":
             return
-        living = [p for p in self.players.values() if not p.eliminated]
+        living = self.alive()
         if not living:
             await self.finish(won=False)
             return
         exit_room = self.arena.exit_room()
         in_exit = [p for p in living if p.room_id == exit_room.rid]
-        if len(in_exit) == len(living):
+        if in_exit and len(in_exit) == len(living):
             self.pa = "THE EXIT IS OPEN. THE TEAM ESCAPED."
             self.end_reason = "The team reached the exit."
-            for p in living:
-                p.escaped = True
+            for p in self.players.values():
+                if not p.eliminated:
+                    p.escaped = True
             await self.finish(won=True)
 
     async def _expire_match(self) -> None:
@@ -1930,6 +1969,11 @@ class Room:
         except Exception:
             logger.exception("failed to persist match")
         self.log(None, "won" if won else "over", {"round": self.round})
+        self.final_payload = {
+            "type": "game_over", "won": won,
+            "reason": self.end_reason or "The team failed to reach the exit.",
+            "summary": summary, "nexus": report,
+        }
         for player in list(self.players.values()):
             if not player.connected:
                 continue
@@ -1937,17 +1981,16 @@ class Room:
                 reason = "All living players reached the exit."
             else:
                 reason = player.death_reason or self.end_reason or "The team failed to reach the exit."
-            await self.send(player, {
-                "type": "game_over", "won": won, "reason": reason,
-                "summary": summary, "nexus": report,
-            })
+            game_over = dict(self.final_payload)
+            game_over["reason"] = reason
+            await self.send(player, game_over)
         await self.broadcast_admin()
 
     async def _loop(self) -> None:
         try:
             while self.players:
                 await asyncio.sleep(0.2)
-                self.purge_disconnected()
+                await self.purge_disconnected()
                 if not any(p.connected for p in self.players.values()):
                     return
                 await self.expire_open_doors()

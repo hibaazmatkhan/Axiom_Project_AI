@@ -2,6 +2,7 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import AnimatedFavicon from "@/components/AnimatedFavicon";
 import { AuthProvider } from "@/components/AuthProvider";
+import { ProfileProvider } from "@/components/ProfileProvider";
 
 const siteUrl =
   process.env.SITE_URL ||
@@ -64,8 +65,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="bg-void text-bone antialiased">
         <AuthProvider>
-          <AnimatedFavicon />
-          {children}
+          <ProfileProvider>
+            <AnimatedFavicon />
+            {children}
+          </ProfileProvider>
         </AuthProvider>
       </body>
     </html>

@@ -8,12 +8,12 @@ import Avatar from "@/components/Avatar";
 import AvatarCropper from "@/components/AvatarCropper";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
+import { useProfile } from "@/components/ProfileProvider";
 import {
   ApiError,
   api,
   type Leader,
   type MatchRecord,
-  type MeResponse,
   type PlayerStats,
 } from "@/lib/api";
 import {
@@ -50,7 +50,13 @@ const ATTR_LABELS: Record<string, string> = {
 
 function ProfilePageContent() {
   const { user, loading } = useAuth();
-  const [me, setMe] = useState<MeResponse | null>(null);
+  const {
+    data: me,
+    status: profileStatus,
+    error: profileError,
+    refresh,
+    patchProfile,
+  } = useProfile();
   const [history, setHistory] = useState<MatchRecord[]>([]);
   const [leaders, setLeaders] = useState<Leader[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -68,23 +74,8 @@ function ProfilePageContent() {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [cropSource, setCropSource] = useState<File | null>(null);
 
-  const refresh = async () => {
-    try {
-      const result = await api.me();
-      setMe(result);
-      setEditName(result.profile.username);
-      setEditDisplay(result.profile.display_name);
-      setError(null);
-    } catch (cause) {
-      const message =
-        cause instanceof Error ? cause.message : "Profile storage is not available.";
-      setError(message);
-    }
-  };
-
   useEffect(() => {
     if (!user) {
-      setMe(null);
       setHistory([]);
       return;
     }
@@ -114,6 +105,16 @@ function ProfilePageContent() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (profileError) setError(profileError);
+  }, [profileError]);
+
+  useEffect(() => {
+    if (!me) return;
+    setEditName(me.profile.username);
+    setEditDisplay(me.profile.display_name);
+  }, [me?.profile.username, me?.profile.display_name]);
+
   const saveProfile = async () => {
     if (busy || !editName.trim()) return;
     setBusy(true);
@@ -124,7 +125,7 @@ function ProfilePageContent() {
         username: editName.trim(),
         display_name: editDisplay.trim() || editName.trim(),
       });
-      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      patchProfile(result.profile);
       setNotice("Profile saved.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save the profile.");
@@ -140,7 +141,7 @@ function ProfilePageContent() {
     setNotice(null);
     try {
       const result = await api.selectPfpPreset(id);
-      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      patchProfile(result.profile);
       setNotice("PFP updated.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update the PFP.");
@@ -157,7 +158,7 @@ function ProfilePageContent() {
     try {
       assertAvatarType(file);
       const result = await api.uploadAvatar(file);
-      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      patchProfile(result.profile);
       setNotice("Avatar uploaded.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not upload the avatar.");
@@ -190,7 +191,7 @@ function ProfilePageContent() {
     setNotice(null);
     try {
       const result = await api.deleteAvatar();
-      setMe((current) => (current ? { ...current, profile: result.profile } : current));
+      patchProfile(result.profile);
       setNotice("Avatar reset to default symbol.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not reset the avatar.");
@@ -402,7 +403,7 @@ function ProfilePageContent() {
     }
   };
 
-  if (loading) {
+  if (loading || (user && (profileStatus === "idle" || profileStatus === "loading"))) {
     return (
       <PageShell hideFooter>
         <main className="mx-auto flex min-h-[calc(100vh-68px)] max-w-7xl items-center justify-center px-4 py-12 sm:px-6">

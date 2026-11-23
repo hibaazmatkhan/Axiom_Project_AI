@@ -16,6 +16,9 @@ const fate = read("../../backend/app/fate.py");
 const registry = read("../../backend/app/room_registry.py");
 const main = read("../../backend/app/main.py");
 const lobby = read("../app/lobby/page.tsx");
+const profileProvider = read("../components/ProfileProvider.tsx");
+const login = read("../app/login/page.tsx");
+const avatarRules = read("../lib/avatarRules.ts");
 const landing = read("../app/page.tsx");
 const guest = read("../lib/guest.ts");
 const gameLoader = read("../app/game/GameLoader.tsx");
@@ -97,7 +100,9 @@ test("team notes render in the right column", () => {
 
 test("room codes are exactly four characters", () => {
   assert.ok(registry.includes("CODE_LENGTH = 4"));
-  assert.ok(main.includes('.upper()[:4]'));
+  assert.ok(registry.includes("canonicalize_room_code"));
+  assert.ok(main.includes("canonicalize_room_code"));
+  assert.ok(lobby.includes("canonicalRoomCode(code)"));
   assert.ok(lobby.includes("maxLength={4}"));
   assert.ok(lobby.includes("/^[A-Z0-9]{4}$/"));
 });
@@ -167,6 +172,39 @@ test("guests get a usable name and short room codes survive navigation", () => {
   assert.ok(lobby.includes("guest.get()"));
   assert.ok(gameLoader.includes("slice(0, 4)"));
   assert.ok(gameLoader.includes('|| "Guest"'));
+});
+
+test("guests can select a whitelisted preset PFP", () => {
+  assert.ok(guest.includes("getPfp"));
+  assert.ok(guest.includes("setPfp"));
+  assert.ok(guest.includes("isPfpPresetId"));
+  assert.ok(avatarRules.includes("PFP_PRESETS"));
+  assert.ok(lobby.includes("Guest profile image"));
+  assert.ok(socket.includes("pfp_preset_id"));
+  assert.ok(main.includes('frame.get("pfp_preset_id")'));
+});
+
+test("room diagnostics expose the backend instance id", () => {
+  assert.ok(main.includes("INSTANCE_ID"));
+  assert.ok(main.includes('"instance_id": INSTANCE_ID'));
+  assert.ok(main.includes("room_join instance=%s"));
+  assert.ok(socket.includes('"room_expired"'));
+});
+
+test("leave events reconcile the roster immediately", () => {
+  assert.ok(game.includes("player_left"));
+  assert.ok(game.includes("await self.purge_disconnected()"));
+  assert.ok(game.includes("self.final_payload"));
+  assert.ok(socket.includes("livePlayers"));
+  assert.ok(socket.includes("m.game_over"));
+});
+
+test("signed-in profiles load through a deduplicated provider", () => {
+  assert.ok(profileProvider.includes("ProfileProvider"));
+  assert.ok(profileProvider.includes("inFlightRef"));
+  assert.ok(profileProvider.includes('"refreshing"'));
+  assert.ok(login.includes("syncProfile("));
+  assert.ok(!login.includes("await syncProfile("));
 });
 
 test("room join validates the four-character code before navigation", () => {

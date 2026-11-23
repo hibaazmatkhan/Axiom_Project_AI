@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
+import { useProfile } from "@/components/ProfileProvider";
 import { api } from "@/lib/api";
 import { authErrorMessage } from "@/lib/authErrors";
 import {
@@ -33,6 +34,7 @@ type Mode = "login" | "signup";
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const { refresh: refreshProfile } = useProfile();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -56,16 +58,18 @@ export default function LoginPage() {
     return value && value.startsWith("/") && !value.startsWith("//") ? value : null;
   };
 
-  const syncProfile = async (preferredUsername?: string) => {
-    try {
-      await api.me();
-      if (preferredUsername) {
-        await api.updateProfile({ username: preferredUsername, display_name: preferredUsername });
+  const syncProfile = (preferredUsername?: string) => {
+    void (async () => {
+      try {
+        await api.me();
+        if (preferredUsername) {
+          await api.updateProfile({ username: preferredUsername, display_name: preferredUsername });
+        }
+        await refreshProfile(true);
+      } catch {
+        setInfo("Your dossier will finish loading in the background.");
       }
-      return null;
-    } catch (error) {
-      return error instanceof Error ? error.message : "Profile storage is not ready.";
-    }
+    })();
   };
 
   const handleAuthError = (error: unknown) => {
@@ -117,7 +121,7 @@ export default function LoginPage() {
           );
           return;
         }
-        await syncProfile(cleanUsername);
+        syncProfile(cleanUsername);
         router.push(nextPath() ?? "/profile");
       } else {
         const credential = await signInWithEmailAndPassword(
@@ -125,7 +129,7 @@ export default function LoginPage() {
           email.trim(),
           password
         );
-        await syncProfile();
+        syncProfile();
         router.push(nextPath() ?? (credential.user.emailVerified ? "/lobby" : "/profile"));
       }
     } catch (error) {
@@ -142,7 +146,7 @@ export default function LoginPage() {
     setInfo(null);
     try {
       const credential = await signInWithPopup(getFirebaseAuth(), getGoogleProvider());
-      await syncProfile();
+      syncProfile();
       router.push(nextPath() ?? (credential.user.emailVerified ? "/lobby" : "/profile"));
     } catch (error) {
       handleAuthError(error);
@@ -164,7 +168,7 @@ export default function LoginPage() {
       await resolver.resolveSignIn(
         TotpMultiFactorGenerator.assertionForSignIn(factor.uid, mfaCode.trim())
       );
-      await syncProfile();
+      syncProfile();
       setResolver(null);
       setMfaCode("");
       router.push(nextPath() ?? "/lobby");
@@ -224,7 +228,7 @@ export default function LoginPage() {
     setInfo(null);
     try {
       await sendEmailVerification(current, emailActionCodeSettings("/verify-email"));
-      await syncProfile(pendingUsername || current.displayName || undefined);
+      syncProfile(pendingUsername || current.displayName || undefined);
       setVerificationPending(false);
       setInfo("Verification email sent. Opening your dossier…");
       router.push(nextPath() ?? "/profile");

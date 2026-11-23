@@ -52,6 +52,28 @@ def test_ws_auth_frame_creates_guest_identity():
     assert ws.sent == [] and ws.closed == []
 
 
+def test_guest_pfp_preset_is_used_in_ws_identity():
+    ws = FakeWebSocket([{
+        "type": "auth", "name": "Frame Guest", "pid": "pid-1",
+        "pfp_preset_id": "diamond",
+    }])
+
+    identity = asyncio.run(main._ws_identity(ws, "Query Guest", "query-pid", True))
+
+    assert identity.avatar_url == "/avatars/pfp/diamond.png"
+    assert ws.sent == [] and ws.closed == []
+
+
+def test_guest_ws_bypasses_app_check_enforcement(monkeypatch):
+    monkeypatch.setattr(config, "APP_CHECK_ENFORCE", True)
+    ws = FakeWebSocket([{"type": "auth", "name": "Frame Guest"}])
+
+    identity = asyncio.run(main._ws_identity(ws, "Query Guest", "", True))
+
+    assert identity is not None and identity.uid is None
+    assert ws.sent == [] and ws.closed == []
+
+
 def test_ws_auth_frame_verifies_token_and_profile(monkeypatch):
     calls = []
     monkeypatch.setattr(main, "verify_token", lambda token: calls.append(token) or _user())
@@ -70,6 +92,17 @@ def test_ws_auth_frame_verifies_token_and_profile(monkeypatch):
         avatar_url=expected_avatar, character_id=None,
     )
     assert calls == ["id-token"]
+
+
+def test_signed_in_ws_still_requires_app_check(monkeypatch):
+    monkeypatch.setattr(config, "APP_CHECK_ENFORCE", True)
+    ws = FakeWebSocket([{"type": "auth", "token": "id-token"}])
+
+    identity = asyncio.run(main._ws_identity(ws, "Player", "", True))
+
+    assert identity is None
+    assert ws.sent[0]["code"] == "app_check_invalid"
+    assert ws.closed == [1008]
 
 
 def test_ws_profile_unavailable_sends_error_and_closes(monkeypatch, caplog):

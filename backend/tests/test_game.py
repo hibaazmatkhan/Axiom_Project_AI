@@ -819,6 +819,67 @@ def test_reconnect_restores_player():
     assert again.id == pid and again.connected
 
 
+def test_leave_broadcasts_authoritative_roster():
+    room = Room("LEAVE", seed=1)
+    stayer_ws = _RecordingWS()
+    leaving_ws = _RecordingWS()
+
+    async def scenario():
+        stayer = await room.join(stayer_ws, "Stayer")
+        leaving = await room.join(leaving_ws, "Leaving")
+        stayer_ws.sent.clear()
+        await room.leave(leaving)
+        return stayer, leaving
+
+    stayer, leaving = asyncio.run(scenario())
+    messages = [m for m in stayer_ws.sent if m.get("type") == "player_left"]
+    assert messages and messages[-1]["player"] == leaving.id
+    assert messages[-1]["players"]
+    assert all(p["id"] != leaving.id for p in messages[-1]["players"])
+    assert all(p["id"] != leaving.id for m in stayer_ws.sent
+               if m.get("type") == "state" for p in m["state"]["players"])
+
+
+def test_purge_disconnected_broadcasts_removal():
+    room = Room("PURGE", seed=1)
+    stayer_ws = _RecordingWS()
+    gone_ws = _RecordingWS()
+
+    async def scenario():
+        stayer = await room.join(stayer_ws, "Stayer")
+        gone = await room.join(gone_ws, "Gone")
+        gone.connected = False
+        gone.disconnected_at = time.time() - 121
+        stayer_ws.sent.clear()
+        await room.purge_disconnected()
+        return stayer, gone
+
+    stayer, gone = asyncio.run(scenario())
+    assert gone.id not in room.players
+    assert any(m.get("type") == "player_left" and m.get("player") == gone.id
+               for m in stayer_ws.sent)
+
+
+def test_welcome_replays_final_game_over():
+    room = Room("FINAL", seed=1)
+
+    async def scenario():
+        player = await room.join(_RecordingWS(), "A")
+        await room.leave(player)
+        room.final_payload = {
+            "type": "game_over", "won": True, "reason": "done", "summary": {}, "nexus": {},
+        }
+        replay_ws = _RecordingWS()
+        again = await room.join(replay_ws, "A", player.id, instance_id="inst-1")
+        return again, replay_ws.sent
+
+    again, sent = asyncio.run(scenario())
+    welcome = next(m for m in sent if m.get("type") == "welcome")
+    assert again is not None
+    assert welcome["instance_id"] == "inst-1"
+    assert welcome["game_over"]["won"] is True
+
+
 def test_locked_player_needs_two_helpers():
     room = Room("LOCK", seed=4, round_seconds=60)
     room.status = "running"

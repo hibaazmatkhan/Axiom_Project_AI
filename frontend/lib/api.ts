@@ -57,13 +57,22 @@ export type RoomInfo = {
   status: string;
   players: unknown[];
   connected: number;
+  full?: boolean;
+  started?: boolean;
+  joinable?: boolean;
+  instance_id?: string;
 };
 
 export type QuickMatchStatus = {
   status: "queued" | "matched";
   position?: number;
   code?: string;
+  instance_id?: string;
 };
+
+export function canonicalRoomCode(value: string): string {
+  return value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 4);
+}
 
 export type MeResponse = {
   user: PublicUser;
@@ -180,12 +189,12 @@ export const api = {
     ),
   stages: () => request<{ stages: unknown[]; max: number }>("/api/stages", {}, false),
   createRoom: (minPlayers?: number) =>
-    request<{ room_id: string; code: string }>("/api/rooms", {
+    request<{ room_id: string; code: string; instance_id?: string }>("/api/rooms", {
       method: "POST",
       body: JSON.stringify(minPlayers === undefined ? {} : { min_players: minPlayers }),
     }),
   getRoom: (code: string) =>
-    request<RoomInfo>(`/api/rooms/${encodeURIComponent(code.trim().toUpperCase())}`),
+    request<RoomInfo>(`/api/rooms/${encodeURIComponent(canonicalRoomCode(code))}`),
   quickMatch: (clientKey: string) =>
     request<QuickMatchStatus>("/api/rooms/quick-match", {
       method: "POST",
@@ -195,9 +204,9 @@ export const api = {
     request<QuickMatchStatus>(
       `/api/rooms/quick-match/${encodeURIComponent(clientKey)}`
     ),
-  health: async (): Promise<{ ok: boolean; rooms: number; players: number } | null> => {
+  health: async (): Promise<{ ok: boolean; rooms: number; players: number; instance_id?: string } | null> => {
     try {
-      return await request<{ ok: boolean; rooms: number; players: number }>(
+      return await request<{ ok: boolean; rooms: number; players: number; instance_id?: string }>(
         "/health",
         {},
         false

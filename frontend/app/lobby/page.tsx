@@ -7,8 +7,9 @@ import PageShell from "@/components/PageShell";
 import Avatar from "@/components/Avatar";
 import { BroadcastKicker, SuitMark } from "@/components/Brand";
 import { useAuth } from "@/components/AuthProvider";
-import { api } from "@/lib/api";
-import { pfpPresetUrl } from "@/lib/avatarRules";
+import { useProfile } from "@/components/ProfileProvider";
+import { api, canonicalRoomCode } from "@/lib/api";
+import { PFP_PRESETS, pfpPresetUrl, type PfpPresetId } from "@/lib/avatarRules";
 import { guest } from "@/lib/guest";
 
 const QUICK_MATCH_KEY = "axiom.quickMatchClientKey";
@@ -40,12 +41,14 @@ function clientKey(): string {
 export default function LobbyPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const { data: profileData, refresh: refreshProfile } = useProfile();
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number } | null>(null);
+  const [health, setHealth] = useState<{ ok: boolean; rooms: number; players: number; instance_id?: string } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [previewRole, setPreviewRole] = useState("Pathfinder");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [pfpPresetId, setPfpPresetId] = useState<PfpPresetId>("joker");
   const [profileName, setProfileName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,21 +61,22 @@ export default function LobbyPage() {
     if (!user) {
       setName(guest.get());
       setAvatarUrl(null);
+      setPfpPresetId(guest.getPfp());
       setProfileName("");
       return;
     }
+    setName(user.displayName || user.email?.split("@")[0] || "");
+    void refreshProfile();
+  }, [user, loading, refreshProfile]);
+
+  useEffect(() => {
+    if (!user || !profileData) return;
     const fallback = user.displayName || user.email?.split("@")[0] || "";
-    setName(fallback);
-    api
-      .me()
-      .then((result) => {
-        const nextName = result.profile.display_name || result.profile.username || fallback;
-        setName(nextName);
-        setProfileName(nextName);
-        setAvatarUrl(result.profile.avatar_url ?? null);
-      })
-      .catch(() => undefined);
-  }, [user, loading]);
+    const nextName = profileData.profile.display_name || profileData.profile.username || fallback;
+    setName(nextName);
+    setProfileName(nextName);
+    setAvatarUrl(profileData.profile.avatar_url ?? null);
+  }, [user, profileData]);
 
   useEffect(() => {
     setHealthLoading(true);
@@ -107,10 +111,14 @@ export default function LobbyPage() {
   };
 
   const go = (room: string) => {
-    if (!name.trim() || !room.trim()) return;
-    if (!user) guest.set(name.trim());
+    const canonical = canonicalRoomCode(room);
+    if (!name.trim() || canonical.length !== 4) return;
+    if (!user) {
+      guest.set(name.trim());
+      guest.setPfp(pfpPresetId);
+    }
     router.push(
-      `/game?room=${encodeURIComponent(room.trim().toUpperCase())}&name=${encodeURIComponent(name.trim())}`
+      `/game?room=${encodeURIComponent(canonical)}&name=${encodeURIComponent(name.trim())}`
     );
   };
 
@@ -133,7 +141,7 @@ export default function LobbyPage() {
   };
 
   const joinRoom = async () => {
-    const target = code.trim().toUpperCase();
+    const target = canonicalRoomCode(code);
     if (!name.trim() || busy) return;
     if (!/^[A-Z0-9]{4}$/.test(target)) {
       setError("Room codes are exactly four letters or numbers.");
@@ -144,8 +152,11 @@ export default function LobbyPage() {
     setBusy(true);
     try {
       const room = await api.getRoom(target);
-      if (room.status !== "lobby") {
+      if (room.status !== "lobby" || room.started) {
         throw new Error("That match has already started.");
+      }
+      if (room.full || room.joinable === false) {
+        throw new Error("That room is full.");
       }
       go(target);
     } catch (cause) {
@@ -267,7 +278,7 @@ export default function LobbyPage() {
             <div className="mt-5 border-t border-bone/10 pt-5">
               <div className="flex items-center gap-3">
                 <Avatar
-                  src={avatarUrl ?? pfpPresetUrl("joker")}
+                  src={user ? avatarUrl ?? pfpPresetUrl("joker") : pfpPresetUrl(pfpPresetId)}
                   name={name || displayName}
                   size={48}
                 />
@@ -290,14 +301,37 @@ export default function LobbyPage() {
                   </>
                 ) : (
                   <>
-                    Guests play with a temporary identity.{" "}
+                    Guests can pick a temporary symbol below.{" "}
                     <Link href="/login?next=/lobby" className="text-gold underline underline-offset-2 hover:text-bone">
                       Sign in
                     </Link>{" "}
-                    to set a profile image.
+                    to save a profile image.
                   </>
                 )}
               </p>
+              {!user && (
+                <div className="mt-3 flex flex-wrap gap-2" aria-label="Guest profile image">
+                  {PFP_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => {
+                        setPfpPresetId(preset.id);
+                        guest.setPfp(preset.id);
+                      }}
+                      aria-pressed={pfpPresetId === preset.id}
+                      title={preset.label}
+                      className={`border p-1 transition ${
+                        pfpPresetId === preset.id
+                          ? "border-gold bg-gold/10"
+                          : "border-bone/10 hover:border-bone/30"
+                      }`}
+                    >
+                      <Avatar src={preset.src} name={preset.label} size={34} />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <button

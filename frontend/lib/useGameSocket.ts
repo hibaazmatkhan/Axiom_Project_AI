@@ -40,8 +40,12 @@ const FATAL_ERRORS = new Set([
   "auth_required", "auth_invalid", "auth_timeout", "auth_unavailable",
   "admin_required", "room_full", "game_started", "server_full",
   "invalid_username", "username_taken", "profile_unavailable",
-  "app_check_invalid", "app_check_unavailable", "room_not_found",
+  "app_check_invalid", "app_check_unavailable", "room_not_found", "room_expired",
 ]);
+
+function livePlayers(players: Player[] | undefined): Player[] {
+  return (players ?? []).filter((p) => p.connected !== false);
+}
 
 function socketUrl(room: string, name: string, pid: string) {
   const origin = window.location.origin;
@@ -186,8 +190,9 @@ export function useGameSocket(room: string, name: string) {
       setWristbandSanctions(s.wristband_sanctions ?? []);
       const cooldown = Number(s.you?.wristband_cooldown_remaining ?? 0);
       setWristbandCooldownAt(cooldown > 0 ? performance.now() + cooldown * 1000 : null);
-      setPlayers(s.players);
-      const liveIds = new Set(s.players.map((p) => p.id));
+      const visible = livePlayers(s.players);
+      setPlayers(visible);
+      const liveIds = new Set(visible.map((p) => p.id));
       setPoses((current) => Object.fromEntries(
         Object.entries(current).filter(([id]) => liveIds.has(id)),
       ));
@@ -269,13 +274,13 @@ export function useGameSocket(room: string, name: string) {
           }
           const appCheck = await appCheckToken();
           if (ws.readyState !== WebSocket.OPEN) return;
-          if (!idToken && authReady) guest.clearAvatar();
           ws.send(JSON.stringify({
             type: "auth",
             token: idToken,
             app_check: appCheck,
             name,
             pid: storedId || undefined,
+            pfp_preset_id: !idToken && authReady ? guest.getPfp() : undefined,
           }));
         })();
         heartbeatTimer = window.setInterval(() => {
@@ -306,18 +311,26 @@ export function useGameSocket(room: string, name: string) {
           try {
             sessionStorage.setItem(`axiom_pid_${room}`, m.you);
           } catch {}
+          if (m.game_over) {
+            setGameOver({
+              won: !!m.game_over.won,
+              reason: String(m.game_over.reason ?? "The match ended."),
+              summary: m.game_over.summary,
+            });
+            setStatus(m.game_over.won ? "won" : "over");
+          }
           apply(m.state);
         } else if (m.type === "state") {
           apply(m.state);
         } else if (m.type === "players") {
-          setPlayers(m.players);
+          setPlayers(livePlayers(m.players));
           setStatus(m.status);
           if (m.status !== "running") setNextAt(null);
         } else if (m.type === "round") {
           const tv = m as RoundView;
           if (tv.arena) setArena(tv.arena);
           if (tv.previous) setPrevArena(tv.previous);
-          if (tv.players) setPlayers(tv.players);
+          if (tv.players) setPlayers(livePlayers(tv.players));
           setTransition((t) => ({
             id: t.id + 1,
             round: tv.round,
@@ -426,6 +439,14 @@ export function useGameSocket(room: string, name: string) {
             p.id === event.player ? { ...p, pose } : p,
           ));
         } else if (m.type === "player_left") {
+          if (Array.isArray(m.players)) setPlayers(livePlayers(m.players));
+          else setPlayers((current) => current.filter((p) => p.id !== m.player));
+          setPoses((current) => {
+            const next = { ...current };
+            delete next[String(m.player)];
+            return next;
+          });
+          if (m.status) setStatus(m.status);
           setPlayerLeft({
             player: String(m.player ?? ""),
             name: String(m.name ?? "A player"),

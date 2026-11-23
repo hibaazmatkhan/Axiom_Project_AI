@@ -5,6 +5,7 @@ group only needs a code long enough to open its socket.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import string
 import time
@@ -16,6 +17,11 @@ CODE_ALPHABET = (
     + string.digits.replace("0", "").replace("1", "")
 )
 CODE_LENGTH = 4
+
+
+def canonicalize_room_code(value: object) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+    return cleaned[:CODE_LENGTH]
 
 
 @dataclass(frozen=True)
@@ -54,7 +60,7 @@ class RoomRegistry:
             self._matched.pop(key, None)
 
     def _new_code(self, taken: Iterable[str]) -> str:
-        blocked = {str(code).strip().upper() for code in taken}
+        blocked = {canonicalize_room_code(code) for code in taken}
         for _ in range(100):
             code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
             if code not in blocked:
@@ -77,11 +83,16 @@ class RoomRegistry:
 
     def get_reservation(self, code: str) -> Reservation | None:
         self.prune()
-        return self._reservations.get(str(code).strip().upper())
+        return self._reservations.get(canonicalize_room_code(code))
+
+    def expired_reservation(self, code: str) -> bool:
+        normalized = canonicalize_room_code(code)
+        reservation = self._reservations.get(normalized)
+        return reservation is not None and reservation.expires_at <= self._now()
 
     def consume(self, code: str) -> Reservation | None:
         self.prune()
-        return self._reservations.pop(str(code).strip().upper(), None)
+        return self._reservations.pop(canonicalize_room_code(code), None)
 
     def restore(self, reservation: Reservation) -> None:
         if reservation.expires_at <= self._now():

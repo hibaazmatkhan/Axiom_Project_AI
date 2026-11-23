@@ -35,11 +35,21 @@ def test_create_and_lookup_room():
 
     found = client.get(f"/api/rooms/{code}")
     assert found.status_code == 200
-    assert found.json() == {
-        "room_id": created.json()["room_id"], "code": code,
-        "status": "lobby", "players": 0, "connected": 0,
-    }
+    body = found.json()
+    assert body["room_id"] == created.json()["room_id"]
+    assert body["code"] == code
+    assert body["status"] == "lobby"
+    assert body["players"] == 0
+    assert body["connected"] == 0
+    assert body["joinable"] is True
+    assert body["instance_id"] == main.INSTANCE_ID
+    assert client.get(f"/api/rooms/{code.lower()}").status_code == 200
     assert client.get("/api/rooms/NOPE").status_code == 404
+
+
+def test_health_reports_instance_id():
+    client = TestClient(main.app)
+    assert client.get("/health").json()["instance_id"] == main.INSTANCE_ID
 
 
 def test_reservation_expires(isolated_rooms):
@@ -47,7 +57,7 @@ def test_reservation_expires(isolated_rooms):
     client = TestClient(main.app)
     code = client.post("/api/rooms").json()["code"]
     clock[0] += 601
-    assert client.get(f"/api/rooms/{code}").status_code == 404
+    assert client.get(f"/api/rooms/{code}").status_code == 410
 
 
 def test_quick_match_queues_then_matches(isolated_rooms):
@@ -92,15 +102,18 @@ def test_room_code_survives_last_disconnect():
     assert main.registry.get_reservation(code) is not None
 
     with client.websocket_connect(f"/ws/{code}?name=First") as ws:
-        assert ws.receive_json()["type"] == "welcome"
+        welcome = ws.receive_json()
+        assert welcome["type"] == "welcome"
+        assert welcome["instance_id"] == main.INSTANCE_ID
         assert main.registry.get_reservation(code) is None
         assert code in main.rooms
-    assert code not in main.rooms
-    assert main.registry.get_reservation(code) is not None
+    assert code in main.rooms
+    assert main.registry.get_reservation(code) is None
 
     found = client.get(f"/api/rooms/{code}")
     assert found.status_code == 200
     assert found.json()["status"] == "lobby"
+    assert found.json()["connected"] == 0
 
 
 def test_spectator_requires_auth_and_admin(monkeypatch):

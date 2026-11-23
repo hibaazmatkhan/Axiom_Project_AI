@@ -34,11 +34,12 @@ from .auth import (
     verify_token,
 )
 from .game import MAX_PLAYERS, GameAlreadyStarted, Room
-from .room_registry import RoomRegistry
+from .room_registry import RoomRegistry, canonicalize_room_code
 from .store_errors import MatchStoreUnavailable
 
 logger = logging.getLogger(__name__)
 APP_STARTED_AT = time.time()
+INSTANCE_ID = os.getenv("INSTANCE_ID") or f"pid-{os.getpid()}-{int(APP_STARTED_AT)}"
 ROUND_SECONDS = os.getenv("ROUND_SECONDS")
 MATCH_SECONDS = os.getenv("MATCH_SECONDS")
 MIN_PLAYERS = int(os.getenv("MIN_PLAYERS", "1"))
@@ -151,6 +152,7 @@ def health():
     return {
         "ok": True,
         "status": "healthy",
+        "instance_id": INSTANCE_ID,
         "uptime_s": round(time.time() - APP_STARTED_AT, 1),
         "rooms": len(rooms),
         "players": sum(len(r.players) for r in rooms.values()),
@@ -326,19 +328,26 @@ def revoke_sessions(uid: str, _: AuthUser = Depends(require_admin)):
 
 
 def _normalize_code(code: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", code or "").upper()[:4]
+    return canonicalize_room_code(code)
 
 
 def _room_response(code: str) -> dict:
     room = rooms.get(code)
     if room is not None:
+        connected = sum(1 for p in room.players.values() if p.connected)
         return {
             "room_id": room.id,
             "code": code,
             "status": room.status,
             "players": len(room.players),
-            "connected": sum(1 for p in room.players.values() if p.connected),
+            "connected": connected,
+            "full": len(room.players) >= MAX_PLAYERS,
+            "started": room.status != "lobby",
+            "joinable": room.status == "lobby" and len(room.players) < MAX_PLAYERS,
+            "instance_id": INSTANCE_ID,
         }
+    if registry.expired_reservation(code):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Room code expired.")
     reservation = registry.get_reservation(code)
     if reservation is not None:
         return {
@@ -347,26 +356,38 @@ def _room_response(code: str) -> dict:
             "status": "lobby",
             "players": 0,
             "connected": 0,
+            "full": False,
+            "started": False,
+            "joinable": True,
+            "instance_id": INSTANCE_ID,
         }
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
 
 
 @app.post("/api/rooms")
-def create_room(payload: RoomCreate | None = None):
+async def create_room(payload: RoomCreate | None = None):
     min_players = (payload.min_players if payload else None) or MIN_PLAYERS
-    reservation = registry.reserve(min_players, existing_codes=rooms.keys())
-    audit.log(None, "room_create", {"room_id": reservation.room_id, "code": reservation.code})
-    return {"room_id": reservation.room_id, "code": reservation.code}
+    async with room_creation_lock:
+        reservation = registry.reserve(min_players, existing_codes=rooms.keys())
+    audit.log(None, "room_create", {"room_id": reservation.room_id, "code": reservation.code,
+                                    "instance_id": INSTANCE_ID})
+    logger.info("room_create instance=%s code=%s room_id=%s",
+                INSTANCE_ID, reservation.code, reservation.room_id)
+    return {"room_id": reservation.room_id, "code": reservation.code,
+            "instance_id": INSTANCE_ID}
 
 
 @app.post("/api/rooms/quick-match")
-def quick_match(payload: QuickMatchRequest):
+async def quick_match(payload: QuickMatchRequest):
     try:
-        result = registry.queue(payload.client_key, MIN_PLAYERS, existing_codes=rooms.keys())
+        async with room_creation_lock:
+            result = registry.queue(payload.client_key, MIN_PLAYERS, existing_codes=rooms.keys())
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if result.get("status") == "matched":
-        audit.log(None, "room_quick_match", {"code": result["code"]})
+        audit.log(None, "room_quick_match", {"code": result["code"], "instance_id": INSTANCE_ID})
+        logger.info("quick_match instance=%s code=%s", INSTANCE_ID, result["code"])
+        return {**result, "instance_id": INSTANCE_ID}
     return result
 
 
@@ -383,6 +404,7 @@ def quick_match_status(client_key: str):
 @app.get("/api/rooms/{code}")
 def room_status(code: str):
     normalized = _normalize_code(code)
+    logger.info("room_status instance=%s code=%s normalized=%s", INSTANCE_ID, code, normalized)
     if not normalized:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
     return _room_response(normalized)
@@ -470,19 +492,34 @@ async def _ws_profile_error(ws: WebSocket, code: str, message: str, close_code: 
     await ws.close(code=close_code)
 
 
+async def _ws_room_error(ws: WebSocket, code: str, message: str,
+                         close_code: int = 1008) -> None:
+    await ws.send_json({
+        "type": "error", "code": code, "message": message,
+        "instance_id": INSTANCE_ID,
+    })
+    await ws.close(code=close_code)
+
+
 async def _ws_identity(ws: WebSocket, name: str, pid: str, auth_frame_required: bool) -> WsIdentity | None:
     if not auth_frame_required:
         return WsIdentity(uid=None, name=name, pid=pid or None, verified=False)
 
     frame = await _read_auth_frame(ws)
-    if frame is None or not await _enforce_frame_app_check(ws, frame):
+    if frame is None:
         return None
 
     frame_name = str(frame.get("name") or name or "Player")
     frame_pid = str(frame.get("pid") or pid or "")
     token = frame.get("token")
+    if token and not await _enforce_frame_app_check(ws, frame):
+        return None
     if not token:
-        avatar_url, _ = avatar_store.guest_avatar(frame.get("avatar"), frame_pid or frame_name)
+        guest_payload = {
+            "avatar": frame.get("avatar"),
+            "pfp_preset_id": frame.get("pfp_preset_id"),
+        }
+        avatar_url, _ = avatar_store.guest_avatar(guest_payload, frame_pid or frame_name)
         return WsIdentity(
             uid=None, name=frame_name, pid=frame_pid or None, verified=False,
             avatar_url=avatar_url, character_id=None,
@@ -583,6 +620,19 @@ async def _spectator_socket(ws: WebSocket, room_id: str) -> None:
         audit.log(user.uid, "spectator_disconnect", {"room_id": room_id})
 
 
+async def _cleanup_disconnected_room(room_id: str, room: Room) -> None:
+    await asyncio.sleep(120)
+    async with room_creation_lock:
+        current = rooms.get(room_id)
+        if current is not room or any(p.connected for p in room.players.values()):
+            return
+        if room.spectators:
+            return
+        registry.hold(room_id, room.id, room.min_players)
+        rooms.pop(room_id, None)
+    audit.room_delete(room_id)
+
+
 async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
                          auth_required: bool) -> None:
     identity = await _ws_identity(ws, name, pid, auth_required)
@@ -593,18 +643,21 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
         created = False
         reservation = None
         if room is None:
+            if registry.expired_reservation(room_id):
+                logger.info("room_join_expired instance=%s code=%s", INSTANCE_ID, room_id)
+                await _ws_room_error(ws, "room_expired", "That room code expired. Create a new room.")
+                return
             reservation = registry.get_reservation(room_id)
             if reservation is None:
-                await ws.send_json({
-                    "type": "error", "code": "room_not_found",
-                    "message": "Room not found. Create or quick-match a room first.",
-                })
-                await ws.close(code=1008)
+                logger.info("room_join_missing instance=%s code=%s", INSTANCE_ID, room_id)
+                await _ws_room_error(
+                    ws, "room_not_found", "Room not found. Create or quick-match a room first.",
+                )
                 return
             ts = float(ROUND_SECONDS) if ROUND_SECONDS else None
             ms = float(MATCH_SECONDS) if MATCH_SECONDS else None
             room = Room(
-                reservation.room_id, round_seconds=ts,
+                room_id, round_seconds=ts,
                 min_players=reservation.min_players or MIN_PLAYERS, match_seconds=ms,
             )
             created = True
@@ -614,28 +667,26 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
                 ws, identity.name, identity.pid,
                 uid=identity.uid, verified=identity.verified,
                 avatar_url=identity.avatar_url, character_id=identity.character_id,
+                instance_id=INSTANCE_ID,
             )
         except GameAlreadyStarted:
-            await ws.send_json({
-                "type": "error", "code": "game_started",
-                "message": "This match has already started. Joining is closed.",
-            })
-            await ws.close(code=1008)
+            await _ws_room_error(
+                ws, "game_started", "This match has already started. Joining is closed.",
+            )
             return
         if player is None:
-            await ws.send_json({
-                "type": "error", "code": "room_full",
-                "message": "Room is full (4 players max).",
-            })
-            await ws.close(code=1008)
+            await _ws_room_error(ws, "room_full", "Room is full (4 players max).")
             return
 
         if created and reservation is not None:
-            registry.consume(room_id)
             rooms[room_id] = room
+            registry.consume(room_id)
             audit.room_upsert(room_id, room)
+        logger.info("room_join instance=%s code=%s room_id=%s uid=%s",
+                    INSTANCE_ID, room_id, room.id, identity.uid or "guest")
 
-    audit.log(player.uid, "room_join", {"room_id": room_id, "verified": player.verified})
+    audit.log(player.uid, "room_join", {"room_id": room_id, "verified": player.verified,
+                                        "instance_id": INSTANCE_ID})
     audit.room_upsert(room_id, room)
     try:
         while True:
@@ -656,18 +707,14 @@ async def _player_socket(ws: WebSocket, room_id: str, name: str, pid: str,
         await room.leave(player)
         audit.room_upsert(room_id, room)
         if not any(p.connected for p in room.players.values()) and not room.spectators:
-            async with room_creation_lock:
-                if rooms.get(room_id) is room:
-                    registry.hold(room_id, room.id, room.min_players)
-                    rooms.pop(room_id, None)
-            audit.room_delete(room_id)
+            asyncio.create_task(_cleanup_disconnected_room(room_id, room))
 
 
 @app.websocket("/ws/{room_id}")
 async def game_socket(ws: WebSocket, room_id: str, name: str = "Player", pid: str = "",
                       spectator: int = 0, auth: int = 0):
     await ws.accept()
-    room_id = re.sub(r"[^A-Za-z0-9]", "", room_id).upper()[:4] or "LOBBY"
+    room_id = _normalize_code(room_id) or "LOBBY"
     if spectator:
         await _spectator_socket(ws, room_id)
         return
