@@ -66,6 +66,12 @@ MAX_ROUNDS = fate.MAX_ROUNDS
 DOOR_COST = fate.DOOR_COST
 DOOR_OPEN_SECONDS = 10.0
 PATHFINDER_REVEAL_COOLDOWN = 120.0
+REASON_KING = "king"
+REASON_POINTS_ZERO = "points_zero"
+REASON_TIME_UP = "time_up"
+REASON_ROUND_LIMIT = "round_limit"
+REASON_TEAM = "team_eliminated"
+REASON_ESCAPED = "escaped"
 DELAY_CONFIG = {
     "answer_ms": {1: 12000, 2: 15000, 3: 18000},
     "delay_s": {1: 6, 2: 12, 3: 18},
@@ -111,6 +117,7 @@ class Player:
     locked: bool = False
     eliminated: bool = False
     sealed_strikes: int = 0
+    sealed_door_keys: set[str] = field(default_factory=set)
     waits: int = 0
     revives: int = 0
     last_room_id: str | None = None
@@ -125,6 +132,7 @@ class Player:
     pose_moving: bool = False
     pose_sent_at: float = 0.0
     death_reason: str | None = None
+    death_reason_code: str | None = None
     ws: WebSocket | None = field(default=None, repr=False)
     bucket_at: float = 0.0
     bucket_n: int = 0
@@ -210,6 +218,7 @@ class Room:
         self.prev_arena: dict | None = None
         self.pa = "THE LAST ROOM. FIND THE HIDDEN EXIT."
         self.end_reason: str | None = None
+        self.end_reason_code: str | None = None
         self.sanction_total = 0
         self.sanction_found = 0
         self.pending_clues: list[tuple[str, dict]] = []
@@ -663,7 +672,7 @@ class Room:
                 if join_token:
                     welcome["join_token"] = join_token
                 if self.final_payload:
-                    welcome["game_over"] = self.final_payload
+                    welcome["game_over"] = self._game_over_for(p)
                 await self.send(p, welcome)
                 await self.broadcast_state()
                 if self.status in ("won", "over"):
@@ -698,7 +707,7 @@ class Room:
         if join_token:
             welcome["join_token"] = join_token
         if self.final_payload:
-            welcome["game_over"] = self.final_payload
+            welcome["game_over"] = self._game_over_for(player)
         await self.send(player, welcome)
         await self.broadcast_state()
         return player
@@ -1029,13 +1038,16 @@ class Room:
         player.locked = True
         self.log(player.id, "lockdown", {"door": door, "room": room.code, "message": message})
         await self.broadcast({
-            "type": "lockdown", "player": player.id, "room_code": room.code,
-            "door": door, "message": message,
+            "type": "lockdown", "player": player.id, "player_name": player.name,
+            "room_code": room.code, "door": door,
+            "message": f"{player.name} triggered a sealed-door lockdown.",
         })
         await self.send(player, {
             "type": "door_result", "accepted": False, "locked": True,
+            "code": "sealed_lockdown", "sealed": True, "player": player.id,
             "door": door, "color": room.doors[door].color,
             "room_code": room.code, "message": message,
+            "points": player.points, "sealed_strikes": player.sealed_strikes,
         })
         await self.broadcast_state()
 
@@ -1043,23 +1055,43 @@ class Room:
         dx, dy = STEP[door]
         if self.arena.room_at(room.bx + dx, room.by + dy) is None:
             return
+        key = f"{room.rid}:{door}"
+        recheck = key in player.sealed_door_keys
+        if recheck:
+            self.log(player.id, "sealed_recheck", {"door": door, "room": room.code})
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "code": "sealed",
+                "sealed": True, "player": player.id, "door": door,
+                "room_code": room.code, "message": "That door is still sealed.",
+                "points": player.points, "sealed_strikes": player.sealed_strikes,
+            })
+            return
+        player.sealed_door_keys.add(key)
         player.sealed_strikes += 1
         player.points -= 1
         self.log(player.id, "bump", {"door": door, "room": room.code})
+        await self.send(player, {
+            "type": "door_result", "accepted": False, "code": "sealed",
+            "sealed": True, "player": player.id, "door": door,
+            "room_code": room.code, "message": "That door is sealed.",
+            "points": player.points, "sealed_strikes": player.sealed_strikes,
+        })
         if player.sealed_strikes >= 2:
             await self._lock_player(
                 player, room, door,
                 "Two sealed doors in one round. You are locked in.",
             )
             if player.points <= 0:
-                await self._eliminate(player, "Points drained by a sealed door")
+                await self._eliminate(
+                    player, "Your points reached zero after hitting a sealed door.",
+                    REASON_POINTS_ZERO,
+                )
             return
-        await self.send(player, {
-            "type": "door_result", "accepted": False, "door": door,
-            "room_code": room.code, "message": "That door is sealed.",
-        })
         if player.points <= 0:
-            await self._eliminate(player, "Points drained by a sealed door")
+            await self._eliminate(
+                player, "Your points reached zero after hitting a sealed door.",
+                REASON_POINTS_ZERO,
+            )
             return
         await self.broadcast_state()
 
@@ -1078,9 +1110,6 @@ class Room:
                 "message": "You are locked. A teammate can lead you out, or two teammates can scan you free.",
             })
             return
-        now = time.monotonic()
-        if now - player.last_move < 0.08:
-            return
         room = self.arena.room_by_id(player.room_id)
         if room is None:
             player.room_id = self.arena.start_room().rid
@@ -1093,6 +1122,9 @@ class Room:
             return
         if not self.arena.door_open(room, door) or room.doors[door].rolled_sealed:
             await self._strike_sealed_door(player, room, door)
+            return
+        now = time.monotonic()
+        if now - player.last_move < 0.08:
             return
         target = self.arena.door_target(room, door)
         if target is None:
@@ -1142,7 +1174,9 @@ class Room:
             if other.room_id in (room.rid, target.rid):
                 await self._refresh_exit_visibility(other)
         if player.points <= 0:
-            await self._eliminate(player, "Points spent to open a door")
+            await self._eliminate(
+                player, "Your points reached zero while opening a door.", REASON_POINTS_ZERO,
+            )
             return
         await self.broadcast(self.players_message())
         await self.broadcast_state()
@@ -1173,7 +1207,11 @@ class Room:
         if door not in DIRECTIONS:
             return
         if not self.arena.door_open(room, door) or room.doors[door].rolled_sealed:
-            await self._strike_sealed_door(player, room, door)
+            await self.send(player, {
+                "type": "door_result", "accepted": False, "code": "closed",
+                "player": player.id, "door": door, "room_code": room.code,
+                "message": "That doorway is closed.",
+            })
             return
         target = self.arena.door_target(room, door)
         if target is None:
@@ -1252,7 +1290,9 @@ class Room:
             self._recompute_sanctions()
 
         if player.points <= 0:
-            await self._eliminate(player, "Points drained to zero")
+            await self._eliminate(
+                player, "A sanction room drained your last point.", REASON_POINTS_ZERO,
+            )
             return
 
         await self._check_endings()
@@ -1270,7 +1310,9 @@ class Room:
         player.waits += 1
         self.log(player.id, "wait", {"points": player.points})
         if player.points <= 0:
-            await self._eliminate(player, "Points drained while waiting")
+            await self._eliminate(
+                player, "Waiting drained your last point.", REASON_POINTS_ZERO,
+            )
             return
         await self.broadcast(self.players_message())
         await self.broadcast_state()
@@ -1320,7 +1362,9 @@ class Room:
         })
         for h in spenders:
             if h.points <= 0:
-                await self._eliminate(h, "Points spent to free a teammate")
+                await self._eliminate(
+                    h, "Your points reached zero while freeing a teammate.", REASON_POINTS_ZERO,
+                )
         await self.broadcast(self.players_message())
         await self.broadcast_state()
 
@@ -1549,7 +1593,9 @@ class Room:
                 "room": room_pos,
                 "reason": "KING OF SPADES found you.",
             })
-            await self._eliminate(player, "Killed by KING OF SPADES")
+            await self._eliminate(
+                player, "The KING OF SPADES eliminated you.", REASON_KING,
+            )
         return True
 
     async def _update_king(self, now: float) -> None:
@@ -1575,16 +1621,31 @@ class Room:
         if changed:
             await self.broadcast_state()
 
-    async def _eliminate(self, player: Player, reason: str) -> None:
+    async def _eliminate(
+        self, player: Player, reason: str, reason_code: str | None = None,
+    ) -> None:
         if player.eliminated:
             return
+        if reason_code is None:
+            lowered = reason.lower()
+            if "king" in lowered:
+                reason_code = REASON_KING
+            elif "point" in lowered:
+                reason_code = REASON_POINTS_ZERO
+            else:
+                reason_code = REASON_TEAM
         player.eliminated = True
         player.locked = False
         player.points = max(0, player.points)
         player.death_reason = reason
+        player.death_reason_code = reason_code
         self.end_reason = reason
-        self.log(player.id, "eliminated", {"reason": reason})
-        await self.broadcast({"type": "elimination", "player": player.id, "reason": reason})
+        self.end_reason_code = reason_code
+        self.log(player.id, "eliminated", {"reason": reason, "reason_code": reason_code})
+        await self.broadcast({
+            "type": "elimination", "player": player.id,
+            "reason": reason, "reason_code": reason_code,
+        })
         await self.broadcast(self.players_message())
         await self._check_endings()
 
@@ -1599,7 +1660,8 @@ class Room:
         in_exit = [p for p in living if p.room_id == exit_room.rid]
         if in_exit and len(in_exit) == len(living):
             self.pa = "THE EXIT IS OPEN. THE TEAM ESCAPED."
-            self.end_reason = "The team reached the exit."
+            self.end_reason = "All living players reached the exit."
+            self.end_reason_code = REASON_ESCAPED
             for p in self.players.values():
                 if not p.eliminated:
                     p.escaped = True
@@ -1610,20 +1672,23 @@ class Room:
             return
         self.match_deadline = None
         self.next_round_at = None
+        reason = "Time expired before the team reached the exit."
         self.pa = "TIME EXPIRED. THE TEAM WAS ELIMINATED."
-        self.end_reason = "The match timer expired."
+        self.end_reason = reason
+        self.end_reason_code = REASON_TIME_UP
         living = [p for p in self.players.values() if not p.eliminated]
         for p in living:
             p.eliminated = True
             p.locked = False
             p.points = max(0, p.points)
-            p.death_reason = "The match timer expired."
-            self.log(p.id, "eliminated", {"reason": "match timer expired"})
-        await self.broadcast({"type": "time_up", "message": self.pa})
+            p.death_reason = reason
+            p.death_reason_code = REASON_TIME_UP
+            self.log(p.id, "eliminated", {"reason": reason, "reason_code": REASON_TIME_UP})
+        await self.broadcast({"type": "time_up", "message": self.pa, "reason": reason, "reason_code": REASON_TIME_UP})
         for p in living:
             await self.broadcast({
                 "type": "elimination", "player": p.id,
-                "reason": "The match timer expired.",
+                "reason": reason, "reason_code": REASON_TIME_UP,
             })
         await self.broadcast(self.players_message())
         await self.finish(won=False)
@@ -1679,7 +1744,9 @@ class Room:
             "points": player.points, "message": self.pa,
         })
         if player.points <= 0:
-            await self._eliminate(player, "Points lost to a failed prediction")
+            await self._eliminate(
+                player, "A failed prediction drained your last point.", REASON_POINTS_ZERO,
+            )
             return
         await self.broadcast_state()
 
@@ -1773,6 +1840,7 @@ class Room:
         self._audit_room()
         for player in self.players.values():
             player.sealed_strikes = 0
+            player.sealed_door_keys.clear()
             if not player.eliminated and not player.escaped:
                 self.log(player.id, "round", {"round": self.round})
 
@@ -1813,6 +1881,8 @@ class Room:
         else:
             self.pa = f"ROUND {self.round}. THE ROOMS HOLD."
         if self.max_rounds and self.round >= self.max_rounds:
+            self.end_reason = "The final shift ended before the team reached the exit."
+            self.end_reason_code = REASON_ROUND_LIMIT
             self._pending_finish = True
 
         return {
@@ -1998,19 +2068,39 @@ class Room:
         self.final_payload = {
             "type": "game_over", "won": won,
             "reason": self.end_reason or "The team failed to reach the exit.",
+            "reason_code": self.end_reason_code or (REASON_ESCAPED if won else REASON_TEAM),
             "summary": summary, "nexus": report,
+            "player_reasons": {
+                p.id: self._personal_reason(p, won) for p in self.players.values()
+            },
         }
         for player in list(self.players.values()):
             if not player.connected:
                 continue
-            if won:
-                reason = "All living players reached the exit."
-            else:
-                reason = player.death_reason or self.end_reason or "The team failed to reach the exit."
-            game_over = dict(self.final_payload)
-            game_over["reason"] = reason
-            await self.send(player, game_over)
+            await self.send(player, self._game_over_for(player))
         await self.broadcast_admin()
+
+    def _personal_reason(self, player: Player, won: bool) -> dict[str, str]:
+        if won:
+            return {"reason": "All living players reached the exit.", "reason_code": REASON_ESCAPED}
+        if player.death_reason:
+            return {
+                "reason": player.death_reason,
+                "reason_code": player.death_reason_code or REASON_TEAM,
+            }
+        return {
+            "reason": self.end_reason or "The team failed to reach the exit.",
+            "reason_code": self.end_reason_code or REASON_TEAM,
+        }
+
+    def _game_over_for(self, player: Player) -> dict:
+        payload = dict(self.final_payload or {})
+        reasons = payload.pop("player_reasons", {})
+        reason = reasons.get(player.id)
+        if reason:
+            payload["reason"] = reason["reason"]
+            payload["reason_code"] = reason["reason_code"]
+        return payload
 
     async def _loop(self) -> None:
         try:

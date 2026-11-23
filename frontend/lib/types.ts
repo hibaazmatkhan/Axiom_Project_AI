@@ -34,7 +34,7 @@ export type DealerNudge = { role: Role; text: string; puzzle?: string; round: nu
 export type NoteLine = { id: number; from: string; color: string; text: string };
 export type Pose = { x: number; z: number; yaw: number; moving: boolean };
 export type PlayerMoveEvent = Pose & { id: number; player: string; room_code: string | null };
-export type PlayerLeftEvent = { player: string; name: string; message: string };
+export type PlayerLeftEvent = { id?: number; player: string; name: string; message: string };
 
 export type DelayTier = 1 | 2 | 3;
 export type DelayCell = { row: number; col: number };

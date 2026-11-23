@@ -8,6 +8,10 @@ type DoorEventView = {
   id: number;
   type: "door_result" | "door_opened" | "door_closed" | "lockdown";
   accepted: boolean;
+  locked?: boolean;
+  sealed?: boolean;
+  code?: string;
+  player?: string;
   door?: string;
   room_code?: string;
   target_code?: string;
@@ -909,6 +913,11 @@ export default function GameCanvas(props: Props) {
           if (slide.dir === dir) slide.open = false;
         }
         clearPreview(dir);
+        return;
+      }
+      if (event.type === "door_result" && event.locked && event.message) {
+        playSound("lockdown");
+        glitch = Math.max(glitch, 0.55);
         return;
       }
       if (event.type === "door_result" && !event.accepted && event.message) {

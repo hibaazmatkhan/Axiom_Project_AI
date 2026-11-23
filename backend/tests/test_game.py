@@ -12,7 +12,8 @@ from app import puzzles
 from app.game import (
     DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_INTERVAL, KING_APPEARANCE_SECONDS,
     KING_FIRST_SPAWN_SECONDS, KING_ROOMS_PER_APPEARANCE, KING_WATCH_LEAD_SECONDS,
-    PATHFINDER_REVEAL_COOLDOWN, Player, Room, TemporaryDoor,
+    PATHFINDER_REVEAL_COOLDOWN, REASON_KING, REASON_POINTS_ZERO,
+    REASON_TEAM, REASON_TIME_UP, Player, Room, TemporaryDoor,
 )
 from app.main import app, rooms
 from app.nexus import CLUE_TIERS
@@ -238,6 +239,30 @@ def test_clicking_edge_wall_does_not_penalize_player():
     asyncio.run(room.open_door(p, edge))
     assert p.points == before
     assert p.sealed_strikes == 0
+
+
+def test_crossing_a_stale_sealed_door_never_penalizes():
+    room = Room("STALECROSS", seed=7, round_seconds=60)
+    room.status = "running"
+    p = _player(room)
+    p.ws = _RecordingWS()
+    room.players[p.id] = p
+    start = room.arena.start_room()
+    door = next(
+        d for d in DIRECTIONS
+        if room.arena.door_open(start, d)
+        and room.arena.room_at(start.bx + STEP[d][0], start.by + STEP[d][1]) is not None
+    )
+    start.doors[door].rolled_sealed = True
+    before = p.points
+
+    asyncio.run(room.cross_door(p, door=door))
+    result = next(m for m in reversed(p.ws.sent) if m.get("type") == "door_result")
+    assert result["message"] == "That doorway is closed."
+    assert result.get("sealed") is not True
+    assert p.points == before
+    assert p.sealed_strikes == 0
+    assert p.locked is False
 
 
 def test_two_sealed_clicks_in_same_room_and_round_trigger_lockdown():
@@ -635,15 +660,18 @@ def test_sealed_door_strikes_cost_one_point_and_lock_at_two():
     p = _player(room)
     room.players["a"] = p
     start = room.arena.start_room()
-    door = next(
+    doors = [
         d for d in DIRECTIONS
         if room.arena.door_open(start, d)
         and room.arena.room_at(start.bx + STEP[d][0], start.by + STEP[d][1]) is not None
-    )
-    start.doors[door].rolled_sealed = True
+    ][:2]
+    assert len(doors) == 2
+    for door in doors:
+        start.doors[door].rolled_sealed = True
     before = p.points
 
-    asyncio.run(room.open_door(p, door=door))
+    p.ws = _RecordingWS()
+    asyncio.run(room.open_door(p, door=doors[0]))
     assert p.locked is False
     assert p.room_id == start.rid
     assert p.points == before - 1
@@ -651,7 +679,16 @@ def test_sealed_door_strikes_cost_one_point_and_lock_at_two():
     assert not room.open_doors
 
     p.last_move = 0
-    asyncio.run(room.open_door(p, door=door))
+    asyncio.run(room.open_door(p, door=doors[0]))
+    assert p.locked is False
+    assert p.points == before - 1
+    assert p.sealed_strikes == 1
+    recheck = next(m for m in reversed(p.ws.sent) if m.get("type") == "door_result")
+    assert recheck["message"] == "That door is still sealed."
+    assert recheck["sealed"] is True
+
+    p.last_move = 0
+    asyncio.run(room.open_door(p, door=doors[1]))
     assert p.locked is True
     assert p.room_id == start.rid
     assert p.points == before - 2
@@ -746,10 +783,17 @@ def test_match_timer_expiry_eliminates_living_players():
     room.status = "running"
     room.match_deadline = time.time() - 0.01
     players = [_player(room, "a", 0), _player(room, "b", 1)]
+    for p in players:
+        p.ws = _RecordingWS()
     room.players = {p.id: p for p in players}
     asyncio.run(room._expire_match())
     assert room.status == "over"
     assert all(p.eliminated and not p.escaped for p in players)
+    assert all(p.death_reason_code == REASON_TIME_UP for p in players)
+    assert all(
+        [m for m in p.ws.sent if m.get("type") == "game_over"][0]["reason_code"] == REASON_TIME_UP
+        for p in players
+    )
 
 
 def test_nexus_updates_skill_between_rounds():
@@ -1398,18 +1442,45 @@ def test_game_over_reason_is_personalized():
     room = Room("REASON", seed=7)
     first = _player(room, "first", 0)
     second = _player(room, "second", 1)
-    first.ws = _RecordingWS()
-    second.ws = _RecordingWS()
-    first.death_reason = "The KING found you."
+    third = _player(room, "third", 2)
+    for p in (first, second, third):
+        p.ws = _RecordingWS()
+    first.death_reason = "The KING OF SPADES eliminated you."
+    first.death_reason_code = REASON_KING
+    third.death_reason = "Your points reached zero while opening a door."
+    third.death_reason_code = REASON_POINTS_ZERO
     room.end_reason = "The team failed to reach the exit."
+    room.end_reason_code = REASON_TEAM
     room.players[first.id] = first
     room.players[second.id] = second
+    room.players[third.id] = third
 
     asyncio.run(room.finish(False))
     first_over = [m for m in first.ws.sent if m.get("type") == "game_over"]
     second_over = [m for m in second.ws.sent if m.get("type") == "game_over"]
-    assert first_over[0]["reason"] == "The KING found you."
+    third_over = [m for m in third.ws.sent if m.get("type") == "game_over"]
+    assert first_over[0]["reason"] == "The KING OF SPADES eliminated you."
+    assert first_over[0]["reason_code"] == REASON_KING
     assert second_over[0]["reason"] == "The team failed to reach the exit."
+    assert second_over[0]["reason_code"] == REASON_TEAM
+    assert third_over[0]["reason"] == "Your points reached zero while opening a door."
+    assert third_over[0]["reason_code"] == REASON_POINTS_ZERO
+
+
+def test_reconnect_replay_uses_personal_loss_reason():
+    room = Room("REPLAY", seed=7)
+    p = _player(room, "solo", 0)
+    p.ws = _RecordingWS()
+    p.death_reason = "Time expired before the team reached the exit."
+    p.death_reason_code = REASON_TIME_UP
+    room.players[p.id] = p
+    asyncio.run(room.finish(False))
+
+    replay_ws = _RecordingWS()
+    asyncio.run(room.join(replay_ws, p.name, p.id))
+    welcome = next(m for m in replay_ws.sent if m.get("type") == "welcome")
+    assert welcome["game_over"]["reason"] == "Time expired before the team reached the exit."
+    assert welcome["game_over"]["reason_code"] == REASON_TIME_UP
 
 
 def test_leave_broadcasts_player_left_and_exit_wall_is_exposed():

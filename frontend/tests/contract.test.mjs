@@ -163,8 +163,34 @@ test("lockdown is escapable by escort and shifts protect locked/exit rooms", () 
 test("game over explains the personal loss reason", () => {
   assert.ok(game.includes("death_reason"));
   assert.ok(game.includes('"reason": reason'));
-  assert.ok(socket.includes("reason: String(m.reason"));
+  assert.ok(game.includes("REASON_KING"));
+  assert.ok(game.includes("REASON_POINTS_ZERO"));
+  assert.ok(game.includes("REASON_TIME_UP"));
+  assert.ok(socket.includes("reason_code: m.game_over.reason_code"));
+  assert.ok(socket.includes("reason_code: m.reason_code"));
   assert.ok(client.includes("g.gameOver?.reason"));
+  assert.ok(client.includes("lossHeadline(g.gameOver?.reason_code)"));
+});
+
+test("sealed alerts override instantly and expire in two seconds", () => {
+  assert.ok(socket.includes("setSealedAlert(null), 2000"));
+  assert.ok(socket.includes("pushSealedAlert("));
+  assert.ok(client.includes("animate-toast-sealed"));
+  assert.ok(client.includes('key={`sealed-${g.sealedAlert.id}`}'));
+});
+
+test("transient alerts last five seconds and only the actor gets lockdown effects", () => {
+  assert.ok(socket.includes("setDoorEvent(null), 5000"));
+  assert.ok(socket.includes("setCross({"));
+  assert.ok(socket.includes("setHazard(null), 5000"));
+  assert.ok(socket.includes("setRevive(null), 5000"));
+  assert.ok(socket.includes("setExitNotice(null), 5000"));
+  assert.ok(socket.includes("if (m.player !== youRef.current)"));
+  assert.ok(canvas.includes('event.type === "door_result" && event.locked'));
+});
+
+test("desktop movement hint sits at the bottom edge", () => {
+  assert.ok(client.includes("bottom-1 left-1/2"));
 });
 
 test("guests get a usable name and short room codes survive navigation", () => {

@@ -14,6 +14,18 @@ const SIGIL_GLYPH: Record<string, string> = {
   spade: "\u2660", heart: "\u2665", diamond: "\u2666", club: "\u2663",
 };
 const MAX_POINTS = 25;
+const LOSS_HEADLINES: Record<string, string> = {
+  king: "Killed by the KING OF SPADES",
+  points_zero: "Your points reached zero",
+  time_up: "Time expired before the exit",
+  round_limit: "The final shift ended",
+  team_eliminated: "The team failed to escape",
+};
+
+function lossHeadline(code?: string) {
+  if (code && LOSS_HEADLINES[code]) return LOSS_HEADLINES[code];
+  return "The Last Room claims you.";
+}
 
 function formatClock(value: number) {
   const total = Math.max(0, Math.ceil(value));
@@ -429,7 +441,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       )}
 
       {g.status === "running" && (
-        <div className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 xl:bottom-24">
+        <div className="pointer-events-none absolute bottom-1 left-1/2 z-10 -translate-x-1/2">
           <p className="mono rounded-full border border-bone/15 bg-void/70 px-3 py-1 text-[9px] uppercase tracking-[0.16em] text-dim backdrop-blur">
             {ghost
               ? "Ghost · role intel and notes stay live · movement and doors are disabled"
@@ -1087,50 +1099,88 @@ export default function GameClient({ room, name }: { room: string; name: string 
         aria-live="polite"
         className="pointer-events-none absolute bottom-44 left-1/2 z-20 flex w-[min(520px,90vw)] -translate-x-1/2 flex-col items-center gap-2 xl:bottom-32"
       >
+        {g.sealedAlert && (
+          <div
+            key={`sealed-${g.sealedAlert.id}`}
+            className="animate-toast-sealed rounded-xl border border-yellow/70 bg-ink/95 px-4 py-2 text-xs text-yellow backdrop-blur"
+          >
+            {g.sealedAlert.message}
+            {g.sealedAlert.points !== undefined && (
+              <span className="mono ml-2 text-dim">{g.sealedAlert.points} pts</span>
+            )}
+          </div>
+        )}
         {g.doorEvent?.locked && (
-          <div className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
+          <div
+            key={`locked-${g.doorEvent.id}`}
+            className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur"
+          >
             {g.doorEvent?.message || "Lockdown. Two teammates must scan your wristband free."}
           </div>
         )}
         {g.doorEvent && g.doorEvent.accepted && (
-          <div className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
+          <div
+            key={`door-${g.doorEvent.id}`}
+            className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur"
+          >
             {g.doorEvent.color ?? g.doorEvent.door} door open for 10s
             {g.doorEvent.target_code ? ` → ${g.doorEvent.target_code}` : ""}
             <span className="mono ml-1 text-yellow">−{g.doorEvent.cost ?? 1} pt</span>
           </div>
         )}
         {g.cross.id > 0 && g.cross.player === g.you && (
-          <div className="animate-toast-in rounded-xl border border-blue/60 bg-ink/90 px-4 py-2 text-xs text-blue backdrop-blur">
+          <div
+            key={`cross-${g.cross.id}`}
+            className="animate-toast-in rounded-xl border border-blue/60 bg-ink/90 px-4 py-2 text-xs text-blue backdrop-blur"
+          >
             Entered {g.cross.to ?? "the next room"} · free crossing
           </div>
         )}
-        {g.doorEvent && !g.doorEvent.accepted && !g.doorEvent.locked && g.doorEvent.message && (
-          <div className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur">
+        {g.doorEvent && !g.doorEvent.accepted && !g.doorEvent.locked && !g.doorEvent.sealed && g.doorEvent.message && (
+          <div
+            key={`rejected-${g.doorEvent.id}`}
+            className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur"
+          >
             {g.doorEvent.message}
           </div>
         )}
         {g.hazard && (
-          <div className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur">
+          <div
+            key={`hazard-${g.hazard.id}`}
+            className="animate-toast-in rounded-xl border border-red/60 bg-ink/90 px-4 py-2 text-xs text-red backdrop-blur"
+          >
             Sanction room {g.hazard.room_code} · −{g.hazard.penalty} points
           </div>
         )}
         {g.revive && (
-          <div className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur">
+          <div
+            key={`revive-${g.revive.id}`}
+            className="animate-toast-in rounded-xl border border-green/60 bg-ink/90 px-4 py-2 text-xs text-green backdrop-blur"
+          >
             A locked player was scanned free.
           </div>
         )}
         {g.notice && (
-          <div className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur">
-            {g.notice}
+          <div
+            key={`notice-${g.notice.id}`}
+            className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur"
+          >
+            {g.notice.text}
           </div>
         )}
         {g.exitNotice && (
-          <div className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur">
-            {g.exitNotice}
+          <div
+            key={`exit-${g.exitNotice.id}`}
+            className="animate-toast-in rounded-xl border border-yellow/60 bg-ink/90 px-4 py-2 text-xs text-yellow backdrop-blur"
+          >
+            {g.exitNotice.text}
           </div>
         )}
         {g.playerLeft && (
-          <div className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur">
+          <div
+            key={`left-${g.playerLeft.id ?? 0}`}
+            className="animate-toast-in rounded-xl border border-edge bg-ink/90 px-4 py-2 text-xs text-dim backdrop-blur"
+          >
             {g.playerLeft.message}
           </div>
         )}
@@ -1197,7 +1247,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
               {g.status === "won" ? "Escape" : "Game over"}
             </p>
             <h2 className="mt-2 text-2xl font-semibold">
-              {g.status === "won" ? "Every living player reached the exit." : "The Last Room claims you."}
+              {g.status === "won" ? "Every living player reached the exit." : lossHeadline(g.gameOver?.reason_code)}
             </h2>
             <p className="mt-2 text-xs uppercase tracking-[0.14em] text-red">
               {g.gameOver?.reason ?? ""}

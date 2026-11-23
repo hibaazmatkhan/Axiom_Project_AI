@@ -16,22 +16,38 @@ export type RoundTransition = {
   previous: Arena | null;
 };
 
+export type ToastText = { id: number; text: string };
+export type SealedAlert = {
+  id: number;
+  message: string;
+  door?: string;
+  room_code?: string;
+  points?: number;
+  sealed_strikes?: number;
+};
+
 export type DoorEvent = {
   id: number;
   type: "door_result" | "door_opened" | "door_closed" | "lockdown";
   accepted: boolean;
   locked?: boolean;
+  sealed?: boolean;
+  code?: string;
+  player?: string;
   door?: string;
   color?: string;
   room_code?: string;
   target_code?: string;
   message?: string;
   cost?: number;
+  points?: number;
+  sealed_strikes?: number;
 };
 
-export type HazardEvent = { player: string; room_code: string; penalty: number; points: number };
-export type ReviveEvent = { player: string; by: string[]; points: Record<string, number> };
+export type HazardEvent = { id: number; player: string; room_code: string; penalty: number; points: number };
+export type ReviveEvent = { id: number; player: string; by: string[]; points: Record<string, number> };
 export type EliminationEvent = { id: number; player: string; reason: string };
+export type GameOver = { won: boolean; reason: string; reason_code?: string; summary: any };
 
 const EMPTY_NEXUS: NexusReport = {
   team_skill: 0, difficulty: 0, complexity_level: 0, players: [], last_action: null,
@@ -78,7 +94,8 @@ export function useGameSocket(room: string, name: string) {
   const [attempts, setAttempts] = useState(0);
   const [restored, setRestored] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ToastText | null>(null);
+  const [sealedAlert, setSealedAlert] = useState<SealedAlert | null>(null);
   const [you, setYou] = useState<string | null>(null);
   const [arena, setArena] = useState<Arena | null>(null);
   const [prevArena, setPrevArena] = useState<Arena | null>(null);
@@ -128,8 +145,8 @@ export function useGameSocket(room: string, name: string) {
   const [kingWatch, setKingWatch] = useState<KingWatchView | null>(null);
   const [kingEvent, setKingEvent] = useState<KingEvent | null>(null);
   const [notes, setNotes] = useState<NoteLine[]>([]);
-  const [exitNotice, setExitNotice] = useState<string | null>(null);
-  const [gameOver, setGameOver] = useState<{ won: boolean; reason: string; summary: any } | null>(null);
+  const [exitNotice, setExitNotice] = useState<ToastText | null>(null);
+  const [gameOver, setGameOver] = useState<GameOver | null>(null);
   const [dealerClue, setDealerClue] = useState<DealerClue | null>(null);
   const [dealerNudge, setDealerNudge] = useState<DealerNudge | null>(null);
   const [puzzle, setPuzzle] = useState<PuzzleSnapshot | null>(null);
@@ -139,28 +156,41 @@ export function useGameSocket(room: string, name: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const youRef = useRef<string | null>(null);
   const exitingRef = useRef(false);
+  const noticeSeq = useRef(0);
+  const sealedSeq = useRef(0);
+  const exitSeq = useRef(0);
+
+  const pushNotice = useCallback((text: string) => {
+    setNotice({ id: ++noticeSeq.current, text });
+  }, []);
+  const pushSealedAlert = useCallback((message: string, fields: Omit<SealedAlert, "id" | "message"> = {}) => {
+    setSealedAlert({ id: ++sealedSeq.current, message, ...fields });
+  }, []);
+  const pushExitNotice = useCallback((text: string) => {
+    setExitNotice({ id: ++exitSeq.current, text });
+  }, []);
 
   useEffect(() => {
     if (!dealerClue) return;
-    const timer = window.setTimeout(() => setDealerClue(null), 8000);
+    const timer = window.setTimeout(() => setDealerClue(null), 5000);
     return () => window.clearTimeout(timer);
   }, [dealerClue]);
 
   useEffect(() => {
     if (!dealerNudge) return;
-    const timer = window.setTimeout(() => setDealerNudge(null), 8000);
+    const timer = window.setTimeout(() => setDealerNudge(null), 5000);
     return () => window.clearTimeout(timer);
   }, [dealerNudge]);
 
   useEffect(() => {
     if (!puzzleResult) return;
-    const timer = window.setTimeout(() => setPuzzleResult(null), 8000);
+    const timer = window.setTimeout(() => setPuzzleResult(null), 5000);
     return () => window.clearTimeout(timer);
   }, [puzzleResult]);
 
   useEffect(() => {
     if (!delayResult) return;
-    const timer = window.setTimeout(() => setDelayResult(null), 8000);
+    const timer = window.setTimeout(() => setDelayResult(null), 5000);
     return () => window.clearTimeout(timer);
   }, [delayResult]);
 
@@ -169,6 +199,44 @@ export function useGameSocket(room: string, name: string) {
     const timer = window.setTimeout(() => setNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!sealedAlert) return;
+    const timer = window.setTimeout(() => setSealedAlert(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [sealedAlert]);
+
+  useEffect(() => {
+    if (!doorEvent) return;
+    const timer = window.setTimeout(() => setDoorEvent(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [doorEvent]);
+
+  useEffect(() => {
+    if (cross.id <= 0) return;
+    const timer = window.setTimeout(() => setCross({
+      id: 0, door: null, from: null, to: null, cost: 0, player: null,
+    }), 5000);
+    return () => window.clearTimeout(timer);
+  }, [cross]);
+
+  useEffect(() => {
+    if (!hazard) return;
+    const timer = window.setTimeout(() => setHazard(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [hazard]);
+
+  useEffect(() => {
+    if (!revive) return;
+    const timer = window.setTimeout(() => setRevive(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [revive]);
+
+  useEffect(() => {
+    if (!exitNotice) return;
+    const timer = window.setTimeout(() => setExitNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [exitNotice]);
 
   useEffect(() => {
     if (!playerLeft) return;
@@ -259,7 +327,7 @@ export function useGameSocket(room: string, name: string) {
         if (hadConnected) {
           setRestored(true);
           if (restoredTimer !== null) window.clearTimeout(restoredTimer);
-          restoredTimer = window.setTimeout(() => setRestored(false), 3200);
+          restoredTimer = window.setTimeout(() => setRestored(false), 5000);
         }
         hadConnected = true;
         void (async () => {
@@ -316,6 +384,7 @@ export function useGameSocket(room: string, name: string) {
             setGameOver({
               won: !!m.game_over.won,
               reason: String(m.game_over.reason ?? "The match ended."),
+              reason_code: m.game_over.reason_code ? String(m.game_over.reason_code) : undefined,
               summary: m.game_over.summary,
             });
             setStatus(m.game_over.won ? "won" : "over");
@@ -349,11 +418,25 @@ export function useGameSocket(room: string, name: string) {
           if (tv.state) apply(tv.state);
         } else if (m.type === "door_result") {
           const cost = Number(m.cost ?? 1) || 1;
+          const code = m.code ? String(m.code) : undefined;
+          const sealed = !!m.sealed || code === "sealed" || code === "sealed_lockdown";
+          if (code === "sealed" && (!m.player || m.player === youRef.current)) {
+            pushSealedAlert(String(m.message ?? "That door is sealed."), {
+              door: m.door ? String(m.door) : undefined,
+              room_code: m.room_code ? String(m.room_code) : undefined,
+              points: m.points === undefined ? undefined : Number(m.points),
+              sealed_strikes: m.sealed_strikes === undefined ? undefined : Number(m.sealed_strikes),
+            });
+          }
           setDoorEvent((prev) => ({
             id: (prev?.id ?? 0) + 1, type: "door_result",
-            accepted: !!m.accepted, locked: m.locked, door: m.door, color: m.color,
+            accepted: !!m.accepted, locked: !!m.locked, sealed, code,
+            player: m.player ? String(m.player) : undefined,
+            door: m.door, color: m.color,
             room_code: m.room_code, target_code: m.target_code,
             message: m.message, cost,
+            points: m.points === undefined ? undefined : Number(m.points),
+            sealed_strikes: m.sealed_strikes === undefined ? undefined : Number(m.sealed_strikes),
           }));
         } else if (m.type === "door_opened") {
           setDoorEvent((prev) => ({
@@ -377,12 +460,14 @@ export function useGameSocket(room: string, name: string) {
             player: m.player ?? null,
           }));
         } else if (m.type === "lockdown") {
-          setDoorEvent((prev) => ({
-            id: (prev?.id ?? 0) + 1, type: "lockdown", accepted: false, locked: true,
-            door: m.door, room_code: m.room_code, message: m.message,
-          }));
+          if (m.player !== youRef.current) {
+            pushNotice(String(m.message ?? "A sealed-door lockdown was triggered."));
+          }
         } else if (m.type === "hazard") {
-          setHazard({ player: m.player, room_code: m.room_code, penalty: m.penalty, points: m.points });
+          setHazard((prev) => ({
+            id: (prev?.id ?? 0) + 1, player: m.player,
+            room_code: m.room_code, penalty: m.penalty, points: m.points,
+          }));
         } else if (m.type === "dealer_clue") {
           setDealerClue((prev) => ({
             id: (prev?.id ?? 0) + 1,
@@ -420,9 +505,11 @@ export function useGameSocket(room: string, name: string) {
           setDelayPuzzle(null);
           setDelayKey(null);
           setDelayDeadlineAt(null);
-          setNotice(String(m.message ?? (m.ok ? "The Dealer bought time." : "The Dealer took time back.")));
+          pushNotice(String(m.message ?? (m.ok ? "The Dealer bought time." : "The Dealer took time back.")));
         } else if (m.type === "revive") {
-          setRevive({ player: m.player, by: m.by, points: m.points });
+          setRevive((prev) => ({
+            id: (prev?.id ?? 0) + 1, player: m.player, by: m.by, points: m.points,
+          }));
         } else if (m.type === "elimination") {
           setEliminated((prev) => ({
             id: (prev?.id ?? 0) + 1, player: m.player, reason: m.reason,
@@ -448,14 +535,15 @@ export function useGameSocket(room: string, name: string) {
             return next;
           });
           if (m.status) setStatus(m.status);
-          setPlayerLeft({
+          setPlayerLeft((prev) => ({
+            id: (prev?.id ?? 0) + 1,
             player: String(m.player ?? ""),
             name: String(m.name ?? "A player"),
             message: String(m.message ?? "A player left the arena."),
-          });
+          }));
         } else if (m.type === "king_watch") {
           setKingWatch(m as KingWatchView);
-          setNotice("KING WARNING: FULL SCHEDULE REVEALED TO THE WATCHER.");
+          pushNotice("KING WARNING: FULL SCHEDULE REVEALED TO THE WATCHER.");
         } else if (m.type === "king_spawn") {
           const view = m.king as KingView | null;
           setKing(view);
@@ -464,7 +552,7 @@ export function useGameSocket(room: string, name: string) {
             id: (prev?.id ?? 0) + 1, type: "spawn", king: view,
             room_code: view?.room_code ?? null,
           }));
-          setNotice("THE KING OF SPADES HAS ENTERED THE BUILDING.");
+          pushNotice("THE KING OF SPADES HAS ENTERED THE BUILDING.");
         } else if (m.type === "king_teleport") {
           const view = m.king as KingView | null;
           setKing(view);
@@ -486,7 +574,7 @@ export function useGameSocket(room: string, name: string) {
             room_code: m.room_code ?? null, room: m.room ?? null,
             victim: m.victim, victim_name: m.victim_name, reason: m.reason,
           }));
-          setNotice(m.victim === youRef.current
+          pushNotice(m.victim === youRef.current
             ? "THE KING OF SPADES TOOK YOU."
             : "THE KING OF SPADES TOOK A PLAYER.");
         } else if (m.type === "prediction_result") {
@@ -500,7 +588,7 @@ export function useGameSocket(room: string, name: string) {
             id: Number(m.id) || 0, from: m.from, color: m.color, text: m.text,
           }].slice(-40));
         } else if (m.type === "exit_found") {
-          setExitNotice(m.message ?? "EXIT SIGHTED. TELL YOUR TEAM.");
+          pushExitNotice(String(m.message ?? "EXIT SIGHTED. TELL YOUR TEAM."));
         } else if (m.type === "time_up") {
           setMatchAt(null);
           setPa(m.message ?? "TIME EXPIRED. THE TEAM WAS ELIMINATED.");
@@ -508,11 +596,12 @@ export function useGameSocket(room: string, name: string) {
           setGameOver({
             won: !!m.won,
             reason: String(m.reason ?? "The match ended."),
+            reason_code: m.reason_code ? String(m.reason_code) : undefined,
             summary: m.summary,
           });
           setStatus(m.won ? "won" : "over");
         } else if (m.type === "wristband_reveal") {
-          setNotice(String(m.message ?? "Wristband revealed until the next shift."));
+          pushNotice(String(m.message ?? "Wristband revealed until the next shift."));
         } else if (m.type === "error") {
           const message = m.message || m.code || "That action could not be completed.";
           if (FATAL_ERRORS.has(m.code)) {
@@ -520,7 +609,7 @@ export function useGameSocket(room: string, name: string) {
             fatalClose = true;
             ws.close();
           } else {
-            setNotice(message);
+            pushNotice(message);
           }
         }
       };
@@ -539,7 +628,7 @@ export function useGameSocket(room: string, name: string) {
       }
       wsRef.current = null;
     };
-  }, [room, name]);
+  }, [room, name, pushNotice, pushExitNotice, pushSealedAlert]);
 
   const send = useCallback((payload: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -589,7 +678,7 @@ export function useGameSocket(room: string, name: string) {
   }, [room]);
 
   return {
-    connected, attempts, restored, error, notice, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
+    connected, attempts, restored, error, notice, sealedAlert, you, me, arena, prevArena, wristband, wristbandSanctions, wristbandCooldownAt, players, status, round, maxRounds, stage,
     stageName, maxStage, ruleCount, nextAt, roundSeconds, matchAt, matchSeconds, minPlayers, nexus, pa, role, roleLabel,
     roleHint, transition, prediction, doorEvent, cross,
     hazard, revive, eliminated, poses, playerLeft, king, kingWatch, kingEvent, notes, exitNotice, gameOver,
