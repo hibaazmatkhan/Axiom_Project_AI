@@ -98,12 +98,15 @@ class PatternEngine:
         self.cycle = 0
         self.history: list[dict] = []
 
-    def apply(self, arena: Arena, announce: bool = True) -> dict:
+    def apply(
+        self, arena: Arena, announce: bool = True,
+        protected_rids: set[str] | None = None,
+    ) -> dict:
         active = self.rule.is_active(self.cycle)
         ops = self.rule.ops_for(self.cycle) if active else []
         moved: list[dict] = []
         for op in ops:
-            moved.extend(arena.apply_shift(op))
+            moved.extend(arena.apply_shift(op, protected_rids))
         result = {
             "cycle": self.cycle + 1,
             "pattern_type": self.rule.pattern_type,

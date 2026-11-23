@@ -399,11 +399,44 @@ export default function GameCanvas(props: Props) {
     const buildWall = (
       parent: THREE.Object3D,
       dir: Direction, door: Door & { open?: boolean } | undefined,
-      interactive: boolean, edge: boolean,
+      interactive: boolean, edge: boolean, exitDoor = false,
     ) => {
       const group = new THREE.Group();
       if (edge) {
-        addBox(group, H * 2, WH, T, 0, WH / 2, 0, wallMat);
+        if (exitDoor) {
+          const side = H - DW / 2;
+          const sideC = (H + DW / 2) / 2;
+          addBox(group, side, WH, T, -sideC, WH / 2, 0, wallMat);
+          addBox(group, side, WH, T, sideC, WH / 2, 0, wallMat);
+          addBox(group, DW, WH - DH, T, 0, (DH + WH) / 2, 0, wallMat);
+          const frameMat = new THREE.MeshStandardMaterial({
+            color: 0xf6f1e4, emissive: 0xfff4d8, emissiveIntensity: 0.45,
+            roughness: 0.3, metalness: 0.2,
+          });
+          addBox(group, 0.12, DH, T + 0.12, -DW / 2, DH / 2, 0.05, frameMat);
+          addBox(group, 0.12, DH, T + 0.12, DW / 2, DH / 2, 0.05, frameMat);
+          addBox(group, DW + 0.12, 0.12, T + 0.12, 0, DH, 0.05, frameMat);
+          const voidPanel = new THREE.Mesh(
+            new THREE.PlaneGeometry(DW, DH),
+            new THREE.MeshBasicMaterial({
+              color: 0x000000, side: THREE.DoubleSide, depthWrite: false,
+            }),
+          );
+          voidPanel.position.set(0, DH / 2, -T / 2 - 0.02);
+          voidPanel.userData.exitDoor = true;
+          group.add(voidPanel);
+          const spill = new THREE.Mesh(
+            new THREE.PlaneGeometry(DW * 1.3, DH * 1.15),
+            new THREE.MeshBasicMaterial({
+              color: 0xfff4d8, transparent: true, opacity: 0.12,
+              side: THREE.DoubleSide, depthWrite: false,
+            }),
+          );
+          spill.position.set(0, DH / 2, T / 2 + 0.03);
+          group.add(spill);
+        } else {
+          addBox(group, H * 2, WH, T, 0, WH / 2, 0, wallMat);
+        }
         orientTo(group, dir);
         parent.add(group);
         return;
@@ -654,56 +687,17 @@ export default function GameCanvas(props: Props) {
       parent.add(fixture);
 
       const arenaSize = arena?.size ?? 5;
+      const isExitRoom = !!roomYou.exit_code && roomYou.room_code === roomYou.exit_code;
+      const exitDir = isExitRoom ? propsRef.current.exitWall[0] : undefined;
       for (const dir of DIRS) {
         if (dir === skipDir) continue;
         buildWall(
           parent, dir, roomYou.doors?.[dir], interactive,
-          isEdgeDirection(roomYou.room, arenaSize, dir),
+          isEdgeDirection(roomYou.room, arenaSize, dir), dir === exitDir,
         );
-      }
-
-      if (roomYou.exit_code && roomYou.room_code === roomYou.exit_code) {
-        for (const dir of propsRef.current.exitWall) {
-          const exitDoor = new THREE.Group();
-          const panel = new THREE.Mesh(
-            new THREE.PlaneGeometry(DW, DH),
-            new THREE.MeshStandardMaterial({
-              color: 0x000000, emissive: 0x000000, emissiveIntensity: 0,
-              roughness: 0.18, metalness: 0.05, side: THREE.DoubleSide,
-            }),
-          );
-          panel.position.set(0, DH / 2, T / 2 + 0.02);
-          panel.userData.exitDoor = true;
-          exitDoor.add(panel);
-          orientTo(exitDoor, dir);
-          parent.add(exitDoor);
-        }
       }
 
       const room = arena?.rooms.find((r) => r.code === roomYou.room_code);
-
-      if (roomYou.room_code && roomYou.room_code === roomYou.exit_code) {
-        const hex = 0x3f9f6b;
-        const ring = new THREE.Mesh(
-          new THREE.RingGeometry(0.9, 1.15, 40),
-          new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
-        );
-        ring.rotation.x = -Math.PI / 2;
-        ring.position.y = 0.02;
-        ring.userData.beacon = true;
-        parent.add(ring);
-        const pillar = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.7, 0.7, WH, 32, 1, true),
-          new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.16, side: THREE.DoubleSide })
-        );
-        pillar.position.y = WH / 2;
-        pillar.userData.beacon = true;
-        parent.add(pillar);
-        const label = makeLabel("EXIT", "#3f9f6b", 0.9);
-        label.position.set(0, 1.65, 0);
-        label.userData.beacon = true;
-        parent.add(label);
-      }
 
       if (room && room.revealed && (room.sanction ?? 0) > 0) {
         const danger = new THREE.Mesh(
@@ -1197,10 +1191,7 @@ export default function GameCanvas(props: Props) {
       const dt = Math.min(clock.getDelta(), 0.1);
       const t = performance.now();
       const currentYou = propsRef.current.you;
-      const lockedHere = !!currentYou?.locked || propsRef.current.players.some(
-        (p) => p.locked && !p.eliminated && p.room_code === currentYou?.room_code,
-      );
-      const lockTarget = lockedHere ? 1 : 0;
+      const lockTarget = currentYou?.locked ? 1 : 0;
       lockMix += (lockTarget - lockMix) * (1 - Math.exp(-dt * 5));
       if (Math.abs(lockTarget - lockMix) < 0.002) lockMix = lockTarget;
 
@@ -1330,10 +1321,6 @@ export default function GameCanvas(props: Props) {
       }
 
       scene.traverse((c) => {
-        if (c.userData.beacon) {
-          const mesh = c as THREE.Mesh;
-          if (mesh.geometry instanceof THREE.RingGeometry) mesh.scale.setScalar(1 + Math.sin(t / 700) * 0.05);
-        }
         if (c.userData.remotePlayer) {
           const id = c.userData.remotePlayer as string;
           const target = propsRef.current.poses[id]
@@ -1535,7 +1522,7 @@ export default function GameCanvas(props: Props) {
 
   useEffect(() => {
     apiRef.current?.rebuild();
-  }, [arenaSig, doorSig, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.you?.exit_found, props.you?.exit_code, playerSig, kingSig]);
+  }, [arenaSig, doorSig, props.you?.room_code, props.you?.room?.[0], props.you?.room?.[1], props.you?.exit_found, props.you?.exit_code, props.exitWall.join("|"), playerSig, kingSig]);
 
   useEffect(() => {
     if (props.transitionId > 0 && props.transitionId !== lastShiftPulseId.current) {

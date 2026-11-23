@@ -309,18 +309,19 @@ class Arena:
         return repairs
 
     # ---- transformations -------------------------------------------------
-    def apply_shift(self, op: Shift) -> list[dict]:
+    def apply_shift(self, op: Shift, protected_rids: set[str] | None = None) -> list[dict]:
         before = {room.rid: (room.bx, room.by) for room in self.rooms}
+        protected = protected_rids or set()
         if op.kind == "row":
-            self._shift_row(op.index % self.size, op.direction)
+            self._shift_row(op.index % self.size, op.direction, protected)
         elif op.kind == "col":
-            self._shift_col(op.index % self.size, op.direction)
+            self._shift_col(op.index % self.size, op.direction, protected)
         elif op.kind == "rotate":
-            self._rotate_block(op.cx, op.cy, op.size, op.direction)
+            self._rotate_block(op.cx, op.cy, op.size, op.direction, protected)
         elif op.kind == "reflect":
-            self._reflect(op.axis, op.index % self.size)
+            self._reflect(op.axis, op.index % self.size, protected)
         elif op.kind == "swap_sigil":
-            self._swap_sigil(op.a, op.b)
+            self._swap_sigil(op.a, op.b, protected)
 
         self.recolor_doors()
         moved = []
@@ -337,54 +338,81 @@ class Arena:
                 })
         return moved
 
-    def _shift_row(self, y: int, direction: int) -> None:
-        row = self.grid[y]
-        row = (row[-1:] + row[:-1]) if direction >= 0 else (row[1:] + row[:1])
-        self.grid[y] = row
-        for x, room in enumerate(row):
-            room.bx, room.by = x, y
+    def _place_room(self, room: Room, x: int, y: int) -> None:
+        self.grid[y][x] = room
+        room.bx, room.by = x, y
 
-    def _shift_col(self, x: int, direction: int) -> None:
-        col = [self.grid[y][x] for y in range(self.size)]
-        col = (col[-1:] + col[:-1]) if direction >= 0 else (col[1:] + col[:1])
-        for y, room in enumerate(col):
-            self.grid[y][x] = room
-            room.bx, room.by = x, y
+    def _shift_row(self, y: int, direction: int, protected: set[str]) -> None:
+        slots = [x for x in range(self.size) if self.grid[y][x].rid not in protected]
+        rooms = [self.grid[y][x] for x in slots]
+        if not rooms:
+            return
+        ordered = (rooms[-1:] + rooms[:-1]) if direction >= 0 else (rooms[1:] + rooms[:1])
+        for x, room in zip(slots, ordered):
+            self._place_room(room, x, y)
 
-    def _rotate_block(self, cx: int, cy: int, size: int, direction: int) -> None:
+    def _shift_col(self, x: int, direction: int, protected: set[str]) -> None:
+        slots = [y for y in range(self.size) if self.grid[y][x].rid not in protected]
+        rooms = [self.grid[y][x] for y in slots]
+        if not rooms:
+            return
+        ordered = (rooms[-1:] + rooms[:-1]) if direction >= 0 else (rooms[1:] + rooms[:1])
+        for y, room in zip(slots, ordered):
+            self._place_room(room, x, y)
+
+    def _rotate_block(
+        self, cx: int, cy: int, size: int, direction: int, protected: set[str],
+    ) -> None:
         k = max(2, min(size, self.size))
         cx = max(0, min(cx, self.size - k))
         cy = max(0, min(cy, self.size - k))
-        block = [[self.grid[cy + j][cx + i] for i in range(k)] for j in range(k)]
-        if direction >= 0:
-            new = [list(row) for row in zip(*block[::-1])]
-        else:
-            new = [list(row) for row in zip(*block)][::-1]
-        for j in range(k):
-            for i in range(k):
-                room = new[j][i]
-                self.grid[cy + j][cx + i] = room
-                room.bx, room.by = cx + i, cy + j
+        positions = [(cx + i, cy + j) for j in range(k) for i in range(k)]
+        slots = [pos for pos in positions if self.room_at(*pos).rid not in protected]
+        if not slots:
+            return
+        slot_set = set(slots)
+        assignments: dict[tuple[int, int], Room] = {}
+        displaced: list[Room] = []
+        for x, y in slots:
+            room = self.room_at(x, y)
+            if direction >= 0:
+                target = (cx + k - 1 - (y - cy), cy + (x - cx))
+            else:
+                target = (cx + (y - cy), cy + k - 1 - (x - cx))
+            if target in slot_set:
+                assignments[target] = room
+            else:
+                displaced.append(room)
+        free_slots = [slot for slot in slots if slot not in assignments]
+        for slot, room in zip(free_slots, displaced):
+            assignments[slot] = room
+        for (x, y), room in assignments.items():
+            self._place_room(room, x, y)
 
-    def _reflect(self, axis: str, index: int) -> None:
+    def _reflect(self, axis: str, index: int, protected: set[str]) -> None:
         if axis == "x":
-            row = list(reversed(self.grid[index]))
-            self.grid[index] = row
-            for x, room in enumerate(row):
-                room.bx, room.by = x, index
+            slots = [x for x in range(self.size) if self.grid[index][x].rid not in protected]
+            rooms = [self.grid[index][x] for x in slots]
+            ordered = list(reversed(rooms))
+            for x, room in zip(slots, ordered):
+                self._place_room(room, x, index)
         else:
-            col = [self.grid[y][index] for y in range(self.size)]
-            col.reverse()
-            for y, room in enumerate(col):
-                self.grid[y][index] = room
-                room.bx, room.by = index, y
+            slots = [y for y in range(self.size) if self.grid[y][index].rid not in protected]
+            rooms = [self.grid[y][index] for y in slots]
+            ordered = list(reversed(rooms))
+            for y, room in zip(slots, ordered):
+                self._place_room(room, index, y)
 
-    def _swap_sigil(self, a: str | None, b: str | None) -> None:
+    def _swap_sigil(
+        self, a: str | None, b: str | None, protected: set[str],
+    ) -> None:
         if not a or not b or a == b:
             return
         left = [r for r in self.rooms if r.sigil == a]
         right = [r for r in self.rooms if r.sigil == b]
         for ra, rb in zip(left, right):
+            if ra.rid in protected or rb.rid in protected:
+                continue
             pa, pb = (ra.bx, ra.by), (rb.bx, rb.by)
             if pa == pb:
                 continue
@@ -538,7 +566,8 @@ def astar(arena: Arena, start: tuple[int, int],
 
 
 def reachable_after_changes(arena: Arena, engine, start: tuple[int, int],
-                            goal: tuple[int, int] | None, horizon: int) -> bool:
+                            goal: tuple[int, int] | None, horizon: int,
+                            protected_rids: set[str] | None = None) -> bool:
     """Time-expanded reachability across grid shifts.
 
     The arena and engines are copied first: the simulation must not advance the
@@ -554,5 +583,5 @@ def reachable_after_changes(arena: Arena, engine, start: tuple[int, int],
         if sim.path_positions(start, target) is not None:
             return True
         for e in sims:
-            e.apply(sim, announce=False)
+            e.apply(sim, announce=False, protected_rids=protected_rids)
     return sim.path_positions(start, goal or sim.exit_at) is not None

@@ -1107,7 +1107,7 @@ class Room:
         if player.locked:
             await self.send(player, {
                 "type": "door_result", "accepted": False, "locked": True,
-                "message": "You are locked. A teammate can lead you out, or two teammates can scan you free.",
+                "message": "You are locked. Walk through a door another player opened, or two teammates can scan you free.",
             })
             return
         room = self.arena.room_by_id(player.room_id)
@@ -1190,12 +1190,6 @@ class Room:
                 "message": "Answer the puzzle before moving through a door.",
             })
             return
-        if player.locked:
-            await self.send(player, {
-                "type": "door_result", "accepted": False, "locked": True,
-                "message": "You are locked. A teammate can lead you out, or two teammates can scan you free.",
-            })
-            return
         now = time.monotonic()
         if now - player.last_move < 0.08:
             return
@@ -1243,6 +1237,13 @@ class Room:
         player.entered_round = self.round
         player.room_id = target.rid
         player.last_move = time.monotonic()
+        if player.locked:
+            player.locked = False
+            player.revives += 1
+            self.log(player.id, "self_escort", {"room": target.code, "door": door})
+            await self.broadcast({
+                "type": "revive", "player": player.id, "by": [], "points": {},
+            })
         self.log(player.id, "cross", {"room": target.code, "from": room.code, "door": door})
         if self.king is not None:
             await self._king_strike()
@@ -1255,29 +1256,6 @@ class Room:
             "type": "room_entered", "player": player.id, "door": door,
             "from": room.code, "to": target.code, "cost": 0,
         })
-
-        escorted = [
-            p for p in self.players.values()
-            if p.id != player.id and p.locked and p.connected
-            and not p.eliminated and not p.escaped and p.room_id == room.rid
-        ]
-        for ally in escorted:
-            ally.locked = False
-            ally.revives += 1
-            ally.last_room_id = room.rid
-            ally.entered_round = self.round
-            ally.room_id = target.rid
-            ally.pose_x = player.pose_x
-            ally.pose_z = player.pose_z
-            ally.pose_yaw = player.pose_yaw
-            self.log(ally.id, "escorted", {"by": player.id, "room": target.code})
-            await self.broadcast({
-                "type": "revive", "player": ally.id, "by": [player.id], "points": {},
-            })
-            await self.broadcast({
-                "type": "room_entered", "player": ally.id, "door": door,
-                "from": room.code, "to": target.code, "cost": 0,
-            })
 
         if fate.reveal(self.arena, target) and target.sanction:
             player.points -= target.sanction
@@ -1325,7 +1303,10 @@ class Room:
             return
         target_room = self.arena.room_by_id(target.room_id)
         if target_room is None:
-            target.locked = False
+            await self.send(helper, {
+                "type": "error", "code": "bad_room",
+                "message": "The locked player's room is no longer available.",
+            })
             return
         valid = {target.room_id}
         for _, nb in self.arena.neighbours(target_room):
@@ -1347,7 +1328,14 @@ class Room:
                 "message": "Two teammates must scan a locked player free.",
             })
             return
-        spenders = helpers[:2]
+        other = next((h for h in helpers if h.id != helper.id), None)
+        if other is None:
+            await self.send(helper, {
+                "type": "error", "code": "need_two",
+                "message": "Two teammates must scan a locked player free.",
+            })
+            return
+        spenders = [helper, other]
         for h in spenders:
             h.points -= REVIVE_COST
         target.locked = False
@@ -1665,6 +1653,7 @@ class Room:
             for p in self.players.values():
                 if not p.eliminated:
                     p.escaped = True
+                    p.locked = False
             await self.finish(won=True)
 
     async def _expire_match(self) -> None:
@@ -1819,18 +1808,8 @@ class Room:
         moved: list[dict] = []
         ops: list[dict] = []
         protected = self._protected_room_ids()
-        before_positions = {room.rid: (room.bx, room.by) for room in self.arena.rooms}
         for engine in self.engines:
-            trial = self.arena.clone()
-            res = engine.apply(self.arena)
-            unsafe = any(
-                rid in protected and before_positions[rid] != (room.bx, room.by)
-                for room in self.arena.rooms
-                for rid in [room.rid]
-            )
-            if unsafe:
-                self.arena = trial
-                continue
+            res = engine.apply(self.arena, protected_rids=protected)
             moved.extend(res["moved"])
             ops.extend(res["ops"])
         repairs = self.arena.ensure_connected()
@@ -1860,7 +1839,9 @@ class Room:
         self.nexus.extract(len(self.arena.rooms))
         self.nexus.cluster()
         solvable = self.arena.solvable() and reachable_after_changes(
-            self.arena, self.engines, START_ROOM, None, horizon=3)
+            self.arena, self.engines, START_ROOM, None, horizon=3,
+            protected_rids=protected,
+        )
         action = self.nexus.decide(self.round, solvable, self.shift_seconds)
         self.nexus.commit_action(action)
         self._apply_director(action)
@@ -2033,6 +2014,7 @@ class Room:
                 if p.eliminated:
                     continue
                 p.escaped = True
+                p.locked = False
                 self.log(p.id, "escaped", {"round": self.round})
         duration = time.time() - self.started_at
         self.nexus.extract(len(self.arena.rooms))

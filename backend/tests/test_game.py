@@ -7,13 +7,13 @@ from contextlib import ExitStack
 
 from fastapi.testclient import TestClient
 
-from app.arena import DIRECTIONS, OPPOSITE, STEP
+from app.arena import DIRECTIONS, OPPOSITE, STEP, Shift
 from app import puzzles
 from app.game import (
     DELAY_CONFIG, KING_APPEARANCES, KING_APPEARANCE_INTERVAL, KING_APPEARANCE_SECONDS,
     KING_FIRST_SPAWN_SECONDS, KING_ROOMS_PER_APPEARANCE, KING_WATCH_LEAD_SECONDS,
     PATHFINDER_REVEAL_COOLDOWN, REASON_KING, REASON_POINTS_ZERO,
-    REASON_TEAM, REASON_TIME_UP, Player, Room, TemporaryDoor,
+    REASON_TEAM, REASON_TIME_UP, REVIVE_COST, Player, Room, TemporaryDoor,
 )
 from app.main import app, rooms
 from app.nexus import CLUE_TIERS
@@ -346,6 +346,7 @@ def test_exit_discovery_is_player_local():
     asyncio.run(room._complete_crossing(p1, room.arena.start_room(), exit_room, "N"))
 
     assert p1.exit_found is True
+    assert p1.locked is False
     assert p2.exit_found is False
     assert room.snapshot(p1)["you"]["exit_code"] == exit_room.code
     assert room.snapshot(p2)["you"]["exit_code"] is None
@@ -939,6 +940,30 @@ def test_locked_player_needs_two_helpers():
     assert not target.locked and target.revives == 1
 
 
+def test_unlock_spends_the_two_actual_helpers():
+    room = Room("LOCKPAY", seed=4, round_seconds=60)
+    room.status = "running"
+    target = _player(room, "t", 0, "pathfinder")
+    target.locked = True
+    extra = _player(room, "x", 1, "watcher")
+    companion = _player(room, "c", 2, "timekeeper")
+    requester = _player(room, "r", 3, "decoder")
+    room.players = {
+        target.id: target, extra.id: extra,
+        companion.id: companion, requester.id: requester,
+    }
+    before_extra = extra.points
+    before_companion = companion.points
+    before_requester = requester.points
+
+    asyncio.run(room.unlock(requester, target.id))
+
+    assert not target.locked and target.revives == 1
+    assert extra.points == before_extra - REVIVE_COST
+    assert requester.points == before_requester - REVIVE_COST
+    assert companion.points == before_companion
+
+
 def test_locked_players_cannot_help_unlock_each_other():
     room = Room("LOCKHELP", seed=4, round_seconds=60)
     room.status = "running"
@@ -1395,14 +1420,17 @@ def test_pose_events_bypass_gameplay_rate_limit():
     assert not [m for m in mover.ws.sent if m.get("code") == "rate_limited"]
 
 
-def test_non_locked_player_can_escort_locked_teammate():
-    room = Room("ESCORT", seed=7)
+def test_locked_player_self_crosses_open_door_without_pulling_teammate():
+    room = Room("SELFESC", seed=7)
     room.status = "running"
     leader = _player(room, "lead", 0)
     locked = _player(room, "lock", 1)
+    bystander = _player(room, "stay", 2)
     locked.locked = True
+    bystander.locked = True
     room.players[leader.id] = leader
     room.players[locked.id] = locked
+    room.players[bystander.id] = bystander
     current = room.arena.start_room()
     door = _open_door(room, current)
     target = room.arena.door_target(current, door)
@@ -1412,11 +1440,33 @@ def test_non_locked_player_can_escort_locked_teammate():
         expires_at=time.time() + 10, cost=1,
     )
 
-    asyncio.run(room._complete_crossing(leader, current, target, door))
-    assert leader.room_id == target.rid
+    asyncio.run(room.cross_door(locked, door=door))
     assert locked.room_id == target.rid
     assert locked.locked is False
     assert locked.revives == 1
+    assert bystander.room_id == current.rid
+    assert bystander.locked is True
+    assert bystander.revives == 0
+
+
+def test_protected_rooms_stay_while_other_rooms_shift():
+    room = Room("PROTUNIT", seed=7)
+    arena = room.arena
+    exit_rid = arena.exit_room().rid
+    protected = {exit_rid}
+    exit_before = (arena.exit_room().bx, arena.exit_room().by)
+    ops = [
+        Shift("row", index=0, direction=1),
+        Shift("col", index=0, direction=1),
+        Shift("reflect", axis="x", index=4),
+        Shift("rotate", cx=0, cy=2, size=3, direction=1),
+    ]
+    for op in ops:
+        moved = arena.apply_shift(op, protected)
+        after = arena.room_by_id(exit_rid)
+        assert (after.bx, after.by) == exit_before
+        assert all(entry["rid"] != exit_rid for entry in moved)
+        assert moved
 
 
 def test_shifts_never_move_exit_or_locked_room():

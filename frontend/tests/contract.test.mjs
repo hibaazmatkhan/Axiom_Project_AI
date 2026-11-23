@@ -24,6 +24,7 @@ const guest = read("../lib/guest.ts");
 const gameLoader = read("../app/game/GameLoader.tsx");
 const roles = read("../../backend/app/roles.py");
 const arena = read("../../backend/app/arena.py");
+const patterns = read("../../backend/app/patterns.py");
 
 test("tier-2 delay puzzle is answerable", () => {
   assert.ok(client.includes('puzzle.tier === 2 ? "Grid · tap destination" : "Before"'));
@@ -153,11 +154,19 @@ test("watcher receives the full king schedule and no live king state", () => {
   assert.ok(lobby.includes("full KING OF SPADES schedule"));
 });
 
-test("lockdown is escapable by escort and shifts protect locked/exit rooms", () => {
-  assert.ok(game.includes("escorted"));
+test("lockdown is opt-in escapable and shifts protect locked/exit rooms", () => {
+  assert.ok(game.includes("self_escort"));
+  assert.ok(!game.includes("escorted"));
+  assert.ok(game.includes("Walk through a door another player opened"));
+  assert.ok(game.includes("h.id != helper.id"));
+  assert.ok(client.includes("Walk through an open door yourself"));
+  assert.ok(canvas.includes("const lockTarget = currentYou?.locked ? 1 : 0;"));
   assert.ok(game.includes("_protected_room_ids"));
   assert.ok(game.includes("self.arena.exit_room().rid"));
-  assert.ok(client.includes("lead you out"));
+  assert.ok(game.includes("engine.apply(self.arena, protected_rids=protected)"));
+  assert.ok(patterns.includes("protected_rids: set[str] | None = None"));
+  assert.ok(arena.includes("def apply_shift(self, op: Shift, protected_rids"));
+  assert.ok(arena.includes("e.apply(sim, announce=False, protected_rids=protected_rids)"));
 });
 
 test("game over explains the personal loss reason", () => {
@@ -244,11 +253,16 @@ test("room join validates the four-character code before navigation", () => {
   assert.ok(client.includes("g.connected && g.you"));
 });
 
-test("exit room renders a black edge door", () => {
+test("exit room renders a black wall doorway instead of a green beacon", () => {
   assert.ok(arena.includes("exit_wall_directions"));
   assert.ok(game.includes('"exit_wall":'));
+  assert.ok(canvas.includes("exitDoor = false"));
+  assert.ok(canvas.includes("dir === exitDir"));
   assert.ok(canvas.includes("userData.exitDoor"));
   assert.ok(canvas.includes("color: 0x000000"));
+  assert.ok(!canvas.includes("userData.beacon"));
+  assert.ok(!canvas.includes('makeLabel("EXIT"'));
+  assert.ok(!canvas.includes("RingGeometry(0.9, 1.15"));
 });
 
 test("role-mark puzzle remains part of the HUD", () => {

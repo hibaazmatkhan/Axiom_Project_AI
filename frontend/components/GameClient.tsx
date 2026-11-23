@@ -1190,7 +1190,7 @@ export default function GameClient({ room, name }: { room: string; name: string 
       {me?.locked && g.status === "running" && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 -translate-y-1/2 text-center">
           <p className="inline-block rounded-2xl border border-red/60 bg-ink/90 px-6 py-3 text-sm text-red backdrop-blur">
-            You are locked in. A teammate can lead you out, or two teammates in or beside this room can scan you free.
+            You are locked in. Walk through an open door yourself, or two teammates in or beside this room can scan you free.
           </p>
         </div>
       )}
